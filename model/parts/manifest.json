@@ -1,0 +1,242 @@
+{
+ "Sign_Pin": {
+  "bbox_min": [
+   -51.2,
+   17.34,
+   -11.0
+  ],
+  "bbox_max": [
+   -45.96,
+   22.74,
+   -5.6
+  ],
+  "volume_mm3": 46.2,
+  "mass_g_pla": 0.1,
+  "bodies": 1,
+  "seconds": 10.0
+ },
+ "Front_Shell": {
+  "bbox_min": [
+   -50.0,
+   -31.0,
+   -16.4
+  ],
+  "bbox_max": [
+   50.0,
+   31.0,
+   0.0
+  ],
+  "volume_mm3": 18310.3,
+  "mass_g_pla": 22.7,
+  "bodies": 1,
+  "seconds": 169.2
+ },
+ "Back_Shell": {
+  "bbox_min": [
+   -50.0,
+   -31.0,
+   -32.0
+  ],
+  "bbox_max": [
+   50.0,
+   31.0,
+   -3.9
+  ],
+  "volume_mm3": 26369.2,
+  "mass_g_pla": 32.7,
+  "bodies": 1,
+  "seconds": 317.6
+ },
+ "Dupont_Harness": {
+  "bbox_min": [
+   -39.5,
+   -5.85,
+   -23.8
+  ],
+  "bbox_max": [
+   -4.08,
+   27.03,
+   -9.8
+  ],
+  "volume_mm3": 2257.9,
+  "mass_g_pla": 2.8,
+  "bodies": 28,
+  "seconds": 8.2
+ },
+ "Camera_OV5640": {
+  "bbox_min": [
+   -20.61,
+   5.69,
+   -16.2
+  ],
+  "bbox_max": [
+   -12.11,
+   14.19,
+   -10.2
+  ],
+  "volume_mm3": 367.2,
+  "mass_g_pla": 0.5,
+  "bodies": 1,
+  "seconds": 4.7
+ },
+ "Cell_18650": {
+  "bbox_min": [
+   -43.05,
+   -27.55,
+   -29.95
+  ],
+  "bbox_max": [
+   25.45,
+   -8.55,
+   -10.95
+  ],
+  "volume_mm3": 19421.7,
+  "mass_g_pla": 24.1,
+  "bodies": 1,
+  "seconds": 2.9
+ },
+ "TP4056_USBC": {
+  "bbox_min": [
+   -48.0,
+   -27.2,
+   -7.63
+  ],
+  "bbox_max": [
+   -19.2,
+   -9.9,
+   -3.17
+  ],
+  "volume_mm3": 835.5,
+  "mass_g_pla": 1.0,
+  "bodies": 1,
+  "seconds": 5.2
+ },
+ "MAX30102": {
+  "bbox_min": [
+   18.85,
+   3.35,
+   -3.6
+  ],
+  "bbox_max": [
+   39.15,
+   18.65,
+   -0.45
+  ],
+  "volume_mm3": 531.4,
+  "mass_g_pla": 0.7,
+  "bodies": 1,
+  "seconds": 5.9
+ },
+ "INMP441": {
+  "bbox_min": [
+   8.9,
+   26.3,
+   -29.6
+  ],
+  "bbox_max": [
+   23.1,
+   28.4,
+   -15.4
+  ],
+  "volume_mm3": 177.9,
+  "mass_g_pla": 0.2,
+  "bodies": 1,
+  "seconds": 4.2
+ },
+ "Buzzer_12mm": {
+  "bbox_min": [
+   37.9,
+   -24.0,
+   -28.5
+  ],
+  "bbox_max": [
+   47.4,
+   -12.0,
+   -16.5
+  ],
+  "volume_mm3": 1074.4,
+  "mass_g_pla": 1.3,
+  "bodies": 1,
+  "seconds": 3.1
+ },
+ "Latch_Switch_12mm": {
+  "bbox_min": [
+   30.0,
+   12.9,
+   -28.5
+  ],
+  "bbox_max": [
+   42.0,
+   34.0,
+   -16.5
+  ],
+  "volume_mm3": 2368.0,
+  "mass_g_pla": 2.9,
+  "bodies": 1,
+  "seconds": 7.2
+ },
+ "Board_PCB": {
+  "bbox_min": [
+   -17.51,
+   -26.99,
+   -11.9
+  ],
+  "bbox_max": [
+   17.51,
+   22.41,
+   -2.0
+  ],
+  "volume_mm3": 4394.3,
+  "mass_g_pla": 5.4,
+  "bodies": 1,
+  "seconds": 8.9
+ },
+ "Board_LCD": {
+  "bbox_min": [
+   -17.5,
+   -25.8,
+   -2.0
+  ],
+  "bbox_max": [
+   17.5,
+   22.4,
+   2.1
+  ],
+  "volume_mm3": 6916.7,
+  "mass_g_pla": 8.6,
+  "bodies": 1,
+  "seconds": 2.2
+ },
+ "FitTest_Front": {
+  "bbox_min": [
+   -50.0,
+   -31.0,
+   -15.5
+  ],
+  "bbox_max": [
+   -24.0,
+   31.0,
+   0.0
+  ],
+  "volume_mm3": 4910.0,
+  "mass_g_pla": 6.1,
+  "bodies": 1,
+  "seconds": 168.5
+ },
+ "FitTest_Back": {
+  "bbox_min": [
+   -50.0,
+   -31.0,
+   -32.0
+  ],
+  "bbox_max": [
+   -24.0,
+   31.0,
+   -4.87
+  ],
+  "volume_mm3": 8139.3,
+  "mass_g_pla": 10.1,
+  "bodies": 1,
+  "seconds": 161.6
+ }
+}

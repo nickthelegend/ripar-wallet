@@ -1,0 +1,6 @@
+part,qty,material,size_mm,solid_mass_g,watertight,triangles,notes,stl,step
+Front_Shell,1,PLA or PETG (black / dark),100.0 x 62.0 x 16.4,22.7,True,3644,"screen face DOWN on the textured PEI plate; no supports; 0.16 mm layers, 3 walls, 15% gyroid",stl/Front_Shell.stl,step/Front_Shell.step
+Back_Shell,1,PLA or PETG (black / dark: a light hood flares the camera),100.0 x 62.0 x 28.1,32.7,True,8694,"lens face DOWN; no supports (switch opening is a short bridge, lens cone is 33 deg); 0.16 mm layers, 3 walls",stl/Back_Shell.stl,step/Back_Shell.step
+Sign_Pin,1,PLA,5.4 x 5.4 x 5.2,0.1,True,632,"stand it on its flat outer end; 0.12 mm layers, 100% infill; print 2 spares",stl/Sign_Pin.stl,step/Sign_Pin.step
+FitTest_Front,1,same as the shell,26.0 x 62.0 x 15.5,6.1,True,2080,"OPTIONAL test (both coupons ~40 min): board fit, USB-C/SIGN/RST ports, lip",stl/FitTest_Front.stl,step/FitTest_Front.step
+FitTest_Back,1,same as the shell,26.0 x 62.0 x 27.1,10.1,True,2620,OPTIONAL test: snaps onto FitTest_Front; checks the bead click,stl/FitTest_Back.stl,step/FitTest_Back.step

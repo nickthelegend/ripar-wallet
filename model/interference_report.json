@@ -1,0 +1,662 @@
+[
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -36.96,
+   25.51,
+   -15.6,
+   -34.56,
+   26.15,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -9.02,
+   25.51,
+   -15.6,
+   -6.62,
+   26.15,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -16.64,
+   25.51,
+   -15.6,
+   -14.24,
+   26.15,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -21.72,
+   25.51,
+   -15.6,
+   -19.32,
+   26.15,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -24.26,
+   25.51,
+   -15.6,
+   -21.86,
+   26.15,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -26.8,
+   25.51,
+   -15.6,
+   -24.4,
+   26.15,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -29.34,
+   25.51,
+   -15.6,
+   -26.94,
+   26.15,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -31.88,
+   25.51,
+   -15.6,
+   -29.48,
+   26.15,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -34.42,
+   25.51,
+   -15.6,
+   -32.02,
+   26.15,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -11.56,
+   25.51,
+   -15.6,
+   -9.16,
+   26.15,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -36.96,
+   -4.97,
+   -15.6,
+   -34.56,
+   -4.33,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -14.1,
+   25.51,
+   -15.6,
+   -11.7,
+   26.15,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -19.18,
+   25.51,
+   -15.6,
+   -16.78,
+   26.15,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -9.02,
+   -4.97,
+   -15.6,
+   -6.62,
+   -4.33,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -21.72,
+   -4.97,
+   -15.6,
+   -19.32,
+   -4.33,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -16.64,
+   -4.97,
+   -15.6,
+   -14.24,
+   -4.33,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -24.26,
+   -4.97,
+   -15.6,
+   -21.86,
+   -4.33,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -26.8,
+   -4.97,
+   -15.6,
+   -24.4,
+   -4.33,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -29.34,
+   -4.97,
+   -15.6,
+   -26.94,
+   -4.33,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -11.56,
+   -4.97,
+   -15.6,
+   -9.16,
+   -4.33,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -31.88,
+   -4.97,
+   -15.6,
+   -29.48,
+   -4.33,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -34.42,
+   -4.97,
+   -15.6,
+   -32.02,
+   -4.33,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -14.1,
+   -4.97,
+   -15.6,
+   -11.7,
+   -4.33,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 8.909,
+  "expected": true,
+  "box": [
+   -19.18,
+   -4.97,
+   -15.6,
+   -16.78,
+   -4.33,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 5.828,
+  "expected": true,
+  "box": [
+   -38.67,
+   25.51,
+   -15.6,
+   -37.1,
+   26.15,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 5.828,
+  "expected": true,
+  "box": [
+   -38.67,
+   -4.97,
+   -15.6,
+   -37.1,
+   -4.33,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 5.679,
+  "expected": true,
+  "box": [
+   -6.48,
+   25.51,
+   -15.6,
+   -4.95,
+   26.15,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Board_PCB-1",
+   "Dupont_Harness-1"
+  ],
+  "pair": [
+   "Board_PCB",
+   "Dupont_Harness"
+  ],
+  "volume_mm3": 5.679,
+  "expected": true,
+  "box": [
+   -6.48,
+   -4.97,
+   -15.6,
+   -4.95,
+   -4.33,
+   -9.8
+  ]
+ },
+ {
+  "components": [
+   "Front_Shell-1",
+   "TP4056_USBC-1"
+  ],
+  "pair": [
+   "Front_Shell",
+   "TP4056_USBC"
+  ],
+  "volume_mm3": 0.023,
+  "expected": true,
+  "box": [
+   -48.0,
+   -14.35,
+   -7.63,
+   -47.4,
+   -14.08,
+   -7.32
+  ]
+ },
+ {
+  "components": [
+   "Front_Shell-1",
+   "TP4056_USBC-1"
+  ],
+  "pair": [
+   "Front_Shell",
+   "TP4056_USBC"
+  ],
+  "volume_mm3": 0.023,
+  "expected": true,
+  "box": [
+   -48.0,
+   -14.35,
+   -4.68,
+   -47.4,
+   -14.08,
+   -4.37
+  ]
+ },
+ {
+  "components": [
+   "Front_Shell-1",
+   "TP4056_USBC-1"
+  ],
+  "pair": [
+   "Front_Shell",
+   "TP4056_USBC"
+  ],
+  "volume_mm3": 0.023,
+  "expected": true,
+  "box": [
+   -48.0,
+   -23.02,
+   -7.63,
+   -47.4,
+   -22.75,
+   -7.32
+  ]
+ },
+ {
+  "components": [
+   "Front_Shell-1",
+   "TP4056_USBC-1"
+  ],
+  "pair": [
+   "Front_Shell",
+   "TP4056_USBC"
+  ],
+  "volume_mm3": 0.023,
+  "expected": true,
+  "box": [
+   -48.0,
+   -23.02,
+   -4.68,
+   -47.4,
+   -22.75,
+   -4.37
+  ]
+ },
+ {
+  "components": [
+   "Front_Shell-1",
+   "TP4056_USBC-1"
+  ],
+  "pair": [
+   "Front_Shell",
+   "TP4056_USBC"
+  ],
+  "volume_mm3": 0.017,
+  "expected": true,
+  "box": [
+   -47.2,
+   -27.2,
+   -4.37,
+   -47.08,
+   -26.96,
+   -3.17
+  ]
+ }
+]

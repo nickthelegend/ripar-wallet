@@ -1,0 +1,227 @@
+{
+ "parts": [
+  {
+   "part": "Camera module (bundled with Waveshare ESP32-S3-LCD-2-C / ESP32-S3-Touch-LCD-2-C)",
+   "variant": "OV5640 5MP, 24-pin 0.5 mm DVP FPC, probably the fixed-focus 68 deg type (marking 'DC-5M21-5640-803-V1' reads as 5MP / 21 mm FPC / OV5640)",
+   "length_mm": 8.5,
+   "width_mm": 8.5,
+   "height_mm": 5,
+   "details": "Waveshare says the -C package 'comes with an OV5640 camera'. The product and wiki pages do not give its mechanical data, so the numbers below come from the generic 24-pin ESP32 OV5640 modules this camera matches.\n- Lens holder/body: 8.5 x 8.5 mm (+/-0.1 to 0.2). The rigid or stiffened sensor area under it is about 8.5 to 9.5 mm wide.\n- Total height from the module base (the FPC/stiffener face the holder sits on) to the top of the lens: 5.0 mm nominal for the fixed-focus 68 deg lens, range 4.8 to 6.5 mm. A listing gives '8.5*8.5*5 mm'. Autofocus (VCM) versions are square-bodied and taller, about 5.5 to 7 mm.\n- Lens barrel outer diameter at the top: about 6 to 7 mm (M7-thread holders are used on these modules). The glass clear aperture is only about 2 to 3 mm.\n- Optics: Waveshare's own OV5640 spec (ESP32-S3-CAM doc) is D 68 deg / H 55 deg / V 42 deg, 1/4 in sensor, F2.8, focal length stated as 4.1 mm. Generic 68 deg fixed-focus modules state f = 3.29 mm, F2.8, working range about 10 cm to infinity.\n- Focus: most likely FIXED focus. Nothing in Waveshare's docs mentions AF or VCM control, and the part code has no AF marker. AF variants exist (72 deg AF, 120 deg AF) with a square VCM block and 2 extra VCM contacts.\n- FPC: 24-pin, 0.5 mm pitch, about 12.5 to 13 mm wide at the connector end with a stiffener. The '21' in the code matches the common 21 mm short-FPC option (the other common length is 75 to 78 mm). The length is measured from the module edge to the contact end: expect 20 to 22 mm, so measure your unit.\n- Alternative: if an OV2640 was supplied instead, see the next entry.\n- Not verified: which face of the Waveshare board the camera ends up on after the FPC is folded. Check against your board STEP or photos.",
+   "enclosure_advice": "- Pocket: 8.7 x 8.7 mm (body + 0.1 per side). Add a rib or foam behind the FPC so the holder is pushed against the front wall. Never let the lens barrel carry the load.\n- Lens opening, two options:\n  (a) Barrel protrudes through the wall: hole = barrel diameter + 0.3 to 0.4 mm.\n  (b) Barrel sits behind the wall: hole >= front lens diameter + 2 x t x tan(half-FOV) + 0.5 mm. For 68 deg DFOV the half-angle is 34 deg (tan 0.67), so with t = 1.2 mm you need about +2.1 mm, i.e. about 7 to 7.5 mm for a 5 mm front lens. Add a 40 to 45 deg countersink on the outside. A 120 deg lens needs a much bigger cone (tan 60 = 1.73 x t per side).\n- Keep the wall in front of the lens thin (0.8 to 1.2 mm).\n- Print the camera surround in black or dark filament. White or natural PLA and PETG leak light and cause flare and haze.\n- FPC: static bend radius >= 1 to 2 mm. Do not bend within 2 to 3 mm of the stiffener or holder. Leave slack and no tension on the 24-pin connector latch.\n- If you want a cover window, use 0.5 to 1 mm clear acrylic touching the lens face. Never use printed PETG.",
+   "confidence": "low",
+   "sources": [
+    "https://www.waveshare.com/esp32-s3-lcd-2.htm",
+    "https://docs.waveshare.com/ESP32-S3-LCD-2",
+    "https://docs.waveshare.com/ESP32-S3-CAM-OVxxxx",
+    "https://www.iadiy.com/dvp-camera-module-ov5640",
+    "https://wiki.camthink.ai/docs/hardware-dev-resources/camera-module-ov5640/",
+    "https://www.aliexpress.com/item/1005004227739159.html"
+   ]
+  },
+  {
+   "part": "Camera module (alternative)",
+   "variant": "OV2640 2MP 24-pin ESP32-CAM style, fixed focus, about 66 deg",
+   "length_mm": 8,
+   "width_mm": 8,
+   "height_mm": 5.5,
+   "details": "- Standard ESP32-CAM OV2640 module: lens holder about 8.0 x 8.0 mm, with the sensor board/stiffener about 8.5 x 8.5 mm.\n- Height from base to lens top: 4.5 to 6.5 mm.\n- Lens barrel: about 6 to 6.5 mm diameter.\n- Optics: typical FOV 66 deg (also sold as 120 deg and 160 deg). Fixed focus. Some lenses are glued; others can be turned to refocus.\n- FPC: 24-pin, 0.5 mm pitch, about 12.5 mm wide, commonly 21 mm long (also 40 or 75 mm).\n- These dimensions are from general knowledge of these modules and were not re-verified this session.",
+   "enclosure_advice": "Same rules as the OV5640 entry, but use an 8.3 x 8.3 mm pocket. If you want one design to take either camera, use an 8.7 x 8.7 mm pocket plus a 0.5 mm foam shim.",
+   "confidence": "low",
+   "sources": [
+    "https://blog.arducam.com/ov2640/",
+    "https://www.waveshare.com/esp32-cam.htm"
+   ]
+  },
+  {
+   "part": "18650 Li-ion cell 3.7 V 2000 mAh 7.4 Wh",
+   "variant": "bare can (PVC sleeve removed / unwrapped)",
+   "length_mm": 65,
+   "width_mm": 18.1,
+   "height_mm": 18.1,
+   "details": "- Steel can diameter without the sleeve: about 18.0 to 18.25 mm.\n- Length: 64.7 to 65.0 mm, flat top. The positive cap is raised about 0.3 to 0.8 mm inside the insulating ring.\n- Weight: about 44 to 46 g.\n- The can is the NEGATIVE terminal. Never place a bare can against metal or in a tight printed tube where it can abrade. Always keep or refit the PVC sleeve.",
+   "enclosure_advice": "- Do not design around a bare can; design for the wrapped size. If you must, use a 18.7 mm bore.",
+   "confidence": "high",
+   "sources": [
+    "https://www.cellsplus.co.uk/li-ion-18650-37-v-2000-mah-rechargeable-flat-top-battery---lithium-cell",
+    "https://docs.cirkitdesigner.com/component/cb81f9a1-e3a8-47d9-a3f7-d9e4d70fb1d7/li-ion-battery-18650-2000mah-37v-74wh"
+   ]
+  },
+  {
+   "part": "18650 Li-ion cell 3.7 V 2000 mAh 7.4 Wh",
+   "variant": "with factory PVC wrap (as sold, unprotected, flat top)",
+   "length_mm": 65,
+   "width_mm": 18.4,
+   "height_mm": 18.4,
+   "details": "- Datasheet maximums for 2000 mAh 18650 cells: diameter <= 18.45 mm, height <= 65.3 mm.\n- Typical measured size: 18.2 to 18.4 mm x 64.8 to 65.1 mm.\n- Sleeve thickness: about 0.07 to 0.12 mm per side.\n- For comparison, not your cell: button-top cells are 67 to 68 mm long and protected cells (built-in PCB) are 69 to 70 mm.\n- Weight: about 45 g.",
+   "enclosure_advice": "- Cradle bore: 19.0 mm (18.45 max + about 0.25 per side, plus undersized-hole allowance).\n- Cavity length: 66.0 to 66.5 mm for the cell alone.\n- Hold the cell with 3 to 4 printed ribs or foam pads rather than a full tight tube, so there is room for tolerance and swelling.\n- Keep >= 1 mm clearance to the TP4056, which gets warm.\n- Do not clamp the cell with the snap-fit preload.",
+   "confidence": "high",
+   "sources": [
+    "https://docs.cirkitdesigner.com/component/cb81f9a1-e3a8-47d9-a3f7-d9e4d70fb1d7/li-ion-battery-18650-2000mah-37v-74wh",
+    "https://www.cellsplus.co.uk/li-ion-18650-37-v-2000-mah-rechargeable-flat-top-battery---lithium-cell"
+   ]
+  },
+  {
+   "part": "18650 Li-ion cell 3.7 V 2000 mAh 7.4 Wh",
+   "variant": "wrapped cell with wires soldered/tabbed on both ends",
+   "length_mm": 69,
+   "width_mm": 20.5,
+   "height_mm": 18.5,
+   "details": "- Each end adds about 1 to 2.5 mm: nickel tab 0.15 to 0.2 mm plus a solder blob 0.5 to 1.5 mm plus the wire exit. The total length is therefore 67 to 70 mm.\n- Wires (22 to 26 AWG, 1.0 to 1.6 mm OD) folded back along the side of the cell add about 1.5 to 2.5 mm to one side, so the envelope is about 20 to 21 mm across the wire side and 18.5 mm on the other axis.\n- A wire leaving straight off the end needs 4 to 6 mm of bend space: minimum bend radius is about 3 x wire OD, plus the strain relief.\n- Soldering directly onto cells overheats them. Spot-welded tabs with wires soldered to the tabs are preferred.",
+   "enclosure_advice": "- Cell bay: 19.0 to 19.5 mm bore x 70 to 72 mm length, with a 2.5 x 2.5 mm wire channel running along the side of the bay.\n- End walls: add a 3 to 5 mm chamfered pocket at each end for the solder blob.\n- Pad the positive end with 1 to 2 mm of foam.\n- Route both wires away from the snap-fit seam so the lid cannot pinch them. A wire pinched in the lip-and-groove seam is a real short-circuit risk.",
+   "confidence": "medium",
+   "sources": [
+    "https://docs.cirkitdesigner.com/component/cb81f9a1-e3a8-47d9-a3f7-d9e4d70fb1d7/li-ion-battery-18650-2000mah-37v-74wh"
+   ]
+  },
+  {
+   "part": "TP4056 USB-C charger module with DW01A + FS8205A protection (blue PCB)",
+   "variant": "1 A, USB Type-C; pads B+ B- OUT+ OUT- (+ IN+ IN-)",
+   "length_mm": 29,
+   "width_mm": 17.3,
+   "height_mm": 4.3,
+   "details": "- Vendor outline (AZ-Delivery, GroboTronics): 29 x 17.3 x 4.3 mm, 1.6 to 1.7 g. This includes the USB-C overhang.\n- Bare PCB: about 28.0 x 17.0 mm, but batches vary from 27.5 to 28.5 x 17.0 to 17.5 mm.\n- PCB thickness: 1.0 to 1.2 mm, occasionally 1.6.\n- USB-C receptacle: top-mount, shell about 8.9 to 9.0 mm wide x 3.2 to 3.3 mm tall x about 7.3 mm deep. It overhangs the PCB edge by about 0.5 to 1.2 mm (the 29 vs 28 mm difference suggests about 1 mm).\n- Tallest part is the USB-C shell, 3.2 to 3.3 mm above the PCB top. 4.3 mm overall = PCB + shell.\n- Other top-side parts: TP4056 in ESOP-8 about 1.5 to 1.75 mm; DW01A SOT-23-6 about 1.1 to 1.45 mm; FS8205A TSSOP-8 about 1.2 mm; passives <= 1.25 mm.\n- Bottom side: normally no components, but USB-C shell legs and through-pad solder protrude about 0.5 to 1.0 mm.\n- Typical pad layout (check the silkscreen):\n  - Battery end (far from USB): OUT+ and OUT- at the two corners, with B+ and B- as the inner pads.\n  - USB end: small IN+ and IN- pads either side of the connector.\n  - Plated pad holes about 0.9 to 1.1 mm.\n- LEDs: two 0603/0805 SMD, about 0.6 to 0.8 mm tall. Red = charging (CHRG), blue (sometimes green) = full (STDBY). They sit near the USB end, typically 4 to 9 mm inboard from the USB edge and 3 to 6 mm off the centreline. Position varies by batch, so measure with calipers before fixing light-pipe holes.\n- Electrical: charge 4.2 V, 1 A by default (R_PROG 1.2 k); over-discharge cut-off 2.4 V; 3 A over-current trip.\n- Heat: the TP4056 runs at 60 to 70 C+ when charging at 1 A, which is at PLA's glass transition.",
+   "enclosure_advice": "- Pocket: 28.6 x 17.6 mm (+0.3 per side), with a 1.5 mm recess below the PCB for the solder legs.\n- The module has no mounting holes. Capture it with a slot or two side ribs, and put a solid printed back-stop behind the PCB end opposite the USB. USB-C insertion pushes about 5 to 20 N, which must go into the enclosure, not into the solder pads.\n- Set the receptacle face flush with, or <= 0.5 mm behind, the outer wall surface.\n- USB-C wall opening:\n  - Minimum 9.6 x 3.9 mm (receptacle + 0.3 per side) with 0.5 mm corner radii.\n  - If the wall is thicker than about 1.2 mm, or the connector sits recessed, open the outside to 12.5 to 13 x 7 to 7.5 mm to a depth equal to the recess so plug overmoulds (typically 12 x 6.5 mm, some 13 x 7.5 mm) can seat fully.\n- LED windows: either 1.5 to 2 mm holes above each LED, or a 0.4 to 0.6 mm thin skin in white or natural filament (glows through), or a clear PETG light pipe. Add an opaque divider so red and blue do not mix.\n- Leave 1 to 2 mm of air above the TP4056 IC and add a few vent slots. Use PETG, not PLA, for the bay if charging at 1 A. Alternatively fit R_PROG 2 k (about 580 mA) to reduce heat.",
+   "confidence": "medium",
+   "sources": [
+    "https://www.az-delivery.de/products/tp4056-with-protection-type-c",
+    "https://grobotronics.com/lithium-battery-charger-and-protection-module-1a-usb-c-tp4056.html?sl=en",
+    "https://mischianti.org/tp4056-lipo-battery-charger-high-resolution-pinout-datasheet-and-specs/",
+    "https://ampere-electronics.com/product/tp4056-battery-charger-module-with-protection-type-c-usb/"
+   ]
+  },
+  {
+   "part": "Self-locking (latching) push switch",
+   "variant": "8.5 x 8.5 mm, 6-pin DPDT double row, with round cap",
+   "length_mm": 8.5,
+   "width_mm": 8.5,
+   "height_mm": 14.3,
+   "details": "- Body: 8.5 x 8.5 mm (+/-0.2).\n- Housing height (PCB seat to top of housing): about 8 to 9.5 mm.\n- Total unlatched height to stem top: depends on the stem option, 13 to 17.5 mm. Swiclick PB23E09171 is 8.5 x 8.5 x 14.3 mm; the PB85 listing is 8.5 x 8.5 x 17.5 mm.\n- Full travel: 2.5 +/-0.2 mm. Operating force: 230 +/-70 gf (about 2.3 N).\n- Latched (ON) position: the stem stays about 1.2 to 1.5 mm below its free height.\n- Pins: 6 flat pins in 2 rows of 3. Pitch about 2.0 to 2.54 mm, row spacing about 4.5 to 6 mm, length below the seat about 3.0 to 3.8 mm, cross-section about 0.3 x 0.8 mm.\n- Stem: rectangular or square, about 2.2 to 3.0 mm, sized for push-on caps.\n- Round push-on caps sold for this switch: diameter about 8 to 11.5 mm, height about 4 to 7 mm, adding about 3 to 5 mm to the total height.\n- No drawing-level data was found for pin pitch, row spacing or cap size. Measure your part with calipers.",
+   "enclosure_advice": "- Mount the switch on a PCB or a printed holder with a solid back-stop under the body. Do not hang it on its wires: about 2.3 N plus latch force per press.\n- Cap bore in the wall: cap diameter + 0.4 to 0.6 mm (diametral).\n- Stroke: in the OFF (up) position the cap should stand >= travel + 0.5 mm, i.e. about 3 mm, proud of the wall so it can reach full stroke and latch. In the latched (ON) position it should still stand about 1 to 1.5 mm proud, so it can be pressed again to release.\n- Add a 0.3 to 0.5 mm chamfer on the bore edge.\n- A printed guide sleeve 2 to 3 mm long around the cap prevents wobble.",
+   "confidence": "low",
+   "sources": [
+    "https://www.swiclick.com/product/through-hole-6-pin-8-5mm-locking-push-switch/",
+    "https://www.led-tact-switch.com/showroom/8-5-8-5mm-6-pin-dpdt-mini-push-button-self-locking-switch-8-5x8-5mm.html",
+    "https://www.swiclick.com/latching-push-button-switch/"
+   ]
+  },
+  {
+   "part": "Self-locking (latching) push switch",
+   "variant": "7 x 7 mm, 6-pin DPDT",
+   "length_mm": 7,
+   "width_mm": 7,
+   "height_mm": 13,
+   "details": "- Body: 7 x 7 mm.\n- Housing height: about 7 to 8 mm.\n- Total height without cap: about 11 to 14 mm. The moulded-cap version (Swiclick PB22E07431-0753) is 7 x 7 x 18.35 mm.\n- Full travel: 2.2 +/-0.2 mm. Lock travel: 1.2 +/-0.2 mm, so the stem sits about 1 mm lower when latched.\n- Force: 250 +/-70 gf.\n- Pins: 6 in 2 rows of 3, pitch about 2.0 mm, length about 3 to 3.5 mm.\n- No drawing-level data was found; measure your part.",
+   "enclosure_advice": "Same rules as the 8.5 x 8.5 switch, with a smaller stroke: stand the cap about 2.7 mm proud when OFF.",
+   "confidence": "low",
+   "sources": [
+    "https://www.swiclick.com/product/77mm-self-lock-pushbutton-switch-witch-cap/",
+    "https://www.swiclick.com/product/dpdt-77mm-self-locking-tactile-pushbutton-switch/"
+   ]
+  },
+  {
+   "part": "Self-locking (latching) push switch",
+   "variant": "12 x 12 mm, 6-pin DPDT",
+   "length_mm": 12,
+   "width_mm": 12,
+   "height_mm": 17,
+   "details": "- Body: 12 x 12 mm.\n- Housing height: about 9 to 12 mm.\n- Total height: about 15 to 20 mm without cap.\n- Travel: about 3 to 4 mm. Force: about 250 to 400 gf.\n- Pins: 6 in 2 rows of 3, pitch about 2.5 to 5 mm, length about 3.5 to 4 mm.\n- Caps: about 10 to 13 mm diameter.\n- All values are generic estimates. No datasheet was found this session, so measure before designing.",
+   "enclosure_advice": "Same rules as the 8.5 x 8.5 switch. The higher actuation force makes a printed back-stop mandatory.",
+   "confidence": "low",
+   "sources": [
+    "https://www.swiclick.com/latching-push-button-switch/"
+   ]
+  },
+  {
+   "part": "MAX30102 pulse-oximeter module",
+   "variant": "purple GY-MAX30102 / 'RCWL-0530' style, 7-pin (VIN SCL SDA INT IRD RD GND)",
+   "length_mm": 20,
+   "width_mm": 15,
+   "height_mm": 4.5,
+   "details": "- Board size is unresolved:\n  - Listings (CirkitDesigner, Zbotic) state 14 x 14 mm.\n  - A single-row 7-pin 2.54 mm header needs >= 17.8 mm along its edge, so boards with an in-line 7-pin header are about 18 to 21 x 14 to 16 mm.\n  - Measure yours. The numeric fields above are the conservative envelope.\n- Sensor IC (MAX30102 datasheet): 5.6 x 3.3 x 1.55 mm OESIP-14. It sits roughly centred on the front face, in the half away from the header (+/-1 to 2 mm).\n- Sensor side: max height about 1.55 mm (the IC), with passives about 0.5 to 0.9 mm.\n- Back side: two regulators (1.8 V and 3.3 V, SOT-23, about 1.1 to 1.45 mm) plus the level-select jumper.\n- PCB about 1.0 to 1.6 mm, so the board with its components is about 4 to 4.5 mm thick without the header. The header plastic adds 2.5 mm on whichever side it is soldered.\n- Known electrical quirk: on many purple boards the I2C pull-ups go to 1.8 V. A common fix is to re-jumper or add 3.3 V pull-ups.",
+   "enclosure_advice": "- Solder the header on the BACK (non-sensor) side so the sensor face can sit flush with the enclosure.\n- Best approach is direct skin contact:\n  - Cut an opening in the wall about 1 to 1.5 mm larger than the package, e.g. 7 x 5 mm rectangular or 8 mm round.\n  - Set the sensor glass flush with, to 0.3 mm proud of, the outer surface.\n  - Surround it with a shallow finger dish about 14 to 16 mm wide and 1 to 1.5 mm deep, printed in black or opaque filament to block ambient light.\n- If you need a window (for splash protection):\n  - Use a clear material with >= 90% transmittance at 660 and 880 nm (PMMA/Plexiglas, polycarbonate or glass; EngineerZone cites Plexiglass 7N and AF32 glass), 0.3 to 0.5 mm thick.\n  - Put it in direct contact with the sensor, air gap about 0 and in any case < 0.1 to 0.2 mm.\n  - Ideally add a black optical barrier (gasket or ink) between the LED and photodiode apertures.\n  - Never use printed PLA or PETG as the window: it scatters LED light straight into the photodiode (crosstalk and saturation).\n- Contact pressure must be light. Too hard stops blood flow; too light lets in ambient light and motion noise. Support the board rigidly behind so it does not rock, and optionally put a thin foam layer under the PCB for compliance.\n- The MAX30102's ambient-light cancellation copes with room light, but direct sun or strong IR saturates it, so the finger must fully cover the aperture.",
+   "confidence": "low",
+   "sources": [
+    "https://docs.cirkitdesigner.com/component/3145d4c7-689a-49dd-af9c-f854456c2561/gy-max30102",
+    "https://www.analog.com/media/en/technical-documentation/data-sheets/max30102.pdf",
+    "https://ez.analog.com/optical_sensing/w/documents/21161/what-cover-material-can-i-use-for-the-max30101-max30102-or-max30105",
+    "https://lastminuteengineers.com/max30102-pulse-oximeter-heart-rate-sensor-arduino-tutorial/"
+   ]
+  },
+  {
+   "part": "MAX30102 pulse-oximeter module",
+   "variant": "black MH-ET LIVE (7-pin VIN SDA SCL INT IRD RD GND)",
+   "length_mm": 20,
+   "width_mm": 15,
+   "height_mm": 4.5,
+   "details": "- MH-ET LIVE is a MAXREFDES117-derived design. The 'tiny 12.7 x 12.7 mm (0.5 x 0.5 in)' figure in RCWL-0531 listings is the Maxim reference board size.\n- The MH-ET LIVE board carries a 7-pin 2.54 mm row, so it is likely about 18 to 21 x 13 to 16 mm. Measure it.\n- Sensor: the same 5.6 x 3.3 x 1.55 mm IC, roughly centred. It is the tallest part on the sensor side (1.55 mm).\n- Regulators and level shifters are on the back side.",
+   "enclosure_advice": "Same as the purple board: header on the back, direct skin contact, flush aperture, dark opaque surround, no printed window.",
+   "confidence": "low",
+   "sources": [
+    "https://github.com/MHEtLive/MH-ET-LIVE-max30102",
+    "http://www.haitronic.cn/index.php?route=product%2Fproduct&product_id=1923",
+    "https://www.analog.com/media/en/technical-documentation/data-sheets/max30102.pdf"
+   ]
+  },
+  {
+   "part": "MAX30102 pulse-oximeter module",
+   "variant": "black 4-pin (VIN SDA SCL GND) mini board",
+   "length_mm": 14,
+   "width_mm": 14,
+   "height_mm": 4,
+   "details": "- A 4-pin 2.54 mm row spans 7.6 mm (10.2 mm with margins), so these boards are typically 12.7 to 16 mm square, or round about 13 to 16 mm diameter. No INT pin.\n- Sensor: the same 5.6 x 3.3 x 1.55 mm IC, usually centred. The regulator is on the back.\n- Board size is not verified; measure your unit.",
+   "enclosure_advice": "Same as the other MAX30102 boards. Because the board is smaller, add a printed locating frame (+0.2 mm per side) so the sensor stays centred under the finger aperture.",
+   "confidence": "low",
+   "sources": [
+    "https://www.analog.com/media/en/technical-documentation/data-sheets/max30102.pdf"
+   ]
+  },
+  {
+   "part": "INMP441 I2S MEMS microphone module",
+   "variant": "common 6-pin breakout (L/R WS SCK | SD VDD GND)",
+   "length_mm": 14,
+   "width_mm": 14,
+   "height_mm": 3,
+   "details": "- PCB: 14 x 14 mm (TinyTronics). It is usually a round board about 14 mm in diameter. Thickness about 1.0 to 1.6 mm.\n- Pins: 6, three on each of two opposite sides, 2.54 mm pitch.\n- Mic: the INMP441 is a BOTTOM-PORT MEMS in a 4.72 x 3.76 x 1.0 mm package. It sits on one face with its port over a plated through-hole in the PCB; the datasheet recommends 0.5 to 1.0 mm diameter.\n- So the sound enters through the small hole on the OPPOSITE face from the mic chip, roughly at the board centre.\n- Height without header is about 2.6 to 3 mm (PCB + 1.0 mm mic + passives).",
+   "enclosure_advice": "- Mounting:\n  - Put the hole face against the inside of the enclosure wall, aligned within +/-0.5 mm of an enclosure hole of 1.0 to 1.5 mm (>= the PCB port; up to 2 mm is fine).\n  - Counterbore from the inside so the wall at the mic is only 1.0 to 1.2 mm. The acoustic path should be <= about 2 mm long; a long narrow tube forms a Helmholtz resonance and a high-frequency peak.\n- Sealing:\n  - Fit an annular gasket between PCB and wall: adhesive foam, silicone, or a printed TPU ring, ID 2 to 3 mm, OD 6 to 8 mm, 0.5 to 1 mm thick, compressed 20 to 30%.\n  - The gasket stops the mic hearing the enclosure's internal cavity and buzzer, and stops sound leaking around the PCB.\n  - Hold the module against the gasket with ribs or the header, not with glue near the port.\n- Optional: a stick-on acoustic mesh or membrane over the inner end of the hole for dust.\n- Keep >= 20 to 30 mm away from the buzzer, in a separate sealed chamber.\n- Never blow air into the port, wash it, or let glue or conformal coat get into it.",
+   "confidence": "medium",
+   "sources": [
+    "https://www.tinytronics.nl/en/sensors/sound/inmp441-mems-microphone-i2s",
+    "https://components101.com/modules/inmp441-mems-omnidirectional-microphone",
+    "https://www.farnell.com/datasheets/1824785.pdf"
+   ]
+  },
+  {
+   "part": "12 mm buzzer",
+   "variant": "ACTIVE 12 x 9.5 mm (TMB12A05 / 1205 type, 3.3 to 5 V)",
+   "length_mm": 12,
+   "width_mm": 12,
+   "height_mm": 9.5,
+   "details": "- Body: 12.0 mm diameter (+/-0.2 to 0.3) x 9.5 mm high (+/-0.3), excluding pins.\n- Pin pitch: 7.6 mm standard (KiCad 'Buzzer_12x9.5RM7.6', TMB12A05 datasheet). Some clones use 6.5 mm.\n- Pins: about 0.6 to 0.7 mm diameter, about 6 to 10 mm long. The + pin is longer and '+' is marked on top.\n- Sound hole: a single hole about 2 mm diameter at the centre of the top face. It often comes covered by a white 'remove seal after washing' sticker; peel it off.\n- Output >= 85 dB at 10 cm. Internal oscillator, about 2.3 to 2.7 kHz.",
+   "enclosure_advice": "- Pocket: 12.4 mm bore (+0.2 per side), a friction fit or 3 crush ribs, depth to suit.\n- Face the top hole at the wall, 0 to 1 mm from it.\n- Wall openings: either one 2.5 to 3 mm hole on axis, or a cluster of 5 to 7 holes of 1.5 to 2 mm diameter inside an 8 mm circle. Keep the wall there at 1 to 1.5 mm.\n- Do not seal the buzzer's own hole with tape or glue.\n- Keep it far from the INMP441, with a solid wall between them.",
+   "confidence": "high",
+   "sources": [
+    "https://kicad.github.io/footprints/Buzzer_Beeper.html",
+    "https://www.lcsc.com/product-detail/Buzzers_Jiangsu-Huaneng-Elec-TMB12A05_C96093.html",
+    "https://ifuturetech.org/product/3v-active-electromagnetic-buzzer/",
+    "https://artofcircuits.com/product/12x9-5mm-3-3-5v-continuous-tone-active-buzzer"
+   ]
+  },
+  {
+   "part": "12 mm buzzer",
+   "variant": "PASSIVE 12 x 8.5 mm (12085 magnetic transducer, 16 or 42 ohm)",
+   "length_mm": 12,
+   "width_mm": 12,
+   "height_mm": 8.5,
+   "details": "- Body: 12 mm diameter x 8.5 mm high, excluding pins.\n- Pin pitch: 6.5 to 7.6 mm (listings give 7.5 or 7.6), so check your batch. Pins are about 0.6 mm diameter, about 6 to 9 mm long.\n- Sound hole: a single central top hole about 2 mm diameter, sometimes with a seal sticker.\n- Resonance: 2048 Hz +/-200. Drive with PWM at about 2 to 4 kHz.",
+   "enclosure_advice": "- Same as the active buzzer, with a 12.4 mm pocket.\n- If you want one footprint for both buzzers, make the pocket 10 mm deep with a 1 mm spacer option, and make the pin holes a 6.5 to 7.6 mm slot.",
+   "confidence": "medium",
+   "sources": [
+    "https://us.amazon.com/Passive-Buzzer-Resistance-Electronic-Continuous/dp/B0GMPRN36L",
+    "https://einstronic.com/product/magnetic-passive-buzzer-12085/",
+    "https://ifuturetech.org/product/12-x-8-5mm-5v-passive-buzzer/",
+    "https://fluxworkshop.com/products/ahaa100004-buzzer-passive-12x8-5mm-black"
+   ]
+  }
+ ],
+ "printing_guidelines": "Bambu Lab P1S, 0.4 mm nozzle, 0.20 mm layers (0.12 to 0.16 mm for fine text or snap parts). Line width about 0.42 mm.\n\nGENERAL ACCURACY\n- Expect +/-0.1 to 0.2 mm on small XY features and about +/-0.3% on lengths over 100 mm.\n- Outer contours print about 0.05 to 0.1 mm oversize; holes print 0.1 to 0.2 mm undersize.\n- Print a 3-slot tolerance coupon in the actual filament before the full enclosure.\n- In Bambu Studio, optionally set 'X-Y hole compensation' to +0.05 to 0.1 mm.\n- Elephant foot: keep compensation at about 0.15 mm, and add 0.3 to 0.5 mm 45 deg chamfers on bottom edges.\n\nCLEARANCES (modelled gap per side; diametral in brackets)\n- Press or interference fit (pins, locating bosses): 0 to 0.05 (0 to 0.1).\n- Snug or push fit (stays in by friction; component pockets for small modules): 0.1 to 0.15 (0.2 to 0.3).\n- Sliding fit (lids, sliders, button caps): 0.2 to 0.25 (0.4 to 0.5).\n- Free or loose fit: 0.3 to 0.4 (0.6 to 0.8).\n- Bare PCBs (burred edges and mouse bites): +0.25 to 0.3 per side.\n- Battery bay: +0.3 per side.\n- PETG: add 0.05 mm on top of each value (it prints slightly fatter and strings). PLA holds tighter fits.\n- Small round holes (< 5 mm) print about 0.1 to 0.2 mm small: model +0.2 mm or drill or ream them.\n- Heat-set inserts: M2 in a 3.2 mm hole x 4 mm deep; M2.5 in a 3.6 to 4.0 mm hole. Self-tapping M2 into a 1.7 to 1.8 mm pilot.\n\nLIP-AND-GROOVE SEAM\n- Lip: >= 1.2 mm thick (3 lines), 2 to 3 mm tall, with a 0.3 to 0.5 mm 45 deg lead-in chamfer on the tip.\n- Groove: width = lip + 0.15 to 0.2 per side (PLA) or 0.2 to 0.25 per side (PETG). Depth = lip height + 0.2 to 0.3 mm.\n- Keep outer walls >= 1.6 mm at the seam so the groove leaves >= 0.8 mm on each side.\n- Add a deliberate 0.3 to 0.5 mm shadow-line reveal or chamfer on the outer seam to hide small mismatch.\n- Put the Z-seam at the back or a corner.\n- Friction alone can hold a lid at 0.1 per side in PLA, but combine it with snaps for consistency.\n\nCANTILEVER SNAP-FITS\n- Strain formula for a constant-section beam: e = 1.5 x h x y / L^2 (h = thickness in the bend direction, y = undercut or deflection, L = free length). Length needed: L = sqrt(1.5 x h x y / e_allow).\n- Allowable strain when the beam lies in the layer plane (printed flat, bending along the extrusion direction):\n  - PLA: 1.5 to 2% (literature 2 to 3%; use the lower value for repeated use).\n  - PETG: 3 to 4%.\n- When the cantilever is printed VERTICALLY (beam axis along Z, so bending stress crosses layer lines), elongation roughly halves and strength drops 20 to 30%. Design to:\n  - PLA <= 0.8 to 1.0%, and treat it as one-shot or low-cycle only.\n  - PETG <= 1.5 to 2%.\n- Worked example, vertical arm, h = 1.2 mm, undercut y = 0.6 mm: PLA needs L >= 10.4 mm; PETG needs L >= 7.4 mm. Rules of thumb: L/h >= 8 to 10 for PLA and 5 to 8 for PETG.\n- Rules for vertical arms:\n  - Make the arm thickness a multiple of the line width (0.84, 1.26 or 1.68 mm) so it is solid perimeters with no infill gaps.\n  - Arm width >= 4 to 6 mm.\n  - Root fillet radius >= 0.5 x h (>= 0.6 to 1 mm). This matters most for vertical prints, where the root is a layer-line notch. Where possible add a gusset or thicken the root.\n  - Tapering the arm to 50 to 60% thickness at the tip cuts root strain by about 35 to 40% for the same deflection.\n  - Undercut: 0.4 to 0.6 mm (PLA) or 0.6 to 0.9 mm (PETG).\n  - Insertion angle 25 to 35 deg.\n  - Retention face: 80 to 90 deg for 'permanent', 45 to 60 deg for a lid that you want to pop open by hand. On a vertical print, put the catch face on the upward-facing side of the hook, or chamfer the downward face at 45 deg so no support is needed.\n  - Design snaps to be unloaded (zero deflection) when closed. PLA creeps under constant preload and loses grip within days to weeks, and softens at 55 to 60 C (PETG at 70 to 80 C).\n- Better alternatives to vertical tongues:\n  - Cut the flexure into the vertical wall as a HORIZONTAL beam (slots above and below, fixed at one end). The beam axis then lies in the layer plane and bending runs along the extrusions, which is about 2x more robust.\n  - Or put the snap arms on the lid printed flat.\n- Settings for snap parts: 3 to 4 walls, 100% infill locally (modifier), and hotter printing for layer adhesion (PLA 220 to 225 C; PETG 245 to 255 C). Reduce fan for PETG (30 to 50%). Slower outer walls.\n- PETG is the better choice for snaps that will be opened repeatedly (battery or charging access). PLA is fine for close-once lids.\n\nDEBOSSED TEXT ON VERTICAL WALLS\n- Cap height: >= 4 mm for legible, 5 to 6 mm for crisp.\n- Stroke width: >= 0.8 mm (2 lines). Use a bold sans font such as Arial/Roboto Bold or DIN Bold.\n- Depth: 0.4 to 0.6 mm. Keep >= 0.8 to 1.0 mm of wall behind the text, so a 1.6 mm wall takes at most 0.6 mm deep.\n- The top edge of each engraved stroke is a short bridge or overhang. At <= 1.5 mm stroke height it prints clean without support.\n- Letter spacing >= 0.6 mm.\n- Keep the Arachne wall generator (the Bambu default) for fine text.\n- Top and bottom faces: use a depth that is a multiple of the layer height (0.4 or 0.6 mm). Optionally iron the top face.\n- Embossed alternative: 0.4 to 0.6 mm raised, stroke >= 0.8 mm.\n\nMINIMUM WALLS AND FEATURES\n- Absolute minimum wall 0.8 to 0.9 mm (2 lines).\n- Enclosure walls 1.6 to 2.0 mm (4 lines), and 2.0 to 2.4 mm around the battery and USB-C.\n- Floors and lids >= 1.2 to 1.6 mm (6 to 8 layers at 0.2 mm).\n- Ribs and bosses >= 1.2 mm.\n- Pins or posts >= 2 mm diameter (>= 3 mm if they take load).\n- Locally thinned walls (mic, camera, LED windows) down to 0.8 to 1.2 mm are OK.\n- 0.4 to 0.6 mm light-transmitting skins only in white or natural filament.\n- Minimum hole about 1.0 mm (mic port); drill it out if critical.\n\nSUPPORT-FREE DESIGN\n- Overhangs: <= 45 deg from vertical is safe. The P1S manages 50 to 55 deg in PLA with full cooling; keep PETG <= 45 deg.\n- Bridges: <= 10 to 15 mm in PLA (the P1S can do 20 to 30 mm with some sag); <= 8 to 10 mm in PETG.\n- USB-C cutouts (about 9.6 to 13 mm wide) bridge fine.\n- Horizontal holes in walls larger than about 5 to 6 mm: use a teardrop or flat-top (diamond) profile. The camera lens hole and a 13 mm switch-cap bore should be teardrop or 45 deg roofed if they are in a vertical wall, or put them in a face that prints flat.\n- On downward-facing edges, use 45 deg chamfers instead of fillets.\n- PCB ledges and standoffs on walls: use 45 deg gussets or corbels.\n- Snap hooks: 45 deg underside.\n- Orientation: box body open side up, lid printed inside-face up.\n- Put the finger or sensor aperture, camera window and buzzer grille on faces that print flat (top or bottom) where possible. Vertical-wall apertures need roofed shapes.\n- Buttons, sensor and camera surrounds: black or dark opaque filament to avoid light bleed.\n\nMATERIAL CHOICE\n- PETG for the battery and TP4056 bay and for repeatedly flexed snaps. It has better heat resistance (the TP4056 reaches 60 to 70 C+ at 1 A) and ductility.\n- PLA for stiff, accurate parts and fine text.\n- Bed: textured PEI suits both. Use a glue stick or release agent for PETG on smooth PEI."
+}
