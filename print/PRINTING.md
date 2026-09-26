@@ -4,13 +4,14 @@
 
 | File in `print/bambu/` | What's on the plate | Time | Filament |
 |---|---|---|---|
-| `FitTest_P1S.gcode.3mf` | FitTest_Front + FitTest_Back. **Print this first.** | about 40 min | 15.8 g |
-| `RiparWallet_P1S.gcode.3mf` | Front_Shell + Back_Shell + 3 × Sign_Pin | about 1 h 50 min | 53.8 g |
+| `RiparWallet_ALL_P1S.gcode.3mf` | **Everything on one plate**: Front_Shell + Back_Shell (back row), FitTest_Front + FitTest_Back + 3 × Sign_Pin (front row) | about 2 h 23 min | 69.5 g |
+
+The two fit-test coupons come off the same plate. Try the board, the USB-C cables and the lid click on them before you assemble the real shells.
 
 - **Slicer settings baked in:** Bambu Lab P1S, 0.4 nozzle, **Bambu PLA Basic**, 0.16 mm layers, 3 walls, 15 % gyroid, **Textured PEI plate**, no supports, auto brim.
 - **To print:** open the file in Bambu Studio. It opens already sliced. Click **Print plate**, pick your P1S, and check the plate type. You can also copy the file to the P1S's microSD card and start it from the printer screen.
 - **Different filament or plate** (PETG, PLA Matte, Cool Plate): open the file, change the filament or plate in Bambu Studio, and press **Slice plate** before printing.
-- **Plate previews:** `*_plate.png` shows the layout: shells side by side, pins at the front, clear of the P1S's excluded front-left corner.
+- **Plate preview:** `RiparWallet_ALL_P1S_plate.png` shows the layout. Every part is spaced at least 20 mm from the next and clear of the P1S's excluded front-left corner.
 
 Everything is in `print/stl/` and is **already oriented for printing**: the flat face sits on the bed, so import and slice with no rotation needed. `print/step/` has the same parts as STEP files (Bambu Studio imports those too) plus the full assembly.
 

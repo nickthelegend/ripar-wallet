@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ripar Wallet v1 - Build Guide</title>
+<style>
+@page { size: A4; margin: 14mm 14mm 16mm 14mm; }
+:root { --ink:#1d1d1f; --muted:#5f5e5a; --accent:#3C3489; --accent2:#534AB7; --tint:#EEEDFE; --line:#d9d7cf; --warn:#FAEEDA; --warnline:#BA7517; --ok:#E1F5EE; --okline:#0F6E56; }
+* { box-sizing: border-box; }
+body { font-family: "Segoe UI", Arial, sans-serif; font-size: 10.2pt; line-height: 1.45; color: var(--ink); margin: 0; }
+h1 { font-size: 20pt; color: var(--accent); margin: 0 0 4mm; font-weight: 600; letter-spacing: .2px; }
+h2 { font-size: 13pt; color: var(--accent); margin: 6mm 0 2mm; font-weight: 600; }
+h3 { font-size: 11pt; margin: 4mm 0 1.5mm; font-weight: 600; }
+p { margin: 0 0 2.2mm; }
+ul, ol { margin: 0 0 2.5mm 5mm; padding-left: 4mm; }
+li { margin: 0 0 1mm; }
+code, .mono { font-family: Consolas, "Courier New", monospace; font-size: 9.2pt; background: #f3f2ee; padding: 0 3px; border-radius: 3px; }
+table { border-collapse: collapse; width: 100%; margin: 1.5mm 0 3.5mm; font-size: 9.4pt; page-break-inside: avoid; }
+th, td { border: 1px solid var(--line); padding: 1.6mm 2.2mm; text-align: left; vertical-align: top; }
+th { background: var(--tint); color: var(--accent); font-weight: 600; }
+.chapter { page-break-before: always; }
+.kicker { color: var(--accent2); font-size: 9pt; font-weight: 600; letter-spacing: 1.2px; text-transform: uppercase; margin-bottom: 1mm; }
+.callout { border-left: 3px solid var(--accent2); background: var(--tint); padding: 2.5mm 3.5mm; margin: 2mm 0 3.5mm; page-break-inside: avoid; }
+.callout.warn { border-color: var(--warnline); background: var(--warn); }
+.callout.ok { border-color: var(--okline); background: var(--ok); }
+.callout b { color: var(--ink); }
+figure { margin: 2mm 0 4mm; text-align: center; page-break-inside: avoid; }
+figure img { max-width: 100%; border-radius: 3px; }
+figcaption { font-size: 8.6pt; color: var(--muted); margin-top: 1mm; }
+.two { display: flex; gap: 4mm; }
+.keep { break-inside: avoid; page-break-inside: avoid; }
+h2, h3 { break-after: avoid; page-break-after: avoid; }
+.two > * { flex: 1; }
+.cover { height: 265mm; display: flex; flex-direction: column; }
+.cover .brand { font-size: 44pt; font-weight: 700; color: var(--accent); letter-spacing: 6px; margin-top: 10mm; }
+.cover .sub { font-size: 14pt; color: var(--muted); margin: 2mm 0 8mm; }
+.cover .meta { margin-top: auto; font-size: 9.5pt; color: var(--muted); border-top: 1px solid var(--line); padding-top: 3mm; }
+.toc li { margin-bottom: 1.4mm; }
+.small { font-size: 8.8pt; color: var(--muted); }
+.step { counter-increment: step; }
+.pill { display: inline-block; padding: 0 2mm; border-radius: 8px; background: var(--tint); color: var(--accent); font-size: 8.6pt; font-weight: 600; }
+.red { color: #A32D2D; font-weight: 600; }
+.grey { color: #5F5E5A; font-weight: 600; }
+.teal { color: #0F6E56; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<!-- ============================== COVER ============================== -->
+<section class="cover">
+  <div class="brand">RIPAR WALLET</div>
+  <div class="sub">v1 build guide &middot; an air-gapped, pulse-verified hardware signer</div>
+  <div class="two">
+    <figure><img src="../model/renders/hero_front.png"><figcaption>Screen side: screen, thumb pulse pad, SIGN pin and USB-C ports</figcaption></figure>
+    <figure><img src="../model/renders/hero_back.png"><figcaption>Lens side: the camera reads QR codes through the lens bezel</figcaption></figure>
+  </div>
+  <h2 style="margin-top:4mm">Contents</h2>
+  <ol class="toc">
+    <li>What it is, and the parts you need</li>
+    <li>Printing it on the Bambu Lab P1S</li>
+    <li>Wiring every module</li>
+    <li>Putting it together</li>
+    <li>Testing and charging</li>
+    <li>Firmware</li>
+    <li>Hackathon quick sheet (Monad Metropolis)</li>
+    <li>Where everything lives in the repo</li>
+  </ol>
+  <div class="meta">Version 1 &middot; 26 September 2026 &middot; github.com/nickthelegend/ripar-wallet<br>
+  The CAD was built in SolidWorks 2026 by a parametric Python pipeline (<code>cad/</code>). The firmware is for the Waveshare ESP32-S3-LCD-2.</div>
+</section>
+
+<!-- ============================== 1. OVERVIEW ============================== -->
+<section class="chapter">
+  <div class="kicker">Chapter 1</div>
+  <h1>What it is, and the parts you need</h1>
+  <p>Ripar is a pocket-camera-shaped signer that <b>never touches the internet</b>. The keys stay inside it and it has no Wi-Fi or Bluetooth. Everything goes in and out as QR codes:</p>
+  <ol>
+    <li>The companion app shows a request as a QR code (animated if it's long).</li>
+    <li>Ripar's camera scans it, and Ripar decodes it <b>itself</b> to show what you are signing: the amount, the payee, the contract and the risk notes.</li>
+    <li>You rest your thumb on the pulse pad. The MAX30102 has to see a <b>live heartbeat</b>.</li>
+    <li>You press <b>SIGN</b>, the pin on the left end.</li>
+    <li>Ripar shows the signature as a QR code. The companion scans it and sends it to Monad.</li>
+  </ol>
+
+  <div class="keep"><h2>Parts list</h2>
+  <table>
+    <tr><th>Part</th><th>Job</th><th>Notes</th></tr>
+    <tr><td>Waveshare ESP32-S3-LCD-2</td><td>Brain + 2-inch screen</td><td>ESP32-S3R8, 8 MB PSRAM, 16 MB flash, 240&times;320 display (used landscape)</td></tr>
+    <tr><td>OV5640 camera</td><td>QR scanner</td><td>Already plugged into the board's camera connector</td></tr>
+    <tr><td>MAX30102</td><td>Pulse sensor under the thumb</td><td>I2C, 4 wires</td></tr>
+    <tr><td>18650 Li-ion cell, 3.7 V 2000 mAh</td><td>Battery</td><td>Single cell only; up to 19.3 mm thick with tape and wires</td></tr>
+    <tr><td>TP4056 USB-C charger (with protection)</td><td>Charge-only port</td><td>Pads B+ B&minus; OUT+ OUT&minus;</td></tr>
+    <tr><td>12&times;12 mm latching push switch + blue cap</td><td>Power ON/OFF</td><td>Goes in from outside, through the square hole on top</td></tr>
+    <tr><td>12 mm buzzer</td><td>Beeps (frame read, pulse OK, signed)</td><td>GPIO18</td></tr>
+    <tr><td>INMP441 microphone</td><td>Later (camera version)</td><td>Mounted in the case but not wired for the wallet</td></tr>
+    <tr><td>Printed parts</td><td>Case</td><td>Front shell, back shell, 3&times; SIGN pin, 2 fit-test coupons (all on one plate)</td></tr>
+    <tr><td>Consumables</td><td>&nbsp;</td><td>Female-to-female jumper wires, solder, heat-shrink or electrical tape</td></tr>
+  </table></div>
+
+  <div class="keep"><h2>The enclosure at a glance</h2>
+  <table>
+    <tr><th>Item</th><th>Value</th></tr>
+    <tr><td>Size</td><td>100 &times; 62 &times; 32 mm, landscape and camera-shaped</td></tr>
+    <tr><td>Closing</td><td>No screws. A 1.26 mm lip on the front shell clicks into a groove in the back shell (0.25 mm snap bead). A fingernail notch on the bottom seam opens it.</td></tr>
+    <tr><td>Board mounting</td><td>Screen glass against the window. The top and left walls plus two fences locate the board, and four flat pegs press on its M2 nuts when you close the case.</td></tr>
+    <tr><td>Cradles</td><td>18650 saddles, TP4056 cradle, switch cradle, pulse-sensor pocket (0.7 mm skin, 10&times;8 mm thumb window), mic rails, buzzer cradle</td></tr>
+    <tr><td>Camera</td><td>33&deg; lens hood; even the full 68&deg; field of view isn't clipped</td></tr>
+    <tr><td>Lettering</td><td>&ldquo;RIPAR WALLET&rdquo; on the top and bottom, &ldquo;RIPAR&rdquo; on the lens face</td></tr>
+    <tr><td>Checks</td><td>SolidWorks interference detection found 0 unexpected collisions. All STLs are watertight, and three independent design reviews were applied.</td></tr>
+  </table></div>
+</section>
+
+<!-- ============================== 2. PRINT ============================== -->
+<section class="chapter">
+  <div class="kicker">Chapter 2</div>
+  <h1>Printing it on the Bambu Lab P1S</h1>
+  <div class="callout ok"><b>The file is ready:</b> <code>print/bambu/RiparWallet_ALL_P1S.gcode.3mf</code>. It has every part on one plate and is already sliced: <b>about 2 h 23 min, 69.5 g of PLA</b>. Open it in Bambu Studio and press <b>Print plate</b>, or copy it to the printer's microSD card.</div>
+  <div class="two">
+    <figure><img src="../print/bambu/RiparWallet_ALL_P1S_plate.png" style="max-height:62mm"><figcaption>Plate layout from above: shells at the back, fit-test coupons and 3 SIGN pins at the front</figcaption></figure>
+    <figure><img src="../print/bambu/RiparWallet_ALL_P1S_preview.png" style="max-height:62mm"><figcaption>Bambu Studio's plate preview</figcaption></figure>
+  </div>
+  <div class="keep"><h2>Settings baked into the file</h2>
+  <table>
+    <tr><th>Setting</th><th>Value</th><th>Why</th></tr>
+    <tr><td>Printer / nozzle</td><td>Bambu Lab P1S, 0.4 mm</td><td>&nbsp;</td></tr>
+    <tr><td>Filament</td><td>Bambu PLA Basic (PETG also fits)</td><td>Use <b>black or dark</b> for both shells. A dark case hides light leaks around the pulse sensor, and a light-coloured lens hood flares the camera.</td></tr>
+    <tr><td>Layer height</td><td>0.16 mm</td><td>Crisp lettering and an accurate snap bead</td></tr>
+    <tr><td>Walls / infill</td><td>3 walls, 15 % gyroid</td><td>Stiff walls for the snap-fit</td></tr>
+    <tr><td>Plate</td><td>Textured PEI</td><td>Change it in Bambu Studio and re-slice if you use another plate</td></tr>
+    <tr><td>Supports</td><td>Off</td><td>Every part was designed to print without them</td></tr>
+    <tr><td>Brim</td><td>Auto</td><td>Only the tiny SIGN pins get one</td></tr>
+    <tr><td>Orientation</td><td>Front shell screen-face down, back shell lens-face down</td><td>Already set in the file</td></tr>
+  </table></div>
+  <h2>The two fit-test coupons</h2>
+  <p>These are the left 26 mm of each shell: the end with the USB-C ports, SIGN pin, board corner and snap lip. They let you check the fit with little plastic.</p>
+  <ul>
+    <li><b>Printing everything in one go?</b> Delete the two coupons in Bambu Studio and press <b>Slice plate</b>. That saves about 30 min and 16 g.</li>
+    <li><b>Want to be safe?</b> Print only the coupons first (about 40 min). Check that the board drops in, a USB-C cable clicks home, the SIGN pin clicks the BOOT key and the two halves snap. Then print the shells.</li>
+  </ul>
+  <div class="keep"><h2>Measure your parts before closing the case</h2>
+  <table>
+    <tr><th>Part</th><th>Designed for</th><th>Setting in <code>cad/design.py</code></th></tr>
+    <tr><td>Big latching switch</td><td>12&times;12 mm body, housing &le; 12 mm tall, cap &le; &Oslash;12 mm</td><td><code>SW</code>, <code>SW_CRADLE_CLR</code></td></tr>
+    <tr><td>MAX30102 board</td><td>Up to 20.3 &times; 15.3 mm, header soldered on the back</td><td><code>MAX</code></td></tr>
+    <tr><td>18650</td><td>Up to 19.3 mm thick with tape, &le; 69.5 mm long with tabs</td><td><code>BAT_D</code>, <code>BAT_L</code></td></tr>
+    <tr><td>TP4056</td><td>28 &times; 17.3 mm, 1.0&ndash;1.6 mm PCB</td><td><code>TP</code></td></tr>
+    <tr><td>USB-C cables</td><td>Plug overmold &le; about 12.6 &times; 6.8 mm</td><td><code>USB_RECESS</code></td></tr>
+  </table></div>
+  <div class="keep"><h2>If something is off</h2>
+  <table>
+    <tr><th>Symptom</th><th>Fix in <code>cad/design.py</code>, then run <code>python cad/make_all.py</code></th></tr>
+    <tr><td>Lid won't stay closed</td><td><code>BEAD</code> +0.1</td></tr>
+    <tr><td>Lid too hard to close</td><td><code>BEAD</code> &minus;0.1 or <code>LIP_CLR</code> +0.05</td></tr>
+    <tr><td>Seam stays open by a hair with the board fitted</td><td><code>PEG_GAP</code> 0.1 &rarr; 0.2</td></tr>
+    <tr><td>Board loose in the window</td><td><code>FENCE_CLR</code> 0.2 &rarr; 0.1</td></tr>
+    <tr><td>USB-C cable doesn't seat</td><td><code>USB_RECESS</code> depth 2.0 &rarr; 2.2</td></tr>
+    <tr><td>Switch tight or rubbing</td><td><code>SW_CRADLE_CLR</code> +0.1</td></tr>
+  </table></div>
+  <p class="small">The rebuild takes about 15&ndash;20 min. It regenerates the SolidWorks parts, runs the interference check and re-slices for the P1S automatically.</p>
+</section>
+
+<!-- ============================== 3. WIRING ============================== -->
+<section class="chapter">
+  <div class="kicker">Chapter 3</div>
+  <h1>Wiring every module</h1>
+  <p>You need only <b>4 wires for the pulse sensor, 2 for the buzzer, and a short power chain</b>. The camera is already plugged in. The SIGN key needs no wire, because the printed pin presses the board's BOOT button.</p>
+  <figure>
+  <svg width="100%" viewBox="0 0 680 560" xmlns="http://www.w3.org/2000/svg" style="max-height:132mm">
+    <rect x="430" y="40" width="210" height="470" rx="12" fill="none" stroke="#888780" stroke-width="1.5"/>
+    <text x="535" y="66" text-anchor="middle" font-size="14" font-weight="600" fill="#1d1d1f" font-family="Segoe UI, Arial">ESP32-S3 board</text>
+    <text x="535" y="84" text-anchor="middle" font-size="12" fill="#5f5e5a" font-family="Segoe UI, Arial">back side, pins facing you</text>
+    <g font-family="Segoe UI, Arial" font-size="13" fill="#444441" text-anchor="middle">
+      <rect x="450" y="110" width="170" height="28" rx="4" fill="#F1EFE8" stroke="#B4B2A9"/><text x="535" y="129">3V3 (P2 pin 1)</text>
+      <rect x="450" y="150" width="170" height="28" rx="4" fill="#F1EFE8" stroke="#B4B2A9"/><text x="535" y="169">G (P2 pin 2)</text>
+      <rect x="450" y="190" width="170" height="28" rx="4" fill="#F1EFE8" stroke="#B4B2A9"/><text x="535" y="209">47 (P2 pin 5)</text>
+      <rect x="450" y="230" width="170" height="28" rx="4" fill="#F1EFE8" stroke="#B4B2A9"/><text x="535" y="249">48 (P2 pin 6)</text>
+      <rect x="450" y="290" width="170" height="28" rx="4" fill="#F1EFE8" stroke="#B4B2A9"/><text x="535" y="309">18 (P1 pin 6)</text>
+      <rect x="450" y="330" width="170" height="28" rx="4" fill="#F1EFE8" stroke="#B4B2A9"/><text x="535" y="349">G (P1 pin 13)</text>
+      <rect x="450" y="420" width="170" height="28" rx="4" fill="#F1EFE8" stroke="#B4B2A9"/><text x="535" y="439">BAT plug + (red)</text>
+      <rect x="450" y="460" width="170" height="28" rx="4" fill="#F1EFE8" stroke="#B4B2A9"/><text x="535" y="479">BAT plug &#8722; (black)</text>
+    </g>
+    <g font-family="Segoe UI, Arial" fill="#3C3489">
+      <rect x="40" y="100" width="200" height="164" rx="12" fill="#EEEDFE" stroke="#534AB7"/>
+      <text x="56" y="130" font-size="14" font-weight="600">MAX30102</text><text x="56" y="148" font-size="12" fill="#534AB7">pulse sensor</text>
+      <text x="228" y="129" font-size="13" text-anchor="end">VIN</text><text x="228" y="169" font-size="13" text-anchor="end">GND</text>
+      <text x="228" y="209" font-size="13" text-anchor="end">SCL</text><text x="228" y="249" font-size="13" text-anchor="end">SDA</text>
+      <rect x="40" y="284" width="200" height="80" rx="12" fill="#EEEDFE" stroke="#534AB7"/>
+      <text x="56" y="312" font-size="14" font-weight="600">Buzzer</text><text x="56" y="330" font-size="12" fill="#534AB7">long leg = +</text>
+      <text x="228" y="309" font-size="13" text-anchor="end">+</text><text x="228" y="349" font-size="13" text-anchor="end">&#8722;</text>
+      <rect x="40" y="400" width="90" height="88" rx="12" fill="#EEEDFE" stroke="#534AB7"/>
+      <text x="85" y="436" font-size="14" font-weight="600" text-anchor="middle">18650</text><text x="85" y="454" font-size="12" fill="#534AB7" text-anchor="middle">3.7 V cell</text>
+      <rect x="160" y="400" width="110" height="88" rx="12" fill="#EEEDFE" stroke="#534AB7"/>
+      <text x="215" y="436" font-size="14" font-weight="600" text-anchor="middle">TP4056</text><text x="215" y="454" font-size="12" fill="#534AB7" text-anchor="middle">charger</text>
+      <rect x="296" y="408" width="108" height="34" rx="4" fill="#EEEDFE" stroke="#534AB7"/>
+      <text x="350" y="429" font-size="12" text-anchor="middle">power switch</text>
+    </g>
+    <g stroke-width="2.5" fill="none">
+      <line x1="240" y1="124" x2="450" y2="124" stroke="#E24B4A"/>
+      <line x1="240" y1="164" x2="450" y2="164" stroke="#888780"/>
+      <line x1="240" y1="204" x2="450" y2="204" stroke="#1D9E75"/>
+      <line x1="240" y1="244" x2="450" y2="244" stroke="#1D9E75"/>
+      <line x1="240" y1="304" x2="450" y2="304" stroke="#1D9E75"/>
+      <line x1="240" y1="344" x2="450" y2="344" stroke="#888780"/>
+      <line x1="130" y1="424" x2="160" y2="424" stroke="#E24B4A"/>
+      <line x1="130" y1="464" x2="160" y2="464" stroke="#888780"/>
+      <line x1="270" y1="424" x2="296" y2="424" stroke="#E24B4A"/>
+      <path d="M404 424 L424 424 L424 434 L450 434" stroke="#E24B4A"/>
+      <path d="M270 464 L424 464 L424 474 L450 474" stroke="#888780"/>
+    </g>
+    <g font-family="Segoe UI, Arial" font-size="12" fill="#5f5e5a" text-anchor="middle">
+      <text x="145" y="416">B+</text><text x="145" y="482">B&#8722;</text><text x="286" y="404">OUT+</text><text x="330" y="482">OUT&#8722;</text>
+    </g>
+    <g font-family="Segoe UI, Arial" font-size="12" fill="#5f5e5a">
+      <line x1="40" y1="532" x2="64" y2="532" stroke="#E24B4A" stroke-width="2.5"/><text x="72" y="536">power +</text>
+      <line x1="150" y1="532" x2="174" y2="532" stroke="#888780" stroke-width="2.5"/><text x="182" y="536">ground</text>
+      <line x1="260" y1="532" x2="284" y2="532" stroke="#1D9E75" stroke-width="2.5"/><text x="292" y="536">data</text>
+    </g>
+  </svg>
+  <figcaption>Everything you need to wire for the wallet build</figcaption>
+  </figure>
+
+  <h2>Finding the pins</h2>
+  <p>Turn the board over so the header pins point at you, with the USB-C at the <b>bottom</b>. Every pin is labelled on the board.</p>
+  <table>
+    <tr><th style="width:12%">#</th><th>Left row (P1), top to bottom</th><th>Right row (P2), top to bottom</th></tr>
+    <tr><td>1&ndash;7</td><td>2, 4, 6, 16, 17, <b>18</b>, 21</td><td><b>3V3</b>, <b>G</b>, TX (43), RX (44), <b>47</b>, <b>48</b>, 15</td></tr>
+    <tr><td>8&ndash;14</td><td>8, 7, 10, 20, 19, <b>G</b>, 5V</td><td>13, 11, 12, 14, 9, G, VBAT</td></tr>
+  </table>
+  <p class="small">With the camera plugged in, it uses GPIO 2, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17 and 21. GPIO 19 and 20 are USB. The only free pins are <b>18, 43 and 44</b>, plus the I2C pair <b>47/48</b>, which the pulse sensor shares with the board's motion sensor.</p>
+</section>
+
+<section class="chapter">
+  <div class="kicker">Chapter 3, continued</div>
+  <h1>Connections, one module at a time</h1>
+  <div class="keep"><h2>1. Pulse sensor (MAX30102): 4 wires</h2>
+  <table>
+    <tr><th>Sensor pin</th><th>Board pin</th><th>Wire</th></tr>
+    <tr><td>VIN</td><td><b>3V3</b> (right row, 1st)</td><td class="red">red</td></tr>
+    <tr><td>GND</td><td><b>G</b> (right row, 2nd)</td><td class="grey">black</td></tr>
+    <tr><td>SCL</td><td><b>47</b> (right row, 5th)</td><td class="teal">any colour</td></tr>
+    <tr><td>SDA</td><td><b>48</b> (right row, 6th)</td><td class="teal">any colour</td></tr>
+  </table></div>
+  <ul>
+    <li>Leave INT (and IRD/RD if your board has them) unconnected.</li>
+    <li>Solder the sensor's header on the <b>back</b> of its board, so the sensor face sits flat against the thumb window.</li>
+    <li>On the purple board, move the small &ldquo;1.8V / 3.3V&rdquo; solder jumper to <b>3.3V</b>. Otherwise the ESP32 can't read it reliably.</li>
+  </ul>
+
+  <div class="keep"><h2>2. Buzzer: 2 wires</h2>
+  <table>
+    <tr><th>Buzzer</th><th>Board pin</th></tr>
+    <tr><td>Long leg (+)</td><td><b>18</b> (left row, 6th)</td></tr>
+    <tr><td>Short leg (&minus;)</td><td><b>G</b> (left row, 13th)</td></tr>
+  </table></div>
+  <p class="small">A small 3.3 V active buzzer can go straight onto the pin. A 5 V or magnetic buzzer needs an S8050 transistor with a 1 k&Omega; base resistor and a 1N4148 across the buzzer. If yours is a 3-pin module (VCC/GND/I/O), it needs a split 3V3 wire.</p>
+
+  <h2>3. Power chain: do this last, with the switch OFF</h2>
+  <ol>
+    <li><b>Battery + (red) &rarr; TP4056 &ldquo;B+&rdquo;</b> and <b>battery &minus; (black) &rarr; TP4056 &ldquo;B&minus;&rdquo;</b>. Don't use the TP4056's IN+/IN&minus; pads; those are its USB input.</li>
+    <li><b>TP4056 &ldquo;OUT+&rdquo; &rarr; power switch &rarr; red wire of the board's BAT plug.</b> The switch has 6 legs in 2 rows of 3. Use the <b>middle leg (COM)</b> and <b>one end leg of the same row (NO)</b>. With a multimeter on beep mode, clicking ON beeps and clicking OFF stops.</li>
+    <li><b>TP4056 &ldquo;OUT&minus;&rdquo; &rarr; black wire of the BAT plug.</b></li>
+    <li>Plug the BAT cable into the small white connector on the back of the board. <b>Red goes to &oplus;</b>; the board marks &ominus; and &oplus; beside it.</li>
+  </ol>
+
+  <h2>4. Nothing to wire</h2>
+  <ul>
+    <li><b>Camera:</b> already in its connector. Tape it flat on the back of the board, over the TF slot, which is where the lens hood expects it.</li>
+    <li><b>SIGN key:</b> the printed pin presses the board's BOOT button (GPIO0).</li>
+    <li><b>INMP441 microphone:</b> skip it for the wallet, because there are no free pins left for both it and the buzzer. It's mounted for the camera version: SCK&rarr;TX(43), WS&rarr;RX(44), SD&rarr;18 in place of the buzzer.</li>
+  </ul>
+
+  <div class="callout warn"><b>Safety checklist</b>
+    <ul style="margin-top:1.5mm">
+      <li>Check the battery polarity <b>twice</b> before connecting it. Reversed polarity kills the board instantly.</li>
+      <li>Wrap every bare wire end and solder joint in tape or heat-shrink. Nothing metal should touch the battery's ends.</li>
+      <li>Keep all wires away from the case's rim, so closing it can't pinch them.</li>
+      <li><b>Never plug both USB-C ports at once.</b></li>
+      <li>Use a cell with welded tabs. Don't solder straight onto the can.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============================== 4. ASSEMBLY ============================== -->
+<section class="chapter">
+  <div class="kicker">Chapter 4</div>
+  <h1>Putting it together</h1>
+  <div class="two">
+    <figure><img src="../model/renders/inside.png"><figcaption>Inside, with the front shell removed</figcaption></figure>
+    <figure><img src="../model/renders/exploded.png"><figcaption>Exploded view: everything drops into a printed cradle</figcaption></figure>
+  </div>
+  <h2>Front shell (screen face down on the table)</h2>
+  <ol>
+    <li>Drop the <b>SIGN pin</b> into its hole from the inside, flange inside.</li>
+    <li>Lay the <b>ESP32 board</b> glass-down in the window pocket. The USB-C goes to the <b>left</b>, and the board edges sit against the top and left walls, inside the right-hand and bottom fences.</li>
+    <li>Lay the <b>TP4056</b> in its cradle at the bottom-left: bare side toward the screen, USB-C into the <b>lower</b> left opening.</li>
+    <li>Press the <b>MAX30102</b> into the thumb-pad pocket, sensor toward the window, wires out of the open right side.</li>
+  </ol>
+  <h2>Back shell (lens face down)</h2>
+  <ol>
+    <li>Lay the <b>18650</b> in the saddles, wires out through the slots at each end.</li>
+    <li>The <b>big switch goes in from outside.</b> Solder two wires (COM and NO), feed them in through the square hole in the top face and out through the cradle floor, then push the switch in until it sits on the floor. Press the blue cap on last. If it's loose, wrap one layer of Kapton tape around it.</li>
+    <li>Slide the <b>INMP441</b> into the rails under the top wall, tiny-hole side against the wall.</li>
+    <li>Drop the <b>buzzer</b> into the U-cradle at the right end, sound hole toward the grille.</li>
+  </ol>
+  <h2>Close and open</h2>
+  <ol>
+    <li>Plug in all the jumper wires (chapter 3) and tuck them away from the rim.</li>
+    <li>Line up the shells and press all the way round until the bead clicks. The four pegs land on the board's M2 nuts and hold the screen against the window.</li>
+    <li><b>To open:</b> put a fingernail or coin in the notch on the bottom seam (right side) and twist.</li>
+  </ol>
+</section>
+
+<!-- ============================== 5. TEST ============================== -->
+<section class="chapter">
+  <div class="kicker">Chapter 5</div>
+  <h1>Testing and charging</h1>
+  <table>
+    <tr><th>Test</th><th>How</th><th>Expected</th></tr>
+    <tr><td>1. Board only</td><td>Plug the board's USB-C (<b>upper</b> port on the left end) into your PC</td><td>The screen lights up once the firmware is flashed (chapter 6)</td></tr>
+    <tr><td>2. Battery</td><td>Unplug USB and click the big button ON</td><td>The board runs from the battery; click again to turn it off</td></tr>
+    <tr><td>3. Charging</td><td>USB-C into the <b>lower</b> port (the TP4056)</td><td>Red LED while charging, blue or green when full. It charges even when switched off.</td></tr>
+    <tr><td>4. Pulse</td><td>Rest your thumb on the pad</td><td>The heart animation beats and bpm settles within about 8 s</td></tr>
+    <tr><td>5. SIGN pin</td><td>On Home, press the pin on the left end</td><td>Click; the camera viewfinder opens. Hold 2 s to cancel.</td></tr>
+    <tr><td>6. Camera</td><td>Start a scan and point the lens at a QR code</td><td>The viewfinder shows the code and a progress bar</td></tr>
+  </table>
+  <div class="callout warn"><b>Never plug both USB-C ports at the same time.</b> The board's own port powers it even when the switch is off.</div>
+  <div class="callout"><b>Charging speed.</b> The TP4056 charges at 1 A by default and gets warm inside a PLA box. Either print the front shell in PETG, or swap its R_PROG resistor to 2.4 k&Omega; for 0.5 A.</div>
+</section>
+
+<!-- ============================== 6. FIRMWARE ============================== -->
+<section class="chapter">
+  <div class="kicker">Chapter 6</div>
+  <h1>Firmware</h1>
+  <div class="callout ok"><b>Status: built and tested on the PC.</b> The full ESP32-S3 firmware in <code>firmware/</code> builds cleanly: RAM 11.7 %, flash 11.0 %, and <code>firmware.bin</code> is about 720 KB. It passes <b>9 host test suites (11,777 checks)</b>, checked against an independent Python reference. There is <b>no Wi-Fi or Bluetooth code</b> in the binary. <b>It has not run on a real board yet</b>, so the first flash is also the first hardware test.</div>
+  <h2>What runs on the device</h2>
+  <ul>
+    <li><b>Two keys, generated on the device.</b> The seed comes from hardware randomness, raw pulse-sensor samples and camera noise. <b>K1</b> (secp256k1) owns the vault and signs only mandates. <b>P1</b> (P-256) signs co-signatures, deny, PANIC, revoke, reopen and Privy requests; Monad checks it natively.</li>
+    <li><b>No radio.</b> Data moves only as QR codes in the BC-UR format; long requests arrive as animated QR codes.</li>
+    <li><b>Signs only what it shows.</b> Every signature is rebuilt from the lines on screen. SIGN only works after the last line has been shown, and only while the pulse still counts as live: at least 5 beats in 8 s, 40&ndash;180 bpm.</li>
+    <li><b>Refuses with the exact reason.</b> Examples: MANDATE WITHOUT PULSE CO-SIGN, a contract or chain that isn't pinned, UNKNOWN CALLDATA, a token it can't show safely, an expiry too far ahead, and any Privy change outside the allowlist.</li>
+  </ul>
+  <h2>First boot</h2>
+  <ol>
+    <li>The RIPAR logo appears. The device then tests its crypto against published test vectors and cross-checks it with mbedTLS. If a check fails, it shows <b>SELFTEST FAIL</b> and never signs anything.</li>
+    <li>On the first run only, it shows &ldquo;NEW DEVICE: creating keys&rdquo;.</li>
+    <li>Home shows the short K1 address, the battery level and <b>NOT PAIRED</b>.</li>
+  </ol>
+  <div class="keep"><h2>The SIGN key (BOOT, GPIO0)</h2>
+  <p>The key has three actions: <b>press</b> (let go within 1 s), <b>hold 2 s</b> and <b>hold 5 s</b>. A press or hold only works on the screen where it started, so a hold that cancels a screen can never become a PANIC or a deny on the next one.</p>
+  <table>
+    <tr><th>Screen</th><th>Press</th><th>Hold 2 s</th><th>Hold 5 s</th></tr>
+    <tr><td>Home</td><td>Scan a request</td><td>Open the Hold screen</td><td>(only from the Hold screen)</td></tr>
+    <tr><td>Hold</td><td>&nbsp;</td><td>Let go before 5 s to show the <b>pairing QR</b></td><td><b>PANIC</b>: signed at once, no pulse, because it can only tighten</td></tr>
+    <tr><td>Scan</td><td>&nbsp;</td><td>Cancel</td><td>&nbsp;</td></tr>
+    <tr><td>Review</td><td>Next page. On the last page: continue to Pulse (or sign a deny)</td><td>Co-sign review: <b>DENY</b>. Other reviews: cancel</td><td>&nbsp;</td></tr>
+    <tr><td>Pulse</td><td>Ignored</td><td>Cancel</td><td>&nbsp;</td></tr>
+    <tr><td>Armed (&ldquo;PULSE OK - press SIGN&rdquo;)</td><td><b>SIGN</b></td><td>Cancel</td><td>&nbsp;</td></tr>
+    <tr><td>Signed QR / message</td><td>Home</td><td>Home</td><td>&nbsp;</td></tr>
+    <tr><td>Pairing QR</td><td>Home</td><td>Device menu</td><td>&nbsp;</td></tr>
+    <tr><td>Device menu</td><td>Next item</td><td>Select: REVOKE last mandate / REOPEN agent lane / BACK</td><td>&nbsp;</td></tr>
+  </table></div>
+  <p class="small">The review shows up to 9 rows at a time and each press moves 8 rows, so every row is seen. Every screen goes back to Home after 120 s with no key press. The buzzer ticks for each QR part and each heartbeat. A rising tone means OK; a falling tone means refused.</p>
+  <div class="keep"><h2>What it can sign</h2>
+  <table>
+    <tr><th>Request (QR in)</th><th>Device shows</th><th>Reply (QR out)</th></tr>
+    <tr><td><code>ripar-pair-req</code></td><td>The chain and every contract to pin, with a red CHANGES line for anything different</td><td><code>ripar-pair</code>: both keys bound together</td></tr>
+    <tr><td><code>ripar-mandate-req</code></td><td>Every rule in plain language. It refuses unknown rules and mandates without the pulse co-sign.</td><td><code>eth-signature</code> from K1</td></tr>
+    <tr><td><code>ripar-cosign-req</code></td><td>Amount and token, full payee with a 4-icon fingerprint and NEW PAYEE, expiry (UTC), budget, risk and AI notes</td><td><code>ripar-cosign</code>: P1 signature plus pulse evidence</td></tr>
+    <tr><td><code>ripar-deny-req</code></td><td>The agent and the request</td><td><code>ripar-deny</code></td></tr>
+    <tr><td><code>ripar-privy-req</code></td><td>The allowed Privy change, shown in full</td><td><code>ripar-der-sig</code></td></tr>
+  </table></div>
+</section>
+
+<section class="chapter">
+  <div class="kicker">Chapter 6, continued</div>
+  <h1>Flashing and first try</h1>
+  <h2>Flash over USB-C</h2>
+  <ol>
+    <li>Plug the <b>board's</b> USB-C (the upper port on the left end) into the PC. Don't use the TP4056 port, and never plug both at once.</li>
+    <li>In the repo's <code>firmware</code> folder, run <code>pio run -e ripar -t upload</code>.</li>
+    <li>Optional: <code>pio device monitor -b 115200</code> shows the self-test and the K1 address.</li>
+    <li><b>If the upload can't connect:</b> hold BOOT (the SIGN pin), tap RST (the pinhole), release BOOT, upload again, then tap RST.</li>
+    <li>Re-flashing keeps the keys and the pairing. <b><code>pio run -t erase</code> wipes the seed</b>, which means a new vault owner, and there is no seed backup yet. Only erase a unit that holds no funds.</li>
+  </ol>
+  <h2>Try the whole flow before the contracts exist</h2>
+  <p>These tools run on the online PC. It is untrusted, which is why the device checks every signed reply itself.</p>
+  <ul>
+    <li><code>firmware/tools/make_request.py</code> builds requests and verifies the device's signed replies.</li>
+    <li><code>firmware/tools/companion_lite.html</code> plays requests as QR codes.</li>
+  </ul>
+  <ol>
+    <li>Build a request with <code>python tools/make_request.py build pair chainId=10143 ...</code>. <code>docs/FIRMWARE.md</code> section 6 gives every command.</li>
+    <li>Open <code>companion_lite.html</code>, paste the request and press <b>Show QR</b>.</li>
+    <li>On the device, press SIGN on Home and point the camera at the screen. Read every line, rest your thumb on the pad, then press SIGN.</li>
+    <li>Scan the device's reply with any QR reader (a phone camera works). Then run the verify command the page prints; exit code 0 means VERIFIED.</li>
+    <li>No board yet? <code>python tools/make_request.py simulate @req.txt</code> plays a demo device, so you can test your requests and verify commands.</li>
+  </ol>
+  <div class="callout warn"><b>Known limitations</b>
+    <ul style="margin-top:1.5mm">
+      <li><b>Not tested on hardware yet.</b> On your unit, check the screen rotation (<code>RIPAR_LCD_ROTATION</code>), the camera orientation and exposure, and the pulse thresholds.</li>
+      <li><b>Contract addresses.</b> The PulseCosignEnforcer and MockUSD addresses are blank until they are deployed; fill them in <code>src/enforcers.cpp</code> and <code>src/tokens.cpp</code>. Until then, the device trusts the contracts you confirm on screen at the first pairing.</li>
+      <li><b>Prototype security.</b> The seed is stored in flash without encryption and there is no seed backup. The crypto isn't constant-time.</li>
+    </ul>
+  </div>
+  <p class="small">The full guide is <code>docs/FIRMWARE.md</code>, and the byte-level message format is <code>docs/PROTOCOL.md</code>.</p>
+</section>
+
+<!-- ============================== 7. HACKATHON ============================== -->
+<section class="chapter">
+  <div class="kicker">Chapter 7</div>
+  <h1>Hackathon quick sheet: Monad Metropolis</h1>
+  <table>
+    <tr><th>Item</th><th>Detail</th></tr>
+    <tr><td>Deadline</td><td><b>Wed 14 Oct 2026, 03:59 UTC</b> (Tue 13 Oct, 23:59 ET; Wed 14 Oct, 09:29 IST). Aim to submit a complete draft on 12 Oct.</td></tr>
+    <tr><td>Track</td><td>04: Trust, Identity &amp; AI Infrastructure</td></tr>
+    <tr><td>Pitch</td><td>A camera-shaped, air-gapped signer that puts a live human thumb between AI agents and your money. Agents spend inside a mandate; anything more needs your heartbeat, checked on Monad.</td></tr>
+    <tr><td>On-chain piece</td><td>A <code>PulseCosignEnforcer</code> caveat for MetaMask delegations. Small, pre-approved spends go through automatically. New payees, larger amounts, or anything after the risk sentinel trips need Ripar's P-256 co-signature, which Monad verifies natively.</td></tr>
+    <tr><td>Sponsor integrations planned</td><td>Qwen (the treasury agent), Privy (server wallet owned by the device key), Nansen (payee risk), Mera (encrypted agent memory), Chainlink CRE (risk sentinel), Envio (trust dashboard), Alchemy (RPC and webhooks)</td></tr>
+    <tr><td>Submission needs</td><td>A working product, a public project page with a demo video (&le; 3 min), a short write-up and a link to the code (with a LICENSE)</td></tr>
+  </table>
+  <div class="callout warn"><b>One project per participant.</b> If your team enters more than one project, each one must be submitted by a different team member.</div>
+  <h2>First things to do</h2>
+  <ol>
+    <li>Register on the hackathon platform if you haven't; confirm the registration close date on the dashboard.</li>
+    <li>Day-1 technical check: <b>camera QR scanning</b> on the real board. Fallback: requests from the TF card plus a clearly labelled browser emulator.</li>
+    <li>Print the case, wire it, flash the firmware, and record the demo flow early: pair &rarr; agent spends &rarr; escalation &rarr; pulse + SIGN &rarr; on-chain.</li>
+  </ol>
+</section>
+
+<!-- ============================== 8. FILES ============================== -->
+<section class="chapter">
+  <div class="kicker">Chapter 8</div>
+  <h1>Where everything lives in the repo</h1>
+  <table>
+    <tr><th>Path</th><th>What</th></tr>
+    <tr><td><code>print/bambu/RiparWallet_ALL_P1S.gcode.3mf</code></td><td>Ready-to-print P1S plate (everything on one plate)</td></tr>
+    <tr><td><code>print/stl/</code>, <code>print/step/</code></td><td>Print-oriented STLs and STEP files of every part, plus the full assembly</td></tr>
+    <tr><td><code>print/PRINTING.md</code></td><td>Print and assembly guide (text version)</td></tr>
+    <tr><td><code>docs/WIRING.md</code></td><td>Wiring (text version)</td></tr>
+    <tr><td><code>docs/PROTOCOL.md</code></td><td>Device &harr; companion &harr; contract protocol</td></tr>
+    <tr><td><code>docs/FIRMWARE.md</code></td><td>Firmware: build, flash, screens and keys, walkthrough, security model</td></tr>
+    <tr><td><code>firmware/</code></td><td>ESP32-S3 firmware (PlatformIO): <code>src/</code>, <code>include/</code>, host tests in <code>test/host/</code>, companion tools in <code>tools/</code></td></tr>
+    <tr><td><code>model/RiparWallet.SLDASM</code>, <code>model/parts/</code></td><td>SolidWorks 2026 assembly and native parts</td></tr>
+    <tr><td><code>cad/design.py</code></td><td>Every enclosure dimension in one file</td></tr>
+    <tr><td><code>cad/make_all.py</code></td><td>One command to rebuild the parts, assembly, checks, exports, P1S slice and renders</td></tr>
+    <tr><td><code>research/</code></td><td>CAD design reviews and researched part dimensions</td></tr>
+  </table>
+</section>
+
+</body>
+</html>

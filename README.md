@@ -12,11 +12,15 @@ A camera-shaped, air-gapped signer for the **Monad Metropolis** hackathon. The s
 
 | Path | What |
 |---|---|
-| `print/bambu/` | **Sliced, ready-to-print P1S files**: `FitTest_P1S.gcode.3mf` (about 40 min) and `RiparWallet_P1S.gcode.3mf` (about 1 h 50 min, 54 g PLA) |
+| `print/bambu/` | **Sliced, ready-to-print P1S file**: `RiparWallet_ALL_P1S.gcode.3mf`, with every part on one plate (about 2 h 23 min, 69.5 g PLA) |
 | `print/stl/` | STLs for the Bambu P1S, pre-oriented: Front_Shell, Back_Shell, Sign_Pin, and 2 fit-test coupons |
 | `print/step/` | STEP files of every printable part plus the full assembly (for Fusion, FreeCAD or sharing) |
 | `print/PRINTING.md` | Slicer settings, what to measure first, assembly order, fixes |
 | `docs/WIRING.md` | Header pinout from the Waveshare schematic, free GPIOs, and every connection |
+| `docs/RiparWallet_Build_Guide.pdf` | The whole build in one PDF: print, wire, assemble, test, flash |
+| `firmware/` | ESP32-S3 firmware (PlatformIO, Arduino-ESP32): source, host tests, companion tools |
+| `docs/FIRMWARE.md` | Firmware build, flashing, screens and keys, walkthrough, security model |
+| `docs/PROTOCOL.md` | Byte-level device ↔ companion ↔ contract protocol (BC-UR, CBOR, EIP-712) |
 | `model/RiparWallet.SLDASM` | SolidWorks 2026 assembly: native parts plus component stand-ins |
 | `model/parts/*.SLDPRT` | Native SolidWorks parts (feature trees built by script) |
 | `model/renders/` | Renders; `sheet.png` is the overview |
@@ -56,6 +60,29 @@ That rebuilds the parts, the assembly, the interference check, the STL/STEP expo
   - **Bambu Studio** at `D:\Program Files\Bambu Studio` (edit `BS` in `cad/slice_bambu.py` if yours is elsewhere);
   - Python 3 with `pywin32`, `numpy`, `trimesh`, `Pillow`.
 - It uses its own SolidWorks session; run only one SolidWorks at a time.
+
+## The firmware
+
+- **Keys, generated on the device.** K1 (secp256k1, BIP-32 `m/44'/60'/0'/0/0`) owns the vault and signs only MetaMask delegation mandates. P1 (P-256, SLIP-10 `m/7951'/0'`) signs co-signatures, deny, PANIC, revoke, reopen and Privy requests. Both use RFC 6979 with low-s.
+- **Air-gapped.** Wi-Fi and Bluetooth are never initialised, and the linked binary contains no radio symbols. Requests and replies move only as (animated) BC-UR QR codes, scanned by the OV5640 with quirc.
+- **Signs only what it shows.** Every EIP-712 digest is rebuilt from the decoded fields on screen. SIGN arms only after the last review row has been shown and while the pulse still counts as live (at least 5 beats in 8 s, 40–180 bpm).
+- **Refuses unsafe requests**, showing the exact reason. For example, it refuses:
+  - a mandate without the pulse co-sign caveat;
+  - a chain or contract that wasn't pinned at pairing;
+  - unknown calldata or caveats;
+  - a token it can't show;
+  - any Privy change outside the allowlist.
+- **One key.** SIGN (BOOT) supports press, hold 2 s and hold 5 s. A press or hold only works on the screen where it started. On Home, holding 5 s triggers PANIC.
+
+```bash
+cd firmware
+pio run -e ripar -t upload                  # build + flash over the board's USB-C
+python test/host/run_host_tests.py          # 9 host suites vs. an independent Python reference
+python tools/make_request.py selftest       # companion tool: build -> simulate -> verify
+```
+
+- **Verified on the PC:** the clean build uses RAM 11.7 % and flash 11.0 %. All 9 host test suites pass (11,777 checks), and the radio symbol scan finds nothing.
+- **Not yet run on a real board.** See [docs/FIRMWARE.md](docs/FIRMWARE.md#known-limitations) for what is still open. In short: the enforcer and MockUSD addresses are filled in after deployment, the seed isn't encrypted yet, and the crypto isn't constant-time.
 
 ## Monad Metropolis
 

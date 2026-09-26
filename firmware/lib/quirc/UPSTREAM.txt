@@ -1,0 +1,2 @@
+927d680904dc95fdff4cd9d022eb374b438ff8f2 Tue May 20 16:23:18 2025 +0200
+https://github.com/dlbeer/quirc

@@ -3,8 +3,7 @@ Slice the printable parts for a Bambu Lab P1S with Bambu Studio's command line.
 
 Makes two ready-to-print projects in print/bambu/ (open in Bambu Studio -> Print,
 or copy the .gcode.3mf to the P1S SD card):
-  FitTest_P1S.gcode.3mf        FitTest_Front + FitTest_Back          (print first)
-  RiparWallet_P1S.gcode.3mf   Front_Shell + Back_Shell + 3 x Sign_Pin
+  RiparWallet_ALL_P1S.gcode.3mf   ONE plate: Front_Shell + Back_Shell + 2 fit-test coupons + 3 x Sign_Pin
 
 The Bambu system presets inherit from base profiles that the CLI does not
 resolve, so each chain (P1S 0.4 machine, 0.16mm Optimal process, Bambu PLA
@@ -42,9 +41,10 @@ PROCESS_OVERRIDES = {
 # 18 x 28 mm corner is excluded by the printer).  Auto-arrange packed the tiny pins
 # 1 mm from the shells, where their brims would fuse onto the shell.
 JOBS = {
-    "FitTest_P1S": [("FitTest_Front.stl", 88, 97), ("FitTest_Back.stl", 142, 97)],
-    "RiparWallet_P1S": [("Front_Shell.stl", 18, 97), ("Back_Shell.stl", 138, 97),
-                         ("Sign_Pin.stl", 70, 45), ("Sign_Pin.stl", 90, 45), ("Sign_Pin.stl", 110, 45)],
+    # everything on ONE plate: both shells (back row), both fit-test coupons + 3 SIGN pins (front row)
+    "RiparWallet_ALL_P1S": [("Front_Shell.stl", 18, 150), ("Back_Shell.stl", 138, 150),
+                            ("FitTest_Front.stl", 40, 50), ("FitTest_Back.stl", 90, 50),
+                            ("Sign_Pin.stl", 150, 75), ("Sign_Pin.stl", 170, 75), ("Sign_Pin.stl", 190, 75)],
 }
 
 

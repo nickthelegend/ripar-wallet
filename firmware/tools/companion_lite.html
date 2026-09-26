@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ripar Companion Lite</title>
+<!--
+  Ripar Wallet - companion lite (docs/FIRMWARE.md "Walkthrough").
+
+  A static page for demos and bring-up. It does NOT build or verify anything:
+    - requests are built by   python tools/make_request.py build ...
+    - responses are verified by python tools/make_request.py parse ...
+  It only (1) shows the UR parts printed by make_request.py as QR codes, looping the multipart parts at ~300 ms
+  per frame for the device camera, and (2) takes the device's response (pasted from any QR reader) and prints the
+  make_request.py command that verifies it.
+
+  The only external resource is the QR encoder (qrcode-generator, MIT) from cdnjs. Open the file directly
+  (file://) or serve it from any static server. Like every companion, this page is untrusted: the device shows and
+  checks everything it signs.
+-->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<style>
+  :root {
+    --bg: #f4f5f2;
+    --panel: #ffffff;
+    --ink: #16201e;
+    --muted: #5d6865;
+    --line: #d9ddd8;
+    --accent: #00806c;
+    --accent-ink: #ffffff;
+    --warn: #9a5b00;
+    --bad: #b3261e;
+    --good: #1c7c3a;
+    --code: #eef1ed;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1413;
+      --panel: #171e1c;
+      --ink: #e6ece9;
+      --muted: #9aa6a2;
+      --line: #2a3431;
+      --accent: #2cc8ad;
+      --accent-ink: #06231e;
+      --warn: #f0a93b;
+      --bad: #ff7b72;
+      --good: #58c779;
+      --code: #1d2624;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1413;
+    --panel: #171e1c;
+    --ink: #e6ece9;
+    --muted: #9aa6a2;
+    --line: #2a3431;
+    --accent: #2cc8ad;
+    --accent-ink: #06231e;
+    --warn: #f0a93b;
+    --bad: #ff7b72;
+    --good: #58c779;
+    --code: #1d2624;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 20px 16px 40px;
+  }
+  main { max-width: 1080px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: 0.02em; }
+  h1 span { color: var(--accent); }
+  header p { margin: 0; color: var(--muted); }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+  @media (max-width: 820px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  section {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px;
+    min-width: 0;
+  }
+  h2 { font-size: 15px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  textarea {
+    width: 100%;
+    min-height: 120px;
+    resize: vertical;
+    background: var(--code);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px;
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0; }
+  button, label.btn {
+    background: var(--accent);
+    color: var(--accent-ink);
+    border: 0;
+    border-radius: 7px;
+    padding: 7px 14px;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button.ghost, label.btn.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  input[type="file"] { display: none; }
+  input[type="range"] { width: 140px; accent-color: var(--accent); }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  .stage { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 6px; }
+  .qrbox {
+    background: #ffffff;
+    border-radius: 8px;
+    padding: 0;
+    width: 100%;
+    max-width: 440px;
+    aspect-ratio: 1 / 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--line);
+  }
+  canvas { width: 100%; height: 100%; image-rendering: pixelated; display: block; }
+  .counter { font: 600 14px ui-monospace, SFMono-Regular, Consolas, monospace; }
+  .status { min-height: 1.5em; }
+  .status.bad { color: var(--bad); }
+  .status.good { color: var(--good); }
+  .status.warn { color: var(--warn); }
+  pre {
+    background: var(--code);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px;
+    margin: 8px 0 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  .kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; margin-top: 8px; }
+  .kv div:nth-child(odd) { color: var(--muted); }
+  .kv div { overflow-wrap: anywhere; }
+  input[type="text"] {
+    width: 100%;
+    background: var(--code);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 6px 8px;
+    font: 12px ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  .field { margin-top: 8px; }
+  .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 2px; }
+  footer { margin-top: 18px; color: var(--muted); font-size: 13px; }
+  code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.92em; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1><span>Ripar</span> companion lite</h1>
+    <p>Shows requests to the device as QR codes, and prepares the command that verifies its answer.</p>
+  </header>
+
+  <div class="grid">
+    <section aria-labelledby="req-h">
+      <h2 id="req-h">1 &middot; Request to the device</h2>
+      <p class="small muted">Paste the output of <code>python tools/make_request.py build &hellip;</code> (plain or
+        <code>--json</code>), or load it from a file. Lines starting with <code>ur:</code> are used; <code>#</code>
+        lines are ignored.</p>
+      <textarea id="reqText" spellcheck="false" placeholder="# type   ripar-cosign-req ...&#10;ur:ripar-cosign-req/...&#10;ur:ripar-cosign-req/1-6/...&#10;ur:ripar-cosign-req/2-6/..."></textarea>
+      <div class="row">
+        <button id="loadBtn" type="button">Show QR</button>
+        <label class="btn ghost" for="reqFile">Load file&hellip;</label>
+        <input id="reqFile" type="file" accept=".txt,.json,.ur,text/plain,application/json">
+        <button id="clearBtn" class="ghost" type="button">Clear</button>
+      </div>
+      <div class="row small">
+        <label><input type="radio" name="mode" value="multi" checked> multipart (animated)</label>
+        <label><input type="radio" name="mode" value="single"> single-part</label>
+      </div>
+      <div class="row small">
+        <label for="speed">Frame</label>
+        <input id="speed" type="range" min="120" max="1200" step="20" value="300">
+        <span id="speedVal" class="counter">300 ms</span>
+      </div>
+      <div class="status small" id="reqStatus" role="status"></div>
+    </section>
+
+    <section aria-labelledby="qr-h">
+      <h2 id="qr-h">2 &middot; Hold the device camera here</h2>
+      <div class="stage">
+        <div class="qrbox"><canvas id="qr" width="400" height="400" aria-label="request QR code"></canvas></div>
+        <div class="row">
+          <button id="prevBtn" class="ghost" type="button" disabled>&larr;</button>
+          <button id="playBtn" type="button" disabled>Pause</button>
+          <button id="nextBtn" class="ghost" type="button" disabled>&rarr;</button>
+          <span id="counter" class="counter">no request</span>
+        </div>
+        <p class="small muted" id="qrHint">The device shows the multipart progress bar while it collects parts. Hold
+          SIGN (the BOOT key) for 2 s on the device to cancel a scan.</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="resp-h" style="grid-column: 1 / -1;">
+      <h2 id="resp-h">3 &middot; Device response</h2>
+      <p class="small muted">Scan the device's QR with any reader (phone camera, a desktop QR app) and paste the text
+        (<code>UR:RIPAR-...</code>). This page does not trust or verify it; run the command below.</p>
+      <textarea id="respText" spellcheck="false" placeholder="UR:RIPAR-COSIGN/..."></textarea>
+      <div class="kv small" id="respInfo"></div>
+      <div class="grid" style="margin-top: 6px;">
+        <div class="field">
+          <label for="reqPath">Request file (the make_request.py output you saved, or its single-part UR)</label>
+          <input id="reqPath" type="text" value="req.txt" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="pairPath">Pairing response (file with the device's <code>UR:RIPAR-PAIR/...</code>)</label>
+          <input id="pairPath" type="text" value="pair.txt" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="chainIn">Chain id (revoke / panic / reopen / deny: the pinned chain)</label>
+          <input id="chainIn" type="text" value="10143" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="contractIn">Contract (revoke / panic: PulseCosignEnforcer; reopen: sentinel; deny: relay)</label>
+          <input id="contractIn" type="text" value="" placeholder="0x..." spellcheck="false">
+        </div>
+      </div>
+      <pre id="cmd">(paste a response above)</pre>
+      <div class="row">
+        <button id="copyBtn" class="ghost" type="button" disabled>Copy command</button>
+        <span class="status small" id="copyStatus" role="status"></span>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    Everything here is display only. The device parses every request strictly, checks it against the contracts
+    pinned at pairing, shows every signed field and rebuilds every digest itself (docs/PROTOCOL.md).
+  </footer>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var parts = [];      // what is animated
+  var single = null;   // single-part UR (if the pasted output had one)
+  var multi = [];      // multipart parts
+  var idx = 0;
+  var timer = null;
+  var playing = true;
+
+  function setStatus(el, text, cls) {
+    el.textContent = text;
+    el.className = "status small" + (cls ? " " + cls : "");
+  }
+
+  function libReady() { return typeof window.qrcode === "function"; }
+
+  // ---- parse make_request.py output (plain text or --json)
+  function parseRequest(text) {
+    var t = text.trim();
+    var res = { single: null, multi: [] };
+    if (!t) return res;
+    if (t.charAt(0) === "{") {
+      try {
+        var j = JSON.parse(t);
+        if (typeof j.ur === "string") res.single = j.ur.trim();
+        if (Array.isArray(j.parts)) res.multi = j.parts.map(function (p) { return String(p).trim(); });
+        return res;
+      } catch (e) { /* fall through to line mode */ }
+    }
+    t.split(/\r?\n/).forEach(function (line) {
+      var s = line.trim();
+      if (!s || s.charAt(0) === "#") return;
+      if (!/^ur:/i.test(s)) return;
+      // ur:type/bytewords (single) or ur:type/seq-len/bytewords (multipart)
+      var segs = s.split("/");
+      if (segs.length === 3 && /^\d+-\d+$/.test(segs[1])) res.multi.push(s);
+      else if (segs.length === 2) res.single = res.single || s;
+    });
+    return res;
+  }
+
+  function mode() {
+    var r = document.querySelector('input[name="mode"]:checked');
+    return r ? r.value : "multi";
+  }
+
+  function choose() {
+    if (mode() === "single" && single) parts = [single];
+    else if (multi.length) parts = multi.slice();
+    else parts = single ? [single] : [];
+    idx = 0;
+  }
+
+  // ---- draw one QR (upper-case UR -> alphanumeric mode, ECC L, auto version, 4-module quiet zone)
+  function draw(text) {
+    var canvas = $("qr");
+    var ctx = canvas.getContext("2d");
+    if (!libReady()) {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      setStatus($("reqStatus"), "QR library did not load from cdnjs (offline?). Nothing can be shown.", "bad");
+      return false;
+    }
+    var up = text.toUpperCase();
+    var alnum = /^[0-9A-Z $%*+\-./:]*$/.test(up);
+    var qr = window.qrcode(0, "L");
+    qr.addData(alnum ? up : text, alnum ? "Alphanumeric" : "Byte");
+    qr.make();
+    var n = qr.getModuleCount();
+    var quiet = 4;
+    var total = n + 2 * quiet;
+    var scale = Math.max(2, Math.floor(1200 / total));
+    canvas.width = total * scale;
+    canvas.height = total * scale;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#000000";
+    for (var r = 0; r < n; r++) {
+      for (var c = 0; c < n; c++) {
+        if (qr.isDark(r, c)) ctx.fillRect((c + quiet) * scale, (r + quiet) * scale, scale, scale);
+      }
+    }
+    return true;
+  }
+
+  function showCurrent() {
+    if (!parts.length) {
+      $("counter").textContent = "no request";
+      return;
+    }
+    var ok = draw(parts[idx]);
+    var label = parts.length > 1 ? "part " + (idx + 1) + " / " + parts.length : "single QR";
+    $("counter").textContent = ok ? label : "-";
+  }
+
+  function stop() { if (timer) { clearInterval(timer); timer = null; } }
+
+  function start() {
+    stop();
+    if (parts.length > 1 && playing) {
+      timer = setInterval(function () {
+        idx = (idx + 1) % parts.length;
+        showCurrent();
+      }, Number($("speed").value));
+    }
+  }
+
+  function updateButtons() {
+    var many = parts.length > 1;
+    $("prevBtn").disabled = !many;
+    $("nextBtn").disabled = !many;
+    $("playBtn").disabled = !many;
+    $("playBtn").textContent = playing ? "Pause" : "Play";
+  }
+
+  function load() {
+    var r = parseRequest($("reqText").value);
+    single = r.single;
+    multi = r.multi;
+    choose();
+    updateButtons();
+    if (!parts.length) {
+      stop();
+      setStatus($("reqStatus"), "No UR found. Paste the output of make_request.py build.", "warn");
+      showCurrent();
+      return;
+    }
+    var type = (parts[0].split("/")[0] || "").replace(/^ur:/i, "").toLowerCase();
+    var msg = "Loaded " + type + ": " + (single ? "single-part UR" : "no single-part UR") +
+      (multi.length ? ", " + multi.length + " multipart parts" : "") + ".";
+    setStatus($("reqStatus"), msg, "good");
+    showCurrent();
+    start();
+  }
+
+  $("loadBtn").addEventListener("click", load);
+  $("clearBtn").addEventListener("click", function () {
+    $("reqText").value = "";
+    parts = []; single = null; multi = []; stop();
+    updateButtons();
+    showCurrent();
+    setStatus($("reqStatus"), "", "");
+    var ctx = $("qr").getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, $("qr").width, $("qr").height);
+  });
+  $("reqFile").addEventListener("change", function (e) {
+    var f = e.target.files && e.target.files[0];
+    if (!f) return;
+    var rd = new FileReader();
+    rd.onload = function () {
+      $("reqText").value = String(rd.result || "");
+      if (!$("reqPath").dataset.touched) $("reqPath").value = f.name;
+      load();
+      renderCommand();
+    };
+    rd.readAsText(f);
+    e.target.value = "";
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('input[name="mode"]'), function (el) {
+    el.addEventListener("change", function () { if (single || multi.length) { choose(); updateButtons(); showCurrent(); start(); } });
+  });
+  $("speed").addEventListener("input", function () {
+    $("speedVal").textContent = $("speed").value + " ms";
+    start();
+  });
+  $("playBtn").addEventListener("click", function () { playing = !playing; updateButtons(); start(); });
+  $("prevBtn").addEventListener("click", function () {
+    if (parts.length) { idx = (idx - 1 + parts.length) % parts.length; showCurrent(); start(); }
+  });
+  $("nextBtn").addEventListener("click", function () {
+    if (parts.length) { idx = (idx + 1) % parts.length; showCurrent(); start(); }
+  });
+
+  // ---- response: identify the UR type and print the make_request.py command that verifies it
+  var RESP = {
+    "ripar-pair": { what: "pairing (K1 address, P1 key, BindDevice signatures)", needs: ["req"] },
+    "ripar-cosign": { what: "co-signature (P1) + pulse evidence + salt", needs: ["req", "pair"] },
+    "eth-signature": { what: "mandate signature (K1)", needs: ["req", "pair"] },
+    "ripar-deny": { what: "deny + ERC-8004 report (P1)", needs: ["req", "pair", "chainContract"] },
+    "ripar-der-sig": { what: "Privy authorization signature (P1, DER)", needs: ["req", "pair"] },
+    "ripar-revoke": { what: "revoke of the last mandate (P1)", needs: ["pair", "chainContract"] },
+    "ripar-panic": { what: "PANIC: new minimum epoch (P1)", needs: ["pair", "chainContract"] },
+    "ripar-reopen": { what: "reopen of the agent lane (P1)", needs: ["pair", "chainContract"] }
+  };
+
+  function shq(s) { return '"' + String(s).replace(/"/g, '\\"') + '"'; }
+
+  function renderCommand() {
+    var raw = $("respText").value.trim();
+    var info = $("respInfo");
+    info.textContent = "";
+    $("copyBtn").disabled = true;
+    if (!raw) { $("cmd").textContent = "(paste a response above)"; return; }
+    var line = raw.split(/\s+/)[0];
+    var m = /^ur:([a-z0-9-]+)\/(.+)$/i.exec(line);
+    function kv(k, v) {
+      var a = document.createElement("div"); a.textContent = k;
+      var b = document.createElement("div"); b.textContent = v;
+      info.appendChild(a); info.appendChild(b);
+    }
+    if (!m) {
+      kv("type", "not a UR (expected UR:RIPAR-...)");
+      $("cmd").textContent = "(not a UR)";
+      return;
+    }
+    var type = m[1].toLowerCase();
+    var spec = RESP[type];
+    kv("type", type + (spec ? "" : "  (unknown to this page)"));
+    kv("what", spec ? spec.what : "-");
+    kv("length", line.length + " characters");
+    if (m[2].indexOf("/") >= 0) kv("note", "multipart UR: the device always answers with one single-part QR");
+    var args = ["python", "tools/make_request.py", "parse", shq(line)];
+    var needs = spec ? spec.needs : ["req", "pair"];
+    if (needs.indexOf("req") >= 0 && $("reqPath").value.trim()) args.push("--req", shq("@" + $("reqPath").value.trim()));
+    if (needs.indexOf("pair") >= 0 && $("pairPath").value.trim()) args.push("--pair", shq("@" + $("pairPath").value.trim()));
+    if (needs.indexOf("chainContract") >= 0) {
+      if ($("chainIn").value.trim()) args.push("--chain", $("chainIn").value.trim());
+      if ($("contractIn").value.trim()) args.push("--contract", $("contractIn").value.trim());
+    }
+    $("cmd").textContent = args.join(" ") +
+      "\n\n# exit 0 = every signature verified, 1 = a check failed, 3 = parsed but something could not be checked";
+    $("copyBtn").disabled = false;
+  }
+
+  ["respText", "reqPath", "pairPath", "chainIn", "contractIn"].forEach(function (id) {
+    $(id).addEventListener("input", function () {
+      if (id === "reqPath") $("reqPath").dataset.touched = "1";
+      renderCommand();
+    });
+  });
+  $("copyBtn").addEventListener("click", function () {
+    var text = $("cmd").textContent.split("\n")[0];
+    function done(ok) { setStatus($("copyStatus"), ok ? "copied" : "copy failed: select the text", ok ? "good" : "bad"); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+    } else {
+      done(false);
+    }
+  });
+
+  if (!libReady()) {
+    setStatus($("reqStatus"), "QR library not loaded yet (needs cdnjs.cloudflare.com).", "warn");
+    window.addEventListener("load", function () {
+      if (libReady()) setStatus($("reqStatus"), "", "");
+      else setStatus($("reqStatus"), "QR library did not load from cdnjs (offline?). Nothing can be shown.", "bad");
+    });
+  }
+  var ctx0 = $("qr").getContext("2d");
+  ctx0.fillStyle = "#ffffff";
+  ctx0.fillRect(0, 0, $("qr").width, $("qr").height);
+})();
+</script>
+</body>
+</html>
