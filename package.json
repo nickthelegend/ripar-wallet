@@ -1,0 +1,10 @@
+{
+  "name": "ripar-wallet",
+  "private": true,
+  "description": "Ripar Wallet JavaScript workspaces (protocol library, companion app, agent). contracts/ and firmware/ are built with their own toolchains.",
+  "workspaces": [
+    "packages/*",
+    "agent",
+    "companion"
+  ]
+}

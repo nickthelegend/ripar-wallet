@@ -1,0 +1,127 @@
+/* Ripar companion: design tokens. The world is the device's service manual: cool offset paper, blue-black ink, one
+   spot colour (the device LCD's own teal, printed deep), hairline rules. Dark = the same manual printed negative on
+   graphite. QR plates stay white in both themes (scan reliability). */
+:root {
+  color-scheme: light;
+  --paper: #eff2f1;
+  --paper-2: #f8faf9;
+  --paper-3: #e3e8e7;
+  --ink: #12181b;
+  --ink-2: #364146;
+  --ink-3: #56626a;
+  --rule: #c3cccd;
+  --rule-2: #a3aeb1;
+  --spot: #00685c;
+  --spot-hover: #00544a;
+  --spot-ink: #ffffff;
+  --spot-wash: #d5ebe6;
+  --good: #1b6a35;
+  --good-wash: #dbeedf;
+  --warn: #875200;
+  --warn-wash: #f5e7cf;
+  --bad: #b0241c;
+  --bad-hover: #8f1c16;
+  --bad-wash: #f7dcda;
+  --focus: #00685c;
+  --shadow: 0 1px 2px rgb(18 24 27 / 0.08), 0 6px 18px -8px rgb(18 24 27 / 0.18);
+  --plate: #ffffff;
+  --plate-ink: #000000;
+  --body-metal: #2b3034;
+  --body-metal-2: #3a4146;
+  --body-edge: #151a1d;
+
+  /* the device LCD (firmware device.h UI_* colours), identical in both themes */
+  --lcd-bg: #000000;
+  --lcd-text: #ffffff;
+  --lcd-dim: #8c8c8c;
+  --lcd-faint: #2d2d2d;
+  --lcd-accent: #00c8aa;
+  --lcd-good: #28d250;
+  --lcd-warn: #ffb000;
+  --lcd-bad: #f02828;
+  --lcd-head: #14283c;
+  --lcd-foot: #1e1e1e;
+
+  --font-ui: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-data: ui-monospace, 'SF Mono', 'Cascadia Mono', 'Segoe UI Mono', Consolas, 'Liberation Mono', monospace;
+  --font-lcd: 'Helvetica Neue', Helvetica, Arial, 'Liberation Sans', sans-serif;
+
+  --t-xs: 0.75rem;
+  --t-sm: 0.8125rem;
+  --t-md: 0.9375rem;
+  --t-lg: 1.125rem;
+  --t-xl: 1.375rem;
+  --t-2xl: 1.75rem;
+
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 64px;
+
+  --radius: 4px;
+  --radius-lg: 10px;
+  --rail-w: 244px;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --paper: #101416;
+    --paper-2: #161b1e;
+    --paper-3: #1d2327;
+    --ink: #e3e9ea;
+    --ink-2: #b6c0c3;
+    --ink-3: #8e999d;
+    --rule: #2b3337;
+    --rule-2: #3e484d;
+    --spot: #3cc9b1;
+    --spot-hover: #62d8c4;
+    --spot-ink: #03201b;
+    --spot-wash: #12302b;
+    --good: #5cc57c;
+    --good-wash: #13291a;
+    --warn: #efac48;
+    --warn-wash: #33260f;
+    --bad: #ff7d73;
+    --bad-hover: #ff9d95;
+    --bad-wash: #3a1614;
+    --focus: #3cc9b1;
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.5), 0 8px 24px -10px rgb(0 0 0 / 0.7);
+    --body-metal: #262b2f;
+    --body-metal-2: #353c41;
+    --body-edge: #0b0e10;
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --paper: #101416;
+  --paper-2: #161b1e;
+  --paper-3: #1d2327;
+  --ink: #e3e9ea;
+  --ink-2: #b6c0c3;
+  --ink-3: #8e999d;
+  --rule: #2b3337;
+  --rule-2: #3e484d;
+  --spot: #3cc9b1;
+  --spot-hover: #62d8c4;
+  --spot-ink: #03201b;
+  --spot-wash: #12302b;
+  --good: #5cc57c;
+  --good-wash: #13291a;
+  --warn: #efac48;
+  --warn-wash: #33260f;
+  --bad: #ff7d73;
+  --bad-hover: #ff9d95;
+  --bad-wash: #3a1614;
+  --focus: #3cc9b1;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.5), 0 8px 24px -10px rgb(0 0 0 / 0.7);
+  --body-metal: #262b2f;
+  --body-metal-2: #353c41;
+  --body-edge: #0b0e10;
+}

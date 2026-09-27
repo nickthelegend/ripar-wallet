@@ -37,3 +37,18 @@ research/*
 !research/design_review_use.md
 !research/DESIGN_REVIEW_FIXES.md
 !research/parts_dimensions.json
+
+# JavaScript workspaces (packages/*, agent, companion)
+node_modules/
+/packages/*/dist/
+/agent/dist/
+/companion/dist/
+# written by scripts/dev-stack.sh (the local stack's deployments JSON and description)
+/companion/public/devstack/
+.env
+.env.*
+!.env.example
+# agent runtime state (mandate, escalations, payments); the demo invoices are tracked
+agent/data/*
+!agent/data/*.example.json
+*.tsbuildinfo

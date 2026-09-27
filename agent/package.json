@@ -1,0 +1,32 @@
+{
+  "name": "@ripar/agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ripar agent service: the untrusted AI treasury agent that redeems a MetaMask delegation from the user's Ripar vault (AUTO path inside the PulseCosignEnforcer caps, HUMAN path co-signed by the Ripar device).",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "tsx --conditions=ripar-source src/main.ts",
+    "dev": "tsx watch --conditions=ripar-source src/main.ts",
+    "register-erc8004": "tsx --conditions=ripar-source scripts/register-erc8004.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run --exclude test/integration.test.ts",
+    "test:integration": "vitest run test/integration.test.ts"
+  },
+  "dependencies": {
+    "@ripar/protocol": "0.1.0",
+    "openai": "^7.23.0",
+    "viem": "^2.37.0"
+  },
+  "devDependencies": {
+    "@noble/curves": "^1.9.1",
+    "@types/node": "^22.18.0",
+    "tsx": "^4.20.0",
+    "typescript": "~5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

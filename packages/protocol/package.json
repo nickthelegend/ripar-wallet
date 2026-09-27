@@ -1,0 +1,43 @@
+{
+  "name": "@ripar/protocol",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Companion-side Ripar Wallet device protocol: CBOR, BC-UR, request builders, response parsers and verifiers (TypeScript port of firmware/tools/make_request.py).",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "ripar-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "dependencies": {
+    "@noble/curves": "^1.9.1",
+    "@noble/hashes": "^1.8.0",
+    "viem": "^2.37.0"
+  },
+  "devDependencies": {
+    "@metamask/delegation-abis": "^2.0.0",
+    "@metamask/smart-accounts-kit": "2.0.0",
+    "@types/node": "^22.18.0",
+    "typescript": "~5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
