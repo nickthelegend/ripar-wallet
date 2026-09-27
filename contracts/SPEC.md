@@ -180,7 +180,7 @@ These rules override the sections above wherever the two differ.
 **Relay**
 - **`attestApproval` checks.** After `NotRedeemer`, the approval's `keyId` must be registered (`registry.keyOf(keyId).owner != 0`) *and* equal the owner of the vault, `IERC173(approval.delegator).owner()`, read with the sentinel's safe staticcall. Otherwise revert `UnknownDevice()`.
 
-  So approvals can only be credited for vaults whose owner's registered Ripar device co-signed. This closes the farming with throwaway vaults and software keys, and the AUTO-spend laundering.
+  So approvals are only credited when the co-signing key is registered to the vault's current owner. This stops farming with *unregistered* software keys. It does **not** make approvals Sybil-proof: the registry is permissionless and does not attest hardware (see the limitations below).
 - **Shield.** `attestDenial` pre-checks `identity.isAuthorizedOrOwner(address(this), agentId)`, with a revert counting as false.
   - If the relay is authorized (the agent's owner made it an operator, so ERC-8004 would refuse the feedback as self-feedback), the denial is still recorded:
     - set `denialAttested`, increment `shieldedDenials[agentId]`, emit `Verdict(agentId, keyId, requestHash, false)` and `AgentShielded(agentId, keyId, requestHash)`;
@@ -195,7 +195,7 @@ These rules override the sections above wherever the two differ.
 - **Retired keys.** When an owner re-registers with a new key, the old key is **retired**. Binding a retired key reverts `KeyTaken()`, both for the same owner and for any other owner. The view is `isRetired(keyId)`.
 
 **Deploy**
-- **Workflow owner.** On 10143 and 143, `DeployConfig` requires `RIPAR_WORKFLOW_OWNER != 0`, otherwise it reverts `MissingWorkflowOwner()`. The value is the address that owns the Chainlink CRE workflow. On 31337, 0 is still allowed. The sentinel and relay addresses therefore depend on that owner and are only known once it is chosen.
+- **Workflow owner.** On 10143 and 143, `DeployConfig` requires `RIPAR_WORKFLOW_OWNER != 0`, otherwise it reverts `MissingWorkflowOwner()`. The value is the address that owns the Chainlink CRE workflow. On 31337, 0 is still allowed. Only the **sentinel** address depends on that owner. The registry, enforcer, MockUSD and relay addresses do not.
 
 **Documented limitations after v1.2** (no contract change):
 - **Reopen is a bearer authorization.** A reopen QR stays valid until a higher nonce is relayed, so relay it immediately. Protocol v1.2 may add a deadline. Since v1.2 a withheld reopen can only undo a close, never pre-empt one, and PANIC and revoke are unaffected.
@@ -203,3 +203,10 @@ These rules override the sections above wherever the two differ.
 - **DelegationManager pause.** The canonical DelegationManager's owner (an EOA on Monad testnet) can pause it. Funds can then be frozen but not stolen. Revoke and panic still work.
 - **AUTO windows.** A window is fixed and anchored at the first AUTO spend, so up to 2x `periodAutoCap` can leave within seconds across a window boundary. Period 0 is a lifetime cap.
 - **Deny targets.** A deny's `agentId` is chosen by the companion at mandate time (the device shows it as companion data).
+- **Approval reputation is Sybil-able.** The verification round reproduced two cases, pinned in `test/regression/V12LimitationsRegression.t.sol`:
+  - **Farming:** anyone can register a software P-256 key to their own EOA and co-sign spends from a throwaway vault that EOA owns. Each co-sign earns a `ripar/cosigned` +1.
+  - **Laundering:** an agent that is a smart account whose owner registered a software key can re-delegate a user's mandate to itself under its own Pulse caveat. Its AUTO spends then become creditable records.
+
+  Every `Verdict` carries the `keyId`, so reputation readers must weigh verdicts by trusted device keys or by vault owners with real deposits. Only hardware attestation of P1 would fix this, and it is future work.
+- **Shielded denials are invisible in ERC-8004.** An agent owner can make the relay an operator of the agent (the shield). A denial filed while the shield is up is recorded only in `shieldedDenials` and the `AgentShielded` event. The agentId can then never collect approvals again, but ERC-8004 agentIds are cheap to re-register. Readers must query `shieldedDenials`.
+- **Nonce hygiene.** Companions must use a fresh co-sign nonce per mandate. A reused nonce reverts `CosignReplayed` after the user has already pressed SIGN. Sequential nonces are cheapest: 256 share one storage word (about +5.5k gas, or about +22.6k for a fresh word).

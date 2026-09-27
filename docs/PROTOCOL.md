@@ -118,7 +118,7 @@ Without a request (home screen → PAIR), the device outputs keys 2, 3 and 6 onl
 | 7 | target `addr` | ERC-20 token or native payee |
 | 8 | value `u256` | native value |
 | 9 | calldata `bstr` | the device decodes ERC-20 `transfer`, `approve` and `transferFrom` |
-| 10 | nonce `u256` | |
+| 10 | nonce `u256` | **single-use per mandate** on chain (PulseCosignEnforcer v1.2): use a fresh nonce for every co-sign, including a retry of the same request |
 | 11 | expiry `uint` (unix s) | must be < 2^40 and at most 7 days after the device's "not before" time (§6); shown as UTC |
 | 12 | risk `{1: src text, 2: category text, 3: label text, 4: ageDays uint}` | optional, shown as "(companion)" |
 | 13 | ai `{1: text ≤100, 2: {1: to addr, 2: token addr, 3: amount u256}}` | optional; the device checks the claims against its own decode |
