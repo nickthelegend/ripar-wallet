@@ -1,0 +1,7 @@
+forge-std/=lib/forge-std/src/
+@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/
+openzeppelin-contracts/=lib/openzeppelin-contracts/
+@delegation-framework/=lib/delegation-framework/src/
+@account-abstraction/=lib/delegation-framework/lib/account-abstraction/contracts/
+@erc7579/=lib/delegation-framework/lib/erc7579-implementation/src/
+@SCL/=lib/delegation-framework/lib/SCL/src/
