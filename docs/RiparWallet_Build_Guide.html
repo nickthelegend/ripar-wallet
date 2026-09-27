@@ -260,6 +260,7 @@ h2, h3 { break-after: avoid; page-break-after: avoid; }
     <li><b>TP4056 &ldquo;OUT+&rdquo; &rarr; power switch &rarr; red wire of the board's BAT plug.</b> The switch has 6 legs in 2 rows of 3. Use the <b>middle leg (COM)</b> and <b>one end leg of the same row (NO)</b>. With a multimeter on beep mode, clicking ON beeps and clicking OFF stops.</li>
     <li><b>TP4056 &ldquo;OUT&minus;&rdquo; &rarr; black wire of the BAT plug.</b></li>
     <li>Plug the BAT cable into the small white connector on the back of the board. <b>Red goes to &oplus;</b>; the board marks &ominus; and &oplus; beside it.</li>
+    <li><b>No BAT cable?</b> Use the <b>VBAT</b> header pin instead (pin 14 of the right-hand column, next to 5V): the switch goes to VBAT, and OUT&minus; goes to any G pin. First check with a multimeter's beep mode that VBAT connects to the + pin of the white socket. <b>Never put the battery on 5V or 3V3.</b> For bench work, the board's USB-C alone powers everything.</li>
   </ol>
 
   <h2>4. Nothing to wire</h2>
@@ -331,7 +332,7 @@ h2, h3 { break-after: avoid; page-break-after: avoid; }
 <section class="chapter">
   <div class="kicker">Chapter 6</div>
   <h1>Firmware</h1>
-  <div class="callout ok"><b>Status: built and tested on the PC.</b> The full ESP32-S3 firmware in <code>firmware/</code> builds cleanly: RAM 11.7 %, flash 11.0 %, and <code>firmware.bin</code> is about 720 KB. It passes <b>9 host test suites (11,777 checks)</b>, checked against an independent Python reference. There is <b>no Wi-Fi or Bluetooth code</b> in the binary. <b>It has not run on a real board yet</b>, so the first flash is also the first hardware test.</div>
+  <div class="callout ok"><b>Status: built and tested on the PC.</b> The full ESP32-S3 firmware in <code>firmware/</code> (v1.2) builds cleanly: RAM 12.1 %, flash 11.3 %. It passes <b>10 host test suites</b>, checked against an independent Python reference, and the browser emulator runs the same code (570 checks). v1.2 derives the vault from the device's own key and has the contract addresses built in. There is <b>no Wi-Fi or Bluetooth code</b> in the binary. <b>It has not run on a real board yet</b>, so the first flash is also the first hardware test.</div>
   <h2>What runs on the device</h2>
   <ul>
     <li><b>Two keys, generated on the device.</b> The seed comes from hardware randomness, raw pulse-sensor samples and camera noise. <b>K1</b> (secp256k1) owns the vault and signs only mandates. <b>P1</b> (P-256) signs co-signatures, deny, PANIC, revoke, reopen and Privy requests; Monad checks it natively.</li>
@@ -398,11 +399,39 @@ h2, h3 { break-after: avoid; page-break-after: avoid; }
   <div class="callout warn"><b>Known limitations</b>
     <ul style="margin-top:1.5mm">
       <li><b>Not tested on hardware yet.</b> On your unit, check the screen rotation (<code>RIPAR_LCD_ROTATION</code>), the camera orientation and exposure, and the pulse thresholds.</li>
-      <li><b>Contract addresses.</b> The PulseCosignEnforcer and MockUSD addresses are blank until they are deployed; fill them in <code>src/enforcers.cpp</code> and <code>src/tokens.cpp</code>. Until then, the device trusts the contracts you confirm on screen at the first pairing.</li>
+      <li><b>Pulse thresholds.</b> The anti-spoof pulse checks were tuned on simulated signals. Test with your real thumb: at rest it should pass within about 15 s.</li>
       <li><b>Prototype security.</b> The seed is stored in flash without encryption and there is no seed backup. The crypto isn't constant-time.</li>
     </ul>
   </div>
   <p class="small">The full guide is <code>docs/FIRMWARE.md</code>, and the byte-level message format is <code>docs/PROTOCOL.md</code>.</p>
+</section>
+
+<!-- ============================== 6b. SYSTEM ============================== -->
+<section class="chapter">
+  <div class="kicker">Chapter 6, continued</div>
+  <h1>The whole system: contracts, agent, companion</h1>
+  <ul>
+    <li><b>Contracts on Monad.</b> The <b>PulseCosignEnforcer</b> is a rule attached to the agent's MetaMask delegation. The agent may pay small amounts by itself (the AUTO path), only to payees you approved under this mandate, and only while the sentinel lane is open. Anything else needs your device's co-signature. Monad checks it with its P-256 precompile.</li>
+    <li><b>The agent</b> (Qwen) pays invoices. When a payment needs a human, it sends an escalation to the companion.</li>
+    <li><b>The companion</b> (web app) shows the request as a QR. You check it on the device, thumb on, SIGN. The companion then passes the signature back to the agent.</li>
+    <li><b>The kill switch.</b> PANIC (hold 5 s on Home) kills every mandate. Revoke kills one. Chainlink CRE can close the AUTO lane, and only your device can reopen it.</li>
+  </ul>
+  <h2>Try it now, with no hardware and no public chain</h2>
+  <ol>
+    <li>On the PC: <code>npm install</code>, then <code>bash scripts/dev-stack.sh</code>. This starts a local fork of Monad testnet with the contracts, the agent and the companion.</li>
+    <li>Open <code>http://127.0.0.1:5173/?devstack</code> and choose <b>Device: EMULATOR</b>. It runs the firmware's own code in the browser, labelled <b>EMULATOR - DEMO KEYS</b>.</li>
+    <li>Follow the pages: <b>Pair</b>, then <b>Vault</b> (deploy it and get MockUSD), then <b>Mandate</b>, then <b>Inbox</b> ("Ask the agent to run now"). Answer each escalation on the emulated device. The line <i>Next on the device</i> tells you which key to press.</li>
+    <li>The prompt-injection invoice is the one to watch. The device shows <b>AI claims: MISMATCH</b>. Hold SIGN for 2 s to deny it.</li>
+  </ol>
+  <div class="keep"><h2>Contract addresses (built into firmware v1.2)</h2>
+  <table>
+    <tr><th>Contract</th><th>Address</th></tr>
+    <tr><td>PulseCosignEnforcer</td><td><code>0x64d61fe5438981DC803ED61250FEf024617ae7eE</code></td></tr>
+    <tr><td>RiparDeviceRegistry</td><td><code>0xA08a47c9d645926615CF04D69b7a048133F68c9f</code></td></tr>
+    <tr><td>RiparReputationRelay (10143)</td><td><code>0xE433dCA75CA6cd730b1006F51A26208B000eA9E2</code></td></tr>
+    <tr><td>MockUSD (10143)</td><td><code>0xB5b7eaffbF9bf68cbcC1Ce8B5850b2ea9d6f9a2a</code></td></tr>
+  </table></div>
+  <p class="small">To deploy them on Monad testnet with your own key, follow <code>docs/DEPLOY.md</code>. The addresses are deterministic (CREATE2), so the deployed contracts land exactly where the firmware expects them. The contracts passed an adversarial review (25 findings, 12 confirmed and fixed) and 715 tests.</p>
 </section>
 
 <!-- ============================== 7. HACKATHON ============================== -->
@@ -439,6 +468,9 @@ h2, h3 { break-after: avoid; page-break-after: avoid; }
     <tr><td><code>docs/WIRING.md</code></td><td>Wiring (text version)</td></tr>
     <tr><td><code>docs/PROTOCOL.md</code></td><td>Device &harr; companion &harr; contract protocol</td></tr>
     <tr><td><code>docs/FIRMWARE.md</code></td><td>Firmware: build, flash, screens and keys, walkthrough, security model</td></tr>
+    <tr><td><code>contracts/</code>, <code>docs/DEPLOY.md</code></td><td>Solidity contracts (Foundry), <code>SPEC.md</code>, deploy guide</td></tr>
+    <tr><td><code>agent/</code>, <code>companion/</code>, <code>packages/protocol/</code></td><td>AI agent service, companion web app, TypeScript protocol library</td></tr>
+    <tr><td><code>firmware/emu/</code>, <code>scripts/dev-stack.sh</code></td><td>Browser emulator of the device; one-command local stack</td></tr>
     <tr><td><code>firmware/</code></td><td>ESP32-S3 firmware (PlatformIO): <code>src/</code>, <code>include/</code>, host tests in <code>test/host/</code>, companion tools in <code>tools/</code></td></tr>
     <tr><td><code>model/RiparWallet.SLDASM</code>, <code>model/parts/</code></td><td>SolidWorks 2026 assembly and native parts</td></tr>
     <tr><td><code>cad/design.py</code></td><td>Every enclosure dimension in one file</td></tr>

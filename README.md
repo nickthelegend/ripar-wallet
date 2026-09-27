@@ -21,12 +21,33 @@ A camera-shaped, air-gapped signer for the **Monad Metropolis** hackathon. The s
 | `firmware/` | ESP32-S3 firmware (PlatformIO, Arduino-ESP32): source, host tests, companion tools |
 | `docs/FIRMWARE.md` | Firmware build, flashing, screens and keys, walkthrough, security model |
 | `docs/PROTOCOL.md` | Byte-level device ↔ companion ↔ contract protocol (BC-UR, CBOR, EIP-712) |
+| `firmware/emu/` | The device **emulator**: the firmware's own C++ compiled to WebAssembly (runs in the browser) |
+| `contracts/` | Solidity (Foundry): PulseCosignEnforcer, device registry, sentinel, reputation relay, MockUSD; `SPEC.md` |
+| `docs/DEPLOY.md` | Deploying the contracts to Monad testnet (you run it with your own key) |
+| `packages/protocol/` | `@ripar/protocol`: TypeScript protocol library, byte-exact with the firmware |
+| `agent/` | The untrusted AI treasury agent (Qwen tool loop, AUTO payments, escalation to the device) |
+| `companion/` | The companion web app (camera QR or the in-page EMULATOR) |
+| `scripts/dev-stack.sh` | One command: local fork of Monad testnet + contracts + agent + companion |
 | `model/RiparWallet.SLDASM` | SolidWorks 2026 assembly: native parts plus component stand-ins |
 | `model/parts/*.SLDPRT` | Native SolidWorks parts (feature trees built by script) |
 | `model/renders/` | Renders; `sheet.png` is the overview |
 | `model/interference_report.json` | SolidWorks interference detection result |
 | `cad/` | The parametric CAD pipeline (Python → SolidWorks COM) |
 | `research/` | CAD design reviews (fit, printability, assembly) and researched part dimensions |
+
+## Try it without hardware (about 5 minutes, nothing touches a public chain)
+
+Needs Node 22, Foundry and Git Bash (Windows) or any POSIX shell.
+
+```bash
+git clone --recursive https://github.com/nickthelegend/ripar-wallet && cd ripar-wallet
+npm install
+bash scripts/dev-stack.sh          # anvil fork of Monad testnet, contracts, agent, companion
+```
+
+Open the printed `http://127.0.0.1:5173/?devstack`, choose **Device: EMULATOR**, then follow the app:
+pair, deploy and fund the vault, sign a mandate, "Ask the agent to run now", and answer its escalations on the
+emulated device (thumb on, SIGN). `bash scripts/dev-stack.sh e2e` runs the whole 25-step story headlessly.
 
 ## The enclosure
 
@@ -77,12 +98,28 @@ That rebuilds the parts, the assembly, the interference check, the STL/STEP expo
 ```bash
 cd firmware
 pio run -e ripar -t upload                  # build + flash over the board's USB-C
-python test/host/run_host_tests.py          # 9 host suites vs. an independent Python reference
+python test/host/run_host_tests.py          # 10 host suites vs. an independent Python reference
 python tools/make_request.py selftest       # companion tool: build -> simulate -> verify
 ```
 
-- **Verified on the PC:** the clean build uses RAM 11.7 % and flash 11.0 %. All 9 host test suites pass (11,777 checks), and the radio symbol scan finds nothing.
-- **Not yet run on a real board.** See [docs/FIRMWARE.md](docs/FIRMWARE.md#known-limitations) for what is still open. In short: the enforcer and MockUSD addresses are filled in after deployment, the seed isn't encrypted yet, and the crypto isn't constant-time.
+- **Firmware v1.2:** the device derives its vault from its own key (MetaMask SimpleFactory CREATE2) and has the Ripar contract addresses compiled in, so a malicious companion cannot substitute a vault or contract. PANIC FIRST guard before re-pairing; pulse gate hardened against synthetic spoofs.
+- **Verified on the PC:** host tests 10/10, device build RAM 12.1 % / flash 11.3 %, no radio symbols; the emulator runs the same code (570 checks).
+- **Not yet run on a real board.** The pulse thresholds were tuned on synthetic signals only. See [docs/FIRMWARE.md](docs/FIRMWARE.md) for the known limitations (seed not encrypted yet, crypto not constant-time).
+
+## The contracts
+
+- **PulseCosignEnforcer**: a MetaMask delegation caveat. The agent's AUTO path spends inside per-tx and per-period caps, only to payees a human approved under this mandate, while the sentinel lane is open. Everything else needs the device's P-256 co-signature, checked by Monad's precompile at `0x0100`. Device-signed revoke and PANIC.
+- **RiparDeviceRegistry**, **RiparSentinel** (Chainlink CRE can only close the AUTO lane; only the device reopens it), **RiparReputationRelay** (ERC-8004 feedback), **MockUSD** (testnet).
+- Hardened by an adversarial review (5 reviewers, 25 findings, 12 confirmed and fixed, the rest documented in `contracts/SPEC.md`). 715 Foundry tests, including the firmware's own vectors and full redemptions through the real MetaMask DelegationManager.
+- Deterministic CREATE2 addresses (compiled into the firmware):
+
+| Contract | Address |
+|---|---|
+| PulseCosignEnforcer | `0x64d61fe5438981DC803ED61250FEf024617ae7eE` (10143 and 143) |
+| RiparDeviceRegistry | `0xA08a47c9d645926615CF04D69b7a048133F68c9f` (10143 and 143) |
+| RiparReputationRelay | `0xE433dCA75CA6cd730b1006F51A26208B000eA9E2` (10143) |
+| MockUSD | `0xB5b7eaffbF9bf68cbcC1Ce8B5850b2ea9d6f9a2a` (10143) |
+| RiparSentinel | depends on your CRE workflow owner (see `docs/DEPLOY.md`) |
 
 ## Monad Metropolis
 
@@ -103,4 +140,4 @@ python tools/make_request.py selftest       # companion tool: build -> simulate 
 | Envio | HyperIndex trust dashboard |
 | Alchemy | RPC plus webhooks |
 
-**Fallback if camera QR scanning is unreliable:** request files on the TF card, plus a clearly labelled browser emulator of the device.
+**Fallback if camera QR scanning is unreliable:** the companion's built-in, clearly labelled EMULATOR runs the device's own code.
