@@ -1,6 +1,7 @@
 // Ripar Wallet firmware entry point (Arduino-ESP32 2.0.x). Everything happens in src/flows.cpp
-// (ripar::app_setup / ripar::app_loop). No radio is ever started: nothing here or in any module includes the
-// Wi-Fi or Bluetooth headers (docs/FIRMWARE.md "Radio check").
+// (ripar::app_setup / ripar::app_loop). No radio is started at boot: Wi-Fi is never initialised, and Bluetooth LE only
+// when the user turns on the fallback courier in the device menu (env:ripar, src/ble_link.cpp, docs/BLE_LINK.md).
+// env:ripar-airgap links no radio code at all (docs/FIRMWARE.md "Security model", radio check).
 #include <Arduino.h>
 
 #include "device.h"

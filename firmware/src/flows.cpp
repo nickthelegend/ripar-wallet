@@ -32,6 +32,14 @@
 // Context (include/context.h) is only replaced by a context_after_*() result, and only after the confirmation or
 // signature it records; pairing, mandate and reopen responses are withheld when the new context cannot be saved
 // (respond.h Save).
+//
+// RIPAR_BLE (env:ripar; docs/BLE_LINK.md): a Bluetooth LE fallback courier for when the camera cannot read the QR
+// codes. The radio is dead at boot; the device menu's BLE LINK opens a review ("Turns the radio ON ...") that needs
+// pulse + SIGN like a signature (Job::BleOn), then the pairing screen (Screen::BlePair, the only place where a phone
+// can pair: numeric comparison, SIGN = confirm). A line written by the phone is fed into intake_part(), exactly like a
+// camera-decoded QR part, and only while SCAN is on screen; the response QR on screen is also sent to the phone. The
+// radio goes off on BLE OFF, PANIC, after 5 min without link traffic, and with the power; while it is alive every
+// screen shows RADIO ON (ui.cpp). env:ripar-airgap (RIPAR_BLE=0) builds none of this.
 #include <Arduino.h>
 
 #include <cstdio>
@@ -51,6 +59,10 @@
 #include "review.h"
 #include "ur.h"
 #include "vault.h"
+#if RIPAR_BLE
+#include "ble_link.h"
+#include "ble_proto.h"
+#endif
 
 namespace ripar {
 namespace {
@@ -63,7 +75,11 @@ constexpr uint32_t kHomeDrawMs = 2000;  // battery refresh on the home screen
 #define RIPAR_LED_CHALLENGE 0  // 1 = also require the MAX30102 LED-drive liveness challenge before arming (unverified)
 #endif
 
+#if RIPAR_BLE
+Fsm g_fsm(Fsm::DEFAULT_TIMEOUT_MS, MENU_ITEMS_BLE);  // + BLE LINK / BLE OFF, FORGET PHONE before BACK
+#else
 Fsm g_fsm;
+#endif
 
 // ---- device identity + pinned context
 Context g_ctx;  // from NVS; replaced only by a saved context_after_*() result
@@ -100,6 +116,16 @@ uint16_t g_msgColor = UI_TEXT;
 // ---- pulse evidence + salt of the signature being made: wiped as soon as the response QR text is built (the
 // signature buffers live in respond.cpp and are wiped there)
 uint8_t g_salt[16], g_ev[12];
+
+#if RIPAR_BLE
+// ---- Bluetooth LE fallback courier
+std::string g_bleName;           // "RIPAR-XXXX": shown on the BLE LINK review, advertised once the radio is on
+std::string g_bleNote;           // STATUS "note" (e.g. why a phone line was ignored); cleared on every screen change
+std::string g_blePairMsg;        // pairing screen status
+bool g_bleCodeDrawn = false;     // the pending comparison value has been drawn on the pairing screen ...
+uint32_t g_bleDrawnCode = 0;     // ... this one
+std::string g_k1Short, g_fwHex;  // for the STATUS JSON
+#endif
 
 bool g_dirty = true;
 bool g_changed = false;  // a screen change happened in this pass: flush the keys again after the new screen is drawn
@@ -195,6 +221,18 @@ void on_change(Screen from, Screen to) {
       g_pulse = PulseResult();
       pulse_start();
     }
+#if RIPAR_BLE
+    if (to == Screen::Scan && ble_link_on())
+      g_scanHint = g_haveCam ? "Scan the QR, or send it from the phone (BLE) - 2 s = cancel"
+                             : "Send the request from the phone (BLE) - hold 2 s = cancel";
+    if (from == Screen::BlePair) {  // the pairing window closes with its screen (a pending code is rejected)
+      ble_link_pairing_window(false);
+      g_bleCodeDrawn = false;
+      g_blePairMsg.clear();
+    }
+    if (to == Screen::BlePair) ble_link_pairing_window(true);
+    g_bleNote.clear();
+#endif
   }
   // nothing pressed before this screen existed may act on it (Armed in particular); again after drawing (app_loop)
   drain_keys(to != Screen::HomeHold);
@@ -323,6 +361,107 @@ void start_deny_from_cosign() {
   open_review(Job::Deny);
 }
 
+#if RIPAR_BLE
+// ================================================================================================= Bluetooth LE
+// The badge follows the controller itself: it stays on if a teardown step failed.
+void radio_badge() {
+  ui_set_radio_badge(ble_link_radio_alive());
+  g_dirty = true;
+}
+
+void radio_off(const char* why) {
+  if (!ble_link_on() && !ble_link_radio_alive()) return;
+  ble_link_disable();
+  radio_badge();
+  if (Serial)
+    Serial.printf("ripar: radio off (%s)%s\n", why, ble_link_radio_alive() ? " - CONTROLLER STILL ALIVE" : "");
+}
+
+Review review_ble_on() {
+  Review r;
+  r.title = "BLE LINK: TURN THE RADIO ON?";
+  r.ok = true;
+  auto add = [&r](const char* label, const std::string& value, Tone tone) {
+    r.lines.push_back(RLine{label, value, tone});
+  };
+  add("", "Turns the radio ON. Ripar is not air-gapped while it is on.", Tone::Bad);
+  add("Use", "fallback courier when the camera cannot read the QR codes; QR stays the primary path", Tone::Normal);
+  add("Name", g_bleName + " (Bluetooth LE)", Tone::Normal);
+  add("Pairing", "one phone; LE Secure Connections; you confirm its 6-digit code on this screen", Tone::Normal);
+  add("Signing", "unchanged: every request is still reviewed here and needs pulse + SIGN", Tone::Good);
+  add("Off", "BLE OFF in this menu, PANIC, 5 min without link traffic, or power off", Tone::Normal);
+  add("Badge", "RADIO ON is shown on every screen while the radio is on", Tone::Warn);
+  return r;
+}
+
+// Act::Sign on the BleOn review (pulse + SIGN passed): nothing is signed, the radio is turned on
+void enable_radio() {
+  wipe_sig_buffers();
+  ui_message("RADIO STARTING", "Bluetooth LE is starting as " + g_bleName + "...", UI_WARN);
+  std::string err;
+  const bool ok = ble_link_enable(g_bleName, err);
+  radio_badge();
+  if (!ok)
+    return refuse("RADIO NOT STARTED",
+                  err + (ble_link_radio_alive() ? " - CONTROLLER STILL ALIVE" : " - the radio is off."));
+  if (g_k1Short.empty()) g_k1Short = short_addr(g_k1);
+  if (g_fwHex.empty()) g_fwHex = to_hex(g_fwid, 8, false);
+  buzz_ok();
+  g_blePairMsg.clear();
+  go(Screen::BlePair);
+}
+
+// SIGN / hold 2 s on the pairing screen
+void ble_pair_key(bool yes) {
+  uint32_t code = 0;
+  if (ble_link_code(code)) {
+    if (!g_bleCodeDrawn || code != g_bleDrawnCode) {  // not on screen yet: a press cannot confirm what it did not see
+      buzz_err();
+      return;
+    }
+    ble_link_answer(yes);
+    g_bleCodeDrawn = false;
+    g_blePairMsg = yes ? "Code confirmed - finishing the pairing..." : "Code REJECTED: the phone was not paired.";
+    if (yes)
+      buzz_ok();
+    else
+      buzz_err();
+    g_dirty = true;
+    return;
+  }
+  if (yes) {
+    go(Screen::Home);  // done; the radio stays on (badge)
+    return;
+  }
+  radio_off("pairing screen");
+  show_message("RADIO OFF", "Bluetooth is off again (controller de-initialised). Ripar is air-gapped.", UI_GOOD);
+}
+
+void draw_ble_pair() {
+  uint32_t code = 0;
+  const bool pending = ble_link_code(code);
+  const BleLinkView v = ble_link_view();
+  char codeText[16] = "";
+  if (pending) std::snprintf(codeText, sizeof codeText, "%03u %03u", unsigned(code / 1000), unsigned(code % 1000));
+  std::string body;
+  if (pending)
+    body = "Does the phone show the same 6 digits? Confirm only a phone you are holding.";
+  else if (!g_blePairMsg.empty())
+    body = g_blePairMsg;
+  else if (v.authenticated)
+    body = "A paired phone is connected (encrypted).";
+  else if (v.connected)
+    body = "A phone connected - waiting for it to pair...";
+  else
+    body = "Pairing is open only while this screen is shown. In the Ripar app, connect to " + ble_link_name() + ".";
+  if (!pending && ble_link_bonded_count() > 0) body += " A new pairing replaces the paired phone.";
+  ui_ble_pair(ble_link_name().c_str(), codeText, body,
+              pending ? "press = CONFIRM | hold 2s = REJECT" : "press = home (radio stays on) | 2s = RADIO OFF");
+  g_bleCodeDrawn = pending;
+  g_bleDrawnCode = code;
+}
+#endif
+
 void menu_select(int item) {
   if (item == MENU_REVOKE) {
     g_review = review_revoke(g_ctx);
@@ -330,6 +469,28 @@ void menu_select(int item) {
   } else if (item == MENU_REOPEN) {
     g_review = review_reopen(g_ctx);
     open_review(Job::Reopen);
+#if RIPAR_BLE
+  } else if (item == MENU_BLE) {
+    if (ble_link_on() || ble_link_radio_alive()) {  // BLE OFF
+      radio_off("BLE OFF");
+      buzz_ok();
+      show_message("RADIO OFF", "Bluetooth is off again (controller de-initialised). Ripar is air-gapped.", UI_GOOD);
+    } else {  // BLE LINK: review + pulse + SIGN, then the radio is turned on
+      uint8_t rnd[2];
+      trng_fill(rnd, sizeof rnd);
+      g_bleName = blep::adv_name(uint16_t(rnd[0] << 8 | rnd[1]));
+      g_review = review_ble_on();
+      open_review(Job::BleOn);
+    }
+  } else if (item == MENU_FORGET) {
+    const bool on = ble_link_on();
+    ble_link_forget_phone();
+    buzz_ok();
+    show_message("PHONE FORGOTTEN",
+                 on ? "The Bluetooth bond is deleted and the phone disconnected. It must pair again."
+                    : "The Bluetooth bond is deleted before the radio is next turned on. The phone must pair again.",
+                 UI_GOOD);
+#endif
   } else {
     go(Screen::Home);
   }
@@ -412,6 +573,10 @@ void sign_with_pulse(bool pulsePassedThisPass) {
       ok = respond_reopen(g_ctx, keys, r, err);
       title = "REOPEN SIGNED (nonce " + u64_text(reopen_next_nonce(g_ctx)) + ")";
       break;
+#if RIPAR_BLE
+    case Job::BleOn:  // a confirmation, not a signature
+      return enable_radio();
+#endif
     default:
       err = "nothing to sign";
       break;
@@ -438,6 +603,9 @@ void sign_deny() {
 // Act::Panic: Hold5s on HOMEHOLD (a hold that began on Home). No pulse (panic can only restrict). Pinned chain +
 // PulseCosignEnforcer only.
 void do_panic() {
+#if RIPAR_BLE
+  radio_off("PANIC");  // PANIC always leaves the device radio-free
+#endif
   DeviceSigner keys;
   Response r;
   std::string err;
@@ -592,36 +760,51 @@ void draw(uint32_t now) {
       break;
     case Screen::Menu:
       if (g_dirty) {
+#if RIPAR_BLE
+        const bool radio = ble_link_on() || ble_link_radio_alive();
+        const char* const kItems[MENU_ITEMS_BLE] = {
+            "REVOKE the last mandate", "REOPEN the agent lane",
+            radio ? "BLE OFF (radio off now)" : "BLE LINK (radio on: phone courier)", "FORGET PHONE (Bluetooth bond)",
+            "BACK"};
+        const char* const kNote = "REVOKE, REOPEN and BLE LINK need pulse + SIGN.";
+#else
         static const char* const kItems[MENU_ITEMS] = {"REVOKE the last mandate", "REOPEN the agent lane", "BACK"};
+        const char* const kNote = "Both need pulse + SIGN and use the contracts pinned at pairing.";
+#endif
         std::vector<ReviewLine> lines;
-        for (int i = 0; i < MENU_ITEMS; i++) {
+        for (int i = 0; i < g_fsm.menu_items(); i++) {
           ReviewLine l;
           l.value = std::string(i == g_fsm.menu_index() ? "> " : "   ") + kItems[i];
           l.color = i == g_fsm.menu_index() ? UI_ACCENT : UI_DIM;
           lines.push_back(l);
         }
         ReviewLine note;
-        note.value = "Both need pulse + SIGN and use the contracts pinned at pairing.";
+        note.value = kNote;
         note.color = UI_DIM;
         lines.push_back(note);
         ui_review("DEVICE ACTIONS", lines, 0, "press = next | hold 2s = select", "press = next | hold 2s = select");
       }
+      break;
+    case Screen::BlePair:
+#if RIPAR_BLE
+      if (g_dirty) draw_ble_pair();
+#endif
       break;
   }
   g_dirty = false;
 }
 
 // ================================================================================================= scanning
-void tick_scan(uint32_t now) {
-  std::string payload;
-  if (!qrscan_poll(payload)) return;
+// One UR part: from the camera (tick_scan) or, in RIPAR_BLE builds, a line from the phone (ble_tick). Both take the
+// same decoder -> on_request -> review -> pulse -> SIGN path.
+UrDecoder::Result intake_part(const std::string& payload, uint32_t now) {
   const UrDecoder::Result r = g_dec.receive(payload);
   if (r == UrDecoder::Complete) {
     buzz_ok();
     const std::string type = g_dec.type();
     const Bytes msg = g_dec.message();
     on_request(type, msg);  // -> Review or Message (the camera stops on leaving Scan)
-    return;
+    return r;
   }
   if (r == UrDecoder::Accepted) {
     g_fsm.touch(now);
@@ -638,7 +821,76 @@ void tick_scan(uint32_t now) {
   } else {
     g_scanHint = "not a Ripar request QR";
   }
+  return r;
 }
+
+void tick_scan(uint32_t now) {
+  std::string payload;
+  if (!qrscan_poll(payload)) return;
+  intake_part(payload, now);
+}
+
+#if RIPAR_BLE
+// Once per pass while the radio is on: phone lines -> intake_part (only on SCAN), STATUS / TX, link events.
+void ble_tick(uint32_t now) {
+  if (!ble_link_on()) return;
+  std::string line;
+  for (int n = 0; n < 16 && ble_link_poll_line(line); n++) {
+    if (g_fsm.screen() == Screen::Scan) {
+      const UrDecoder::Result r = intake_part(line, now);
+      if (r == UrDecoder::Error || r == UrDecoder::Ignored)
+        g_bleNote = "part not used: " + g_scanHint;
+      else if (g_fsm.screen() == Screen::Scan)
+        g_bleNote.clear();
+    } else {
+      g_bleNote = "ignored: not on SCAN (press SIGN on the device first)";
+    }
+  }
+  const Screen s = g_fsm.screen();
+  blep::StatusInfo st;
+  st.screen = s;
+  st.paired = g_ctx.paired();
+  st.k1 = g_k1Short;
+  st.fw = g_fwHex;
+  st.got = unsigned(g_dec.received_pure());
+  st.of = unsigned(g_dec.seq_len());
+  st.note = g_bleNote;
+  static const std::string kNoOutput;
+  const BleEvt e =
+      ble_link_tick(now, blep::status_json(st), (s == Screen::Qr || s == Screen::PairQr) ? g_qrText : kNoOutput);
+  switch (e) {
+    case BleEvt::AutoOff:
+      radio_badge();
+      buzz_err();
+      if (s == Screen::BlePair) go(Screen::Home);
+      break;
+    case BleEvt::CodeShown:
+      if (s == Screen::BlePair) {
+        go(Screen::BlePair);  // re-entered: a press that began before the code was drawn cannot confirm it
+        buzz_beat();
+      }
+      break;
+    case BleEvt::Paired:
+      g_blePairMsg = "PAIRED. This phone is now the only paired phone. press = home";
+      buzz_ok();
+      g_dirty = true;
+      break;
+    case BleEvt::PairFailed:
+      if (s == Screen::BlePair) {
+        g_blePairMsg = "Pairing failed or was rejected. Try again from the phone while this screen is shown.";
+        g_bleCodeDrawn = false;
+        buzz_err();
+        g_dirty = true;
+      }
+      break;
+    case BleEvt::LinkChange:
+      if (s == Screen::BlePair) g_dirty = true;
+      break;
+    case BleEvt::None:
+      break;
+  }
+}
+#endif
 
 }  // namespace
 
@@ -746,11 +998,24 @@ void app_loop() {
     case Act::Timeout:
       buzz_err();
       break;
+    case Act::BleConfirm:  // Screen::BlePair only (RIPAR_BLE)
+#if RIPAR_BLE
+      ble_pair_key(true);
+#endif
+      break;
+    case Act::BleReject:
+#if RIPAR_BLE
+      ble_pair_key(false);
+#endif
+      break;
     case Act::Home:
     case Act::None:
       break;
   }
   if (g_fsm.screen() == Screen::Scan) tick_scan(now);
+#if RIPAR_BLE
+  ble_tick(now);
+#endif
   draw(now);
   // a press made while the previous screen was still displayed (before this one was drawn) is dropped too, and one
   // that is still down is swallowed until it is released

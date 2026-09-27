@@ -115,7 +115,23 @@ const lgfx::IFont* const F_MONO = &lgfx::fonts::FreeMonoBold12pt7b;
 const lgfx::IFont* const F_SMALL = &lgfx::fonts::Font2;
 const lgfx::IFont* const F_TINY = &lgfx::fonts::Font0;
 
+// RADIO ON badge (RIPAR_BLE builds, include/device.h ui_set_radio_badge): drawn by flush() on top of EVERY screen,
+// so no screen can be shown without it while the Bluetooth controller is alive.
+bool g_radio = false;
+constexpr int kBadgeW = 78, kBadgeH = 18;
+
+void radio_badge() {
+  if (!g_radio) return;
+  const int x = W - kBadgeW;
+  g->fillRect(x, 0, kBadgeW, kBadgeH, C_BAD);
+  g->setFont(F_SMALL);
+  g->setTextDatum(lgfx::textdatum_t::middle_center);
+  g->setTextColor(C_WHITE);
+  g->drawString("RADIO ON", x + kBadgeW / 2, kBadgeH / 2 + 1);
+}
+
 void flush() {
+  radio_badge();
   if (g_useSprite) g_spr.pushSprite(&g_lcd, 0, 0);
 }
 
@@ -202,7 +218,7 @@ void header(const char* title, uint16_t bg) {
   constexpr int kH = 28;
   g->fillRect(0, 0, W, kH, bg);
   const std::string t = sanitize(title ? title : "");
-  fit_font(t, W - 16, {F_BOLD, F_SMALL, F_TINY});
+  fit_font(t, W - 16 - (g_radio ? kBadgeW : 0), {F_BOLD, F_SMALL, F_TINY});  // room for the RADIO ON badge
   g->setTextDatum(lgfx::textdatum_t::middle_left);
   g->setTextColor(readable_on(bg));
   g->drawString(t.c_str(), 8, kH / 2);
@@ -436,15 +452,19 @@ void ui_home(const std::string& k1short, int battery, bool paired) {
   if (!g_inited) ui_init();
   g->fillScreen(C_BG);
   // status bar
-  draw_text("AIR-GAPPED", 8, 5, C_ACCENT, F_SMALL);
+  if (g_radio)
+    draw_text("NOT AIR-GAPPED", 8, 5, C_BAD, F_SMALL);  // Bluetooth is on (RIPAR_BLE): never claim air-gapped
+  else
+    draw_text("AIR-GAPPED", 8, 5, C_ACCENT, F_SMALL);
   char pct[8];
   if (battery >= 0) {
     std::snprintf(pct, sizeof pct, "%d%%", battery > 100 ? 100 : battery);
   } else {
     std::snprintf(pct, sizeof pct, "--%%");
   }
-  battery_icon(W - 34, 6, battery);
-  draw_text(pct, W - 40, 5, C_DIM, F_SMALL, lgfx::textdatum_t::top_right);
+  const int shift = g_radio ? kBadgeW + 4 : 0;  // battery left of the RADIO ON badge
+  battery_icon(W - 34 - shift, 6, battery);
+  draw_text(pct, W - 40 - shift, 5, C_DIM, F_SMALL, lgfx::textdatum_t::top_right);
   g->drawFastHLine(0, 26, W, C_FAINT);
 
   logo(W / 2, 72, C_ACCENT);
@@ -494,10 +514,11 @@ void ui_scan(const uint8_t* gray, int w, int h, float progress, const char* hint
   if (hint && *hint) {
     g->fillRect(0, 0, W, 22, C_BLACK);
     const std::string t = sanitize(hint);
-    fit_font(t, W - 8, {F_BODY, F_SMALL, F_TINY});
+    const int hw = W - (g_radio ? kBadgeW : 0);  // left of the RADIO ON badge
+    fit_font(t, hw - 8, {F_BODY, F_SMALL, F_TINY});
     g->setTextDatum(lgfx::textdatum_t::middle_center);
     g->setTextColor(C_TEXT);
-    g->drawString(t.c_str(), W / 2, 11);
+    g->drawString(t.c_str(), hw / 2, 11);
   }
   // multipart progress
   if (progress > 0.0f) {
@@ -679,7 +700,7 @@ void ui_qr(const std::string& textIn, const char* title, const char* footerText)
     const int trow = pw >= 110 ? 20 : 16, frow = pw >= 110 ? 20 : 10;
     g->setFont(tf);
     const std::vector<std::string> tl = wrap(title ? title : "", pw);
-    int y = 8;
+    int y = g_radio ? kBadgeH + 6 : 8;  // below the RADIO ON badge
     for (size_t i = 0; i < tl.size() && y + trow <= Hh / 2; i++, y += trow) draw_text(tl[i], px, y, C_ACCENT, tf);
     g->setFont(ff);
     const std::vector<std::string> fl = wrap(footerText ? footerText : "", pw);
@@ -708,6 +729,28 @@ void ui_message(const char* title, const std::string& body, uint16_t color) {
     if (i + 1 == maxRows && lines.size() > maxRows) s += " ...";
     draw_text(s, 10, y, C_TEXT, F_BODY);
   }
+  flush();
+}
+
+void ui_set_radio_badge(bool on) { g_radio = on; }
+bool ui_radio_badge() { return g_radio; }
+
+void ui_ble_pair(const char* name, const char* code, const std::string& body, const char* footerText) {
+  if (!g_inited) ui_init();
+  g->fillScreen(C_BG);
+  const std::string title = std::string("BLE PAIRING  ") + (name ? name : "");
+  header(title.c_str(), C_HEAD);
+  constexpr int kFooterH = 24, kRow = 22;
+  int y = 40;
+  if (code && *code) {  // the numeric comparison value, as large as possible
+    draw_text(code, W / 2, 74, C_ACCENT, F_BIG, lgfx::textdatum_t::middle_center);
+    y = 110;
+  }
+  g->setFont(F_BODY);
+  const std::vector<std::string> lines = wrap(body, W - 20);
+  for (size_t i = 0; i < lines.size() && y + kRow <= Hh - kFooterH - 2; i++, y += kRow)
+    draw_text(lines[i], 10, y, C_TEXT, F_BODY);
+  footer(footerText, kFooterH);
   flush();
 }
 

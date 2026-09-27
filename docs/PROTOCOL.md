@@ -1,6 +1,6 @@
 # Ripar Wallet: device protocol v1
 
-This is the contract between the **air-gapped device firmware**, the **companion app** and the **smart contracts**. Everything travels as QR codes. The device has no radio: Wi-Fi and Bluetooth are never initialised.
+This is the contract between the **air-gapped device firmware**, the **companion app** and the **smart contracts**. Everything travels as QR codes. The radio is off: Wi-Fi is never initialised, and Bluetooth only when the user turns on the optional BLE fallback courier on the device (§1.1; the `ripar-airgap` build has no radio code at all).
 
 The companion app is **untrusted**. It only carries data. The device parses every request strictly, checks it against the contracts it **pinned at pairing** (§6), shows every field that is signed, and rebuilds every digest itself.
 
@@ -18,10 +18,21 @@ This document describes **firmware v1.2** (contracts v1.2). The wire format is u
 
 Every request map carries key `1` = request id. The id is a byte string of 16 bytes, which may be a UUID (CBOR tag 37). The response echoes it back as a plain byte string.
 
+### 1.1 Optional courier: Bluetooth LE (firmware `env:ripar`)
+
+QR stays the primary, air-gapped path. When the camera cannot read the companion's QR codes, the user can turn on a Bluetooth LE link **on the device** (device menu → BLE LINK → review → pulse + SIGN). The link is only a second courier for the **same UR text**, specified in [BLE_LINK.md](BLE_LINK.md):
+
+- **Companion → device:** each QR part is written to the RX characteristic as one line: the upper-case UR part text + `\n` (at most 4096 bytes). The device feeds it into the same intake as a camera-decoded QR, and only while it is on SCAN. Parsing, review, policy, pulse and SIGN are identical.
+- **Device → companion:** the UR of the QR on screen + `\n`, as TX notifications of at most MTU - 3 bytes.
+- **STATUS:** a small JSON (screen, scan progress, short K1, firmware id) so the companion can say what the device expects next.
+- Security: LE Secure Connections with numeric comparison confirmed on the device, one bonded phone, no GATT access without the authenticated link. The radio is dead until woken on the device, shows **RADIO ON** on every screen while alive, and goes off after 5 min without link traffic, on BLE OFF, PANIC and power-off.
+
+Nothing in the message formats below depends on the courier.
+
 ## 2. Keys
 
 - **Seed:** a 256-bit master seed.
-  - It comes from SHA-256 of an entropy pool, built on the first run: `esp_fill_random()` with the SAR-ADC entropy source switched on (`bootloader_random_enable()`, since the radios never run), plus camera frames, raw MAX30102 samples and timing jitter mixed in by the firmware (`flows.cpp` `create_keys()`), plus a second TRNG draw and a timer value in `keys_create()`.
+  - It comes from SHA-256 of an entropy pool, built on the first run: `esp_fill_random()` with the SAR-ADC entropy source switched on (`bootloader_random_enable()`, since no radio runs then: keys are created at the first boot, and the optional Bluetooth link of §1.1 can only be turned on later; while it is on, later TRNG draws such as the co-sign salt use the RF noise source instead), plus camera frames, raw MAX30102 samples and timing jitter mixed in by the firmware (`flows.cpp` `create_keys()`), plus a second TRNG draw and a timer value in `keys_create()`.
   - It is stored in NVS. Encryption comes in P1.
 - **K1 (secp256k1):** BIP-32 from the seed (`HMAC-SHA512("Bitcoin seed", seed)`), path `m/44'/60'/0'/0/0`.
   - K1 owns the vault and signs **only** `Delegation` mandates (and `BindDevice`).

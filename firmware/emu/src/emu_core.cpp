@@ -47,6 +47,8 @@ const char* screen_name(Screen s) {
       return "pairQr";
     case Screen::Menu:
       return "menu";
+    case Screen::BlePair:  // Bluetooth pairing (RIPAR_BLE device builds only): never entered by the emulator
+      return "blePair";
   }
   return "?";
 }
@@ -773,6 +775,8 @@ void Device::draw(uint32_t now) {
         ui_review("DEVICE ACTIONS", lines, 0, "press = next | hold 2s = select", "press = next | hold 2s = select");
       }
       break;
+    case Screen::BlePair:  // the emulator has no radio (RIPAR_BLE device builds only): never entered
+      break;
   }
   dirty_ = false;
 }
@@ -925,6 +929,8 @@ void Device::app_loop() {
       break;
     case Act::Home:
     case Act::None:
+    case Act::BleConfirm:  // only on Screen::BlePair, which the emulator (no radio) never enters
+    case Act::BleReject:
       break;
   }
   if (fsm_.screen() == Screen::Scan) tick_scan(now);

@@ -192,16 +192,21 @@ Act Fsm::dispatch(Key k, const FsmIn& in, uint32_t now) {
 
     case Screen::Menu:
       if (k == Key::Short) {
-        menu_ = (menu_ + 1) % MENU_ITEMS;
+        menu_ = (menu_ + 1) % menuItems_;
         return Act::Redraw;
       }
       if (k == Key::Long2s) {
-        if (menu_ == MENU_BACK) {
+        if (menu_ == menuItems_ - 1) {  // BACK
           enter(Screen::Home, now);
           return Act::Home;
         }
         return Act::MenuSelect;
       }
+      return Act::None;
+
+    case Screen::BlePair:  // the pairing window stays open until the driver leaves it (or the timeout)
+      if (k == Key::Short) return Act::BleConfirm;
+      if (k == Key::Long2s) return Act::BleReject;
       return Act::None;
 
     case Screen::Fail:

@@ -49,14 +49,27 @@ enum class Screen : uint8_t {
   Message,   // refusal / information; Short = home
   PairQr,    // unsigned pairing QR (keys only); Short = home, Long2s = device actions menu
   Menu,      // device actions: Short = next item, Long2s = select
+  BlePair,   // RIPAR_BLE builds only: Bluetooth pairing window; Short -> Act::BleConfirm, Long2s -> Act::BleReject
 };
 
 // What the review / signature is for.
-enum class Job : uint8_t { None, Pair, Cosign, Mandate, Deny, Privy, Revoke, Reopen };
+// BleOn (RIPAR_BLE builds only): the confirmation that turns the radio on; it needs pulse + SIGN like a signature,
+// but nothing is signed.
+enum class Job : uint8_t { None, Pair, Cosign, Mandate, Deny, Privy, Revoke, Reopen, BleOn };
 bool job_needs_pulse(Job j);  // every job except Deny (Panic never goes through a review)
 
-// Device actions menu (Screen::Menu)
-enum MenuItem : int { MENU_REVOKE = 0, MENU_REOPEN = 1, MENU_BACK = 2, MENU_ITEMS = 3 };
+// Device actions menu (Screen::Menu). The last item is always BACK. The radio-free build has MENU_ITEMS items; a
+// RIPAR_BLE build constructs its Fsm with MENU_ITEMS_BLE (BLE LINK / BLE OFF and FORGET PHONE before BACK).
+enum MenuItem : int {
+  MENU_REVOKE = 0,
+  MENU_REOPEN = 1,
+  MENU_BACK = 2,
+  MENU_ITEMS = 3,
+  MENU_BLE = 2,  // RIPAR_BLE menu: BLE LINK (radio off) / BLE OFF (radio on)
+  MENU_FORGET = 3,
+  MENU_BLE_BACK = 4,
+  MENU_ITEMS_BLE = 5,
+};
 
 struct FsmIn {
   Key key = Key::None;       // the (at most one) key event polled in this pass (io_poll_key_state)
@@ -78,6 +91,8 @@ enum class Act : uint8_t {
   Deny,         // co-sign Review: Long2s -> the driver builds the device-side deny and opens its review
   Home,         // back to Home (cancel / done / refused review)
   Timeout,      // back to Home after timeoutMs without a key press
+  BleConfirm,   // BlePair: Short (the driver confirms a shown pairing code, or goes Home)
+  BleReject,    // BlePair: Long2s (the driver rejects a shown pairing code, or turns the radio off)
 };
 
 // First display row to draw: `first` clamped so that a full screen of `visible` rows is shown whenever the review
@@ -90,7 +105,9 @@ int review_next_first(int firstShown, int rowsShown);
 class Fsm {
  public:
   static const uint32_t DEFAULT_TIMEOUT_MS = 120000;
-  explicit Fsm(uint32_t timeoutMs = DEFAULT_TIMEOUT_MS) : timeoutMs_(timeoutMs) {}
+  // menuItems: MENU_ITEMS (radio-free build) or MENU_ITEMS_BLE; the last item is BACK
+  explicit Fsm(uint32_t timeoutMs = DEFAULT_TIMEOUT_MS, int menuItems = MENU_ITEMS)
+      : timeoutMs_(timeoutMs), menuItems_(menuItems < 2 ? 2 : menuItems) {}
 
   Screen screen() const { return screen_; }
   Job job() const { return job_; }
@@ -98,6 +115,7 @@ class Fsm {
   bool review_all_seen() const { return seenAll_; }
   int review_row() const { return row_; }  // first display row the driver should draw
   int menu_index() const { return menu_; }
+  int menu_items() const { return menuItems_; }
 
   // One loop pass. May change screen() (the driver compares before / after and runs the entry / exit side effects).
   Act step(const FsmIn& in);
@@ -121,6 +139,7 @@ class Fsm {
   Act dispatch(Key k, const FsmIn& in, uint32_t now);  // step() after the stale-key filter and the timeout
 
   uint32_t timeoutMs_;
+  int menuItems_;
   Screen screen_ = Screen::Home;
   uint32_t last_ = 0;  // last key press / screen change / touch
   Job job_ = Job::None;

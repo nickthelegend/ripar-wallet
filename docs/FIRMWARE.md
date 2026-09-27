@@ -1,8 +1,9 @@
 # Ripar Wallet: firmware guide
 
-The firmware turns a Waveshare ESP32-S3-LCD-2 into an air-gapped signer. It has no radio. Requests arrive as QR codes through the camera, and every answer leaves as one QR code on the screen. Nothing is signed until the user has seen every line of the review, held a thumb on the pulse sensor until a live pulse is measured, and then pressed SIGN.
+The firmware turns a Waveshare ESP32-S3-LCD-2 into an air-gapped signer. Its radio is off. Requests arrive as QR codes through the camera, and every answer leaves as one QR code on the screen. Nothing is signed until the user has seen every line of the review, held a thumb on the pulse sensor until a live pulse is measured, and then pressed SIGN.
 
 - **Protocol:** byte-exact contract in [`PROTOCOL.md`](PROTOCOL.md).
+- **Bluetooth fallback:** the default build (`env:ripar`) can also carry the same QR text over Bluetooth LE when the camera cannot read the codes. The radio stays dead until the user turns it on in the device menu (review + pulse + SIGN), and every screen shows **RADIO ON** while it is alive. `env:ripar-airgap` is the same firmware without any radio code. Contract: [`BLE_LINK.md`](BLE_LINK.md); on the device: [BLE LINK](#ble-link-bluetooth-fallback).
 - **Wiring:** full pin list in [`WIRING.md`](WIRING.md).
 - **Source:** `firmware/` (PlatformIO, Arduino-ESP32 2.0.17 / ESP-IDF 4.4).
 
@@ -39,7 +40,8 @@ Requirements: PlatformIO Core and Python 3 (standard library only). `lib_deps` f
 
 ```bash
 cd firmware
-pio run -e ripar            # full firmware -> .pio/build/ripar/firmware.bin
+pio run -e ripar            # full firmware, QR + Bluetooth LE fallback (default) -> .pio/build/ripar/firmware.bin
+pio run -e ripar-airgap     # the same firmware without any radio code -> .pio/build/ripar-airgap/firmware.bin
 pio run -e chk_device       # device bring-up check (no signing code), see test/device/check_main.cpp
 python test/host/run_host_tests.py          # portable modules, MinGW / any g++ as C++14
 python tools/make_request.py selftest       # companion tool: build -> simulate -> verify, tamper tests
@@ -47,14 +49,22 @@ python tools/make_request.py check-vectors  # test/host/vectors_protocol.h match
 python tools/ref_eip712.py check            # test/host/vectors_eip712_abi.h matches the Python reference
 ```
 
-- The host suites are `test_cbor_ur`, `test_crypto`, `test_eip712_abi`, `test_fsm`, `test_hashes`, `test_policy`, `test_protocol`, `test_pulse`, `test_respond` and `test_vault`.
-- Last full build (clean, firmware v1.2, 2026-09-27): `RAM 11.7 % (38 300 of 327 680 bytes)`, `Flash 11.1 % (728 897 of 6 553 600 bytes)` in the default 16 MB partition table. The ERC1967Proxy creation code of the vault derivation (1008 bytes) lives in flash.
+- The host suites are `test_ble_link`, `test_cbor_ur`, `test_crypto`, `test_eip712_abi`, `test_fsm`, `test_hashes`, `test_policy`, `test_protocol`, `test_pulse`, `test_respond` and `test_vault`.
+- Two firmware builds (the only difference is `RIPAR_BLE`):
+
+| Env | `RIPAR_BLE` | What it is | Last build (2026-09-27), of 327 680 B RAM / 6 553 600 B flash |
+|---|---|---|---|
+| `ripar` (default) | 1 | QR + the Bluetooth LE fallback courier (`src/ble_link.cpp`, `src/ble_proto.cpp`) | RAM 20.3 % (66 496 B), flash 20.5 % (1 343 157 B) |
+| `ripar-airgap` | 0 | radio-free: the BLE sources are not built and no Bluetooth / Wi-Fi code is linked ([radio check](#7-security-model)) | RAM 12.1 % (39 548 B), flash 11.3 % (738 293 B) |
+
+- The sizes are static RAM and flash in the default 16 MB partition table. While the radio is on, Bluedroid also allocates heap (not measured on hardware). The ERC1967Proxy creation code of the vault derivation (1008 bytes) lives in flash.
 - `pio run -t compiledb` without the same `PLATFORMIO_BUILD_FLAGS` as the last build changes the configuration hash, and PlatformIO then empties `.pio/build/<env>`: build again afterwards.
 - A low-disk PC can add `PLATFORMIO_BUILD_FLAGS=-pipe` so that GCC keeps its temporary files in memory. Run one `pio` build at a time.
 - Optional build flags (add them to `build_flags`):
 
 | Flag | Default | Meaning |
 |---|---|---|
+| `RIPAR_BLE` | 1 in `ripar`, 0 in `ripar-airgap` | The Bluetooth LE fallback courier ([BLE_LINK.md](BLE_LINK.md)). Use the envs rather than setting it by hand: `ripar-airgap` also leaves the BLE sources out. |
 | `RIPAR_LCD_ROTATION` | 1 | Use 3 if the screen is upside down. |
 | `RIPAR_CAM_VFLIP` / `RIPAR_CAM_HMIRROR` | 1 / 0 | Viewfinder orientation. QR decoding works either way. |
 | `RIPAR_CAM_AE_LEVEL` | -2 | Camera exposure. Go darker (down to -4) if phone screens wash out. |
@@ -129,7 +139,10 @@ Every screen except Home returns to Home after 120 s without a key press. The bu
 | **QR** | the signed response | done → Home | done → Home | - |
 | Message | refusal or error, with the exact reason | → Home | → Home | - |
 | Pairing QR | `ripar-pair` with K1 + P1 + firmware id (nothing signed, nothing pinned) | → Home | device menu | - |
-| Device menu | REVOKE the last mandate / REOPEN the agent lane / BACK | next item | select | - |
+| Device menu | REVOKE the last mandate / REOPEN the agent lane / (`ripar` only) BLE LINK or BLE OFF / FORGET PHONE / BACK | next item | select | - |
+| BLE pairing (`ripar` only) | advertised name `RIPAR-XXXX`, link state; during a pairing the 6-digit code, large | no code: → Home (radio stays on); code: **confirm** it | no code: **radio off**; code: **reject** it | - |
+
+**RADIO ON badge** (`ripar` only). While the Bluetooth controller is alive, every screen carries a red **RADIO ON** badge in the top-right corner and Home says **NOT AIR-GAPPED** instead of AIR-GAPPED. The badge is drawn by the display flush itself (`ui.cpp`), so no screen appears without it, and it follows the controller state (`esp_bt_controller_get_status()`), not a flag. On SCAN with the radio on, the hint says the request can also come from the phone.
 
 The review shows at most 9 rows at a time. Each press moves the page by 8 rows, overlapping one row, so every row appears on screen. The last-page footer (for example "press = PULSE + SIGN") appears only once the last row has been drawn. Until then the footer reads "press = more", and SIGN cannot be armed.
 
@@ -305,7 +318,23 @@ These are started on the device and use the **pinned** contracts only.
 | Revoke | Home: hold 2 s and release, then hold 2 s on the pairing QR → **REVOKE**. Revokes the last mandate this device signed, then forgets it: scan the QR before leaving the screen. Does not clear PANIC FIRST | yes | `parse @revoke.txt --pair @pair.txt --chain 10143` |
 | Reopen | same menu → **REOPEN**. Nonce = last + 1, never reused; needs a pinned sentinel; names the device's vault | yes | `parse @reopen.txt --pair @pair.txt --chain 10143 --contract <SENTINEL>` |
 
+PANIC also turns the Bluetooth radio off first (`ripar` build).
+
 Relay a PANIC QR at once. The device never lowers its epoch: every later mandate needs `epoch =` the new minimum. If the new epoch cannot be stored in NVS, the QR is still shown with a warning, and the device keeps using the new epoch until it restarts.
+
+### BLE LINK (Bluetooth fallback)
+
+`ripar` build only; the protocol, security model and phone flow are in [BLE_LINK.md](BLE_LINK.md). QR stays the primary path: use this only when the camera cannot read the companion's codes.
+
+| Action | How | Pulse? |
+|---|---|---|
+| Radio on | device menu (Home: hold 2 s and release, then hold 2 s on the pairing QR) → **BLE LINK** → review "Turns the radio ON. Ripar is not air-gapped while it is on." → pulse + SIGN (a confirmation, nothing is signed) → the **BLE pairing** screen | yes |
+| Pair a phone | on the BLE pairing screen only: connect from the Ripar app, compare the 6-digit code with the phone, press SIGN to confirm (hold 2 s = reject). A new pairing replaces the paired phone | - |
+| Send a request | Home: press (SCAN). The app writes the UR parts; the device takes them exactly like camera QR parts: same review, pulse and SIGN. The response QR is also sent to the phone | as the request |
+| Radio off | menu **BLE OFF**, hold 2 s on the pairing screen (no code shown), PANIC, 5 min without link traffic, power off | no |
+| Forget the phone | menu **FORGET PHONE**: deletes the bond now (radio on) or before the radio is next turned on | no |
+
+The Bluetooth controller is never initialised at boot. Turning the radio off disables and de-initialises Bluedroid and the controller; the controller memory stays reserved so it can be turned on again without a reboot.
 
 ## 7. Security model
 
@@ -347,13 +376,14 @@ Relay a PANIC QR at once. The device never lowers its epoch: every later mandate
   - K1 (secp256k1, `m/44'/60'/0'/0/0`) signs only mandates and BindDevice. P1 (P-256, `m/7951'/0'`) signs everything else.
   - Each private key is derived for one signature, the signature is verified (K1 is also recovered) before release, and the key is then wiped.
   - Signatures are RFC 6979 and low-s.
-- **No radio.** No source file includes Wi-Fi or Bluetooth headers, and nothing starts either radio. Radio check on the linked `firmware.elf` (2026-09-27): `xtensa-esp32s3-elf-nm -C firmware.elf | grep -E "esp_wifi_init|esp_bt_controller_init|esp_phy_enable|lwip"` gives **0 matches**.
-  - What remains is code the SDK links unconditionally, not radio code: `esp_bt_controller_mem_release` (Arduino frees the Bluetooth memory at start-up), the coexistence pre-init stubs from IDF start-up, a Wi-Fi log-level constructor and an empty PHY hook.
-  - ROM function addresses from the ROM linker scripts also appear, but they are not linked code.
+- **Radio.** Wi-Fi is never initialised: no source file includes the Wi-Fi headers, in either build.
+  - **`ripar-airgap`: no radio code.** `src/ble_link.cpp` and `src/ble_proto.cpp` are not built and nothing else includes the Bluetooth headers. Radio check on the linked `firmware.elf` (2026-09-27): `xtensa-esp32s3-elf-nm -C .pio/build/ripar-airgap/firmware.elf | grep -E "esp_wifi_init|esp_bt_controller_init|esp_phy_enable|lwip"` gives **0 matches**. What remains is code the SDK links unconditionally, not radio code: `esp_bt_controller_mem_release` (called by Arduino's start-up only when `btInUse()` is false, which the framework's ESP32-S3 default is not), the coexistence pre-init stubs from IDF start-up, a Wi-Fi log-level constructor and an empty PHY hook. ROM function addresses from the ROM linker scripts also appear, but they are not linked code.
+  - **`ripar` (default): Bluetooth LE only when the user turns it on.** The controller is never initialised at boot; only the device menu's BLE LINK (review + pulse + SIGN) starts it, and BLE OFF, PANIC, 5 min without link traffic and power-off stop it (disable + deinit). While it is alive every screen shows **RADIO ON**. The link is LE Secure Connections with numeric comparison confirmed on the device, one bonded phone, and no GATT access without that authenticated link; it only delivers UR parts to SCAN, the same intake as the camera ([BLE_LINK.md](BLE_LINK.md) §3). The same nm check lists `esp_bt_controller_init` / `esp_phy_enable` (Bluetooth) and still no `esp_wifi_init`, `esp_wifi_start`, `esp_netif` or `lwip`.
 - **Only one port.** The data USB-C port is the only way in besides the camera. The serial log prints status lines only: self-test results, the K1 address, the pairing chain and "output <type>". It never prints keys or request contents.
 
 ## Known limitations
 
+- **Bluetooth fallback not tested on hardware** (`ripar` build). Controller start / stop cycles, advertising, pairing with real phones (numeric comparison, the one-bond rule with phones that use resolvable private addresses, the MITM flag Bluedroid reports when a bonded phone re-encrypts), GATT access, notifications, pacing, throughput, the 5-minute auto-off and power use have never run. Only the portable parts (`ble_proto.cpp`, the state-machine additions) are host-tested. While the radio is on, the Bluetooth stack on the same chip as the keys is reachable over the air: keep it off unless needed, or flash `ripar-airgap`. The bond keys are stored by Bluedroid in NVS, unencrypted.
 - **Hardware not tested.** The display rotation, the camera orientation and exposure, QR decoding at real distances, MAX30102 detection on real thumbs, the key timings, the buzzer, the battery gauge and the NVS behaviour have not been checked on a board. Everything above comes from the build and the host tests.
 - **Crypto is not constant-time.** The ECDSA arithmetic in `crypto.cpp` leaks timing, and the stack used by the point arithmetic is not wiped. This is accepted for an air-gapped prototype that signs only after a physical confirmation. The ESP32-S3 hardware accelerators are not used for private-key operations.
 - **The seed is not encrypted.**
@@ -404,7 +434,9 @@ Relay a PANIC QR at once. The device never lowers its epoch: every later mandate
 | `src/crypto.cpp`, `src/hashes.cpp`, `src/eip712.cpp`, `src/abi.cpp`, `src/cbor.cpp`, `src/ur.cpp` | portable crypto and encodings (`test_crypto`, `test_hashes`, `test_eip712_abi`, `test_cbor_ur`) |
 | `src/pulse_algo.cpp` | beat detection (`test_pulse.cpp`) |
 | `src/keys.cpp`, `src/store.cpp` | seed, K1 / P1, self-test (mbedTLS cross-check), context in NVS |
-| `src/io.cpp`, `src/pulse.cpp`, `src/qrscan.cpp`, `src/ui.cpp` | BOOT key and buzzer, MAX30102, camera + quirc, LovyanGFX screens |
+| `src/io.cpp`, `src/pulse.cpp`, `src/qrscan.cpp`, `src/ui.cpp` | BOOT key and buzzer, MAX30102, camera + quirc, LovyanGFX screens (incl. the RADIO ON badge and the BLE pairing screen) |
+| `include/ble_link.h`, `src/ble_link.cpp` | `ripar` only: the Bluetooth LE fallback courier on Bluedroid (radio on / off, pairing, GATT service, TX pacing, auto-off) |
+| `include/ble_proto.h`, `src/ble_proto.cpp` | `ripar` only: its portable logic - RX line reassembly, TX chunking, STATUS JSON, idle timer, pairing-outcome rule, UUIDs (`test_ble_link.cpp`) |
 | `tools/make_request.py`, `tools/ref_*.py` | companion-side builder and verifier; independent Python references |
 | `tools/companion_lite.html` | static page: request QR animation, response → verify command |
 | `test/device/check_main.cpp` | `chk_device` bring-up program (screens, sensors, self-test; no signing flows) |

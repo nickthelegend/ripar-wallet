@@ -9,6 +9,13 @@
 #include "pulse_algo.h"
 #include "util.h"
 
+// 1 = the Bluetooth LE fallback courier is built in (env:ripar, src/ble_link.cpp, docs/BLE_LINK.md): the radio stays
+// dead until the user turns it on in the device menu (review + pulse + SIGN). 0 = radio-free build (env:ripar-airgap):
+// no Bluetooth or Wi-Fi code is linked at all.
+#ifndef RIPAR_BLE
+#define RIPAR_BLE 0
+#endif
+
 namespace ripar {
 
 // ---------------- keys.cpp (mbedTLS) ----------------
@@ -113,6 +120,13 @@ void ui_pulse(const PulseResult& p, const char* title);
 void ui_qr(const std::string& text, const char* title, const char* footer);
 void ui_message(const char* title, const std::string& body, uint16_t color);
 void ui_fingerprint(int x, int y, const uint8_t idx[4]);  // 4 icons
+// RADIO ON badge (RIPAR_BLE builds): while set, every screen gets a red "RADIO ON" badge in the top-right corner and
+// Home says NOT AIR-GAPPED instead of AIR-GAPPED. flows.cpp sets it from ble_link_radio_alive() (controller state).
+void ui_set_radio_badge(bool on);
+bool ui_radio_badge();
+// Bluetooth pairing screen: advertised name in the title, the 6-digit comparison value large (code "" = none), a
+// status text and the footer.
+void ui_ble_pair(const char* name, const char* code, const std::string& body, const char* footer);
 
 // ---------------- flows.cpp ----------------
 void app_setup();
