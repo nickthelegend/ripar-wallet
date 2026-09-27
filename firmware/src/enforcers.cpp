@@ -17,9 +17,19 @@
 // multi-token, balance-change, Nonce, Id, BlockNumber, ...) and the ones that change the semantics of the other
 // caveats (LogicalOrWrapper), deploy contracts, pay via a second delegation or work in batch mode.
 //
-// TODO(team, after deployment): paste the deployed Ripar PulseCosignEnforcer address of each chain into
-// RIPAR_COSIGN below. While a placeholder is "" the device uses the address pinned at pairing (ripar-pair-req key 5,
-// shown in full and confirmed with pulse + SIGN); once filled in, pairing with any other address is refused.
+// RIPAR CONTRACTS (firmware v1.2): the Ripar contracts are deployed with CREATE2 through the deterministic deployer
+// 0x4e59b44847b379578588920cA78FbF26c0B4956C from bytecode frozen at main 5cea7cf (contracts/SPEC.md v1.2), so their
+// addresses are known before deployment and compiled in here:
+//   PulseCosignEnforcer  0x64d61fe5438981DC803ED61250FEf024617ae7eE  (10143 and 143)
+//   RiparDeviceRegistry  0xA08a47c9d645926615CF04D69b7a048133F68c9f  (10143 and 143)
+//   RiparReputationRelay 0xE433dCA75CA6cd730b1006F51A26208B000eA9E2  (10143)
+//                        0x108BA102F7D0915f51c93F128b96Bd24F647f06d  (143: other constructor arguments - the chain's
+//                        ERC-8004 registries - but every one is a public constant of script/DeployConfig.sol, so the
+//                        address is known before deployment too; contracts/test/FirmwarePins.t.sol recomputes both)
+//   RiparSentinel        not compiled in: its address depends on the Chainlink CRE workflow owner (pair-req key 6).
+// A compiled-in address is the only one a pairing may name (policy.h check_pair refuses any other key 3 / 5 / 7) and
+// the only one a request is checked against; an absent key 5 / 7 pins it. A "" placeholder means "the address
+// confirmed at pairing".
 #include <cstring>
 
 #include "policy.h"
@@ -38,10 +48,25 @@ struct Pinned {
   const char* addr;  // "0x" + 40 hex digits, or "" (placeholder: not deployed yet, never matches)
 };
 
-// ---- Ripar PulseCosignEnforcer. TODO(team): paste the deployed addresses (EIP-55).
+// ---- Ripar PulseCosignEnforcer (CREATE2, same address on both chains)
 const Pinned RIPAR_COSIGN[] = {
-    {CHAIN_MONAD_TESTNET, ""},  // PLACEHOLDER - TODO after deployment on 10143
-    {CHAIN_MONAD_MAINNET, ""},  // PLACEHOLDER - TODO after deployment on 143
+    {CHAIN_MONAD_TESTNET, "0x64d61fe5438981DC803ED61250FEf024617ae7eE"},
+    {CHAIN_MONAD_MAINNET, "0x64d61fe5438981DC803ED61250FEf024617ae7eE"},
+};
+
+// ---- RiparDeviceRegistry (CREATE2, same address on both chains; domain of BindDevice)
+const Pinned RIPAR_REGISTRY[] = {
+    {CHAIN_MONAD_TESTNET, "0xA08a47c9d645926615CF04D69b7a048133F68c9f"},
+    {CHAIN_MONAD_MAINNET, "0xA08a47c9d645926615CF04D69b7a048133F68c9f"},
+};
+
+// ---- RiparReputationRelay (CREATE2; its constructor names the chain's ERC-8004 identity + reputation registries, the
+// CREATE2 enforcer and registry and the canonical DelegationManager - all public constants per chain - so the address
+// differs per chain but is known on both). Firmware v1.2 review: 143 used to be "" (the relay the companion named at
+// pairing), which let a companion send every deny the user filed on 143 to a contract of its choice.
+const Pinned RIPAR_RELAY[] = {
+    {CHAIN_MONAD_TESTNET, "0xE433dCA75CA6cd730b1006F51A26208B000eA9E2"},
+    {CHAIN_MONAD_MAINNET, "0x108BA102F7D0915f51c93F128b96Bd24F647f06d"},
 };
 
 // ---- MetaMask DelegationManager v1.3.0 (research/judge_merge.md §6: live on 143 and 10143)
@@ -128,6 +153,10 @@ bool compiled_delegation_manager(uint64_t chainId, Addr& out) {
   return pinned_lookup(DELEGATION_MANAGER, chainId, out);
 }
 
+bool compiled_registry(uint64_t chainId, Addr& out) { return pinned_lookup(RIPAR_REGISTRY, chainId, out); }
+
+bool compiled_relay(uint64_t chainId, Addr& out) { return pinned_lookup(RIPAR_RELAY, chainId, out); }
+
 EnfKind enforcer_kind(uint64_t chainId, const Addr& enforcer, const Context& ctx) {
   if (enforcer.is_zero()) return EnfKind::Unknown;
   Addr pulse;
@@ -184,14 +213,17 @@ const char* enforcer_name(uint64_t chainId, const Addr& enforcer) {
 #ifdef RIPAR_HOST_TEST
 // Host-only hook for test/host/test_protocol.cpp + test_policy.cpp (not declared in any header): walks every row.
 namespace enforcers_test {
-// table: 0 = Ripar PulseCosignEnforcer, 1 = DelegationManager, 2 = MetaMask decoded, 3 = MetaMask refused
+// table: 0 = Ripar PulseCosignEnforcer, 1 = DelegationManager, 2 = MetaMask decoded, 3 = MetaMask refused,
+//        4 = RiparDeviceRegistry, 5 = RiparReputationRelay
 size_t count() {
   return sizeof(RIPAR_COSIGN) / sizeof(Pinned) + sizeof(DELEGATION_MANAGER) / sizeof(Pinned) +
-         sizeof(METAMASK_DECODED) / sizeof(Enf) + sizeof(METAMASK_REFUSED) / sizeof(Refused);
+         sizeof(METAMASK_DECODED) / sizeof(Enf) + sizeof(METAMASK_REFUSED) / sizeof(Refused) +
+         sizeof(RIPAR_REGISTRY) / sizeof(Pinned) + sizeof(RIPAR_RELAY) / sizeof(Pinned);
 }
 bool row(size_t i, int* table, uint64_t* chainId, const char** addr, const char** name) {
   const size_t a = sizeof(RIPAR_COSIGN) / sizeof(Pinned), b = sizeof(DELEGATION_MANAGER) / sizeof(Pinned),
-               c = sizeof(METAMASK_DECODED) / sizeof(Enf), d = sizeof(METAMASK_REFUSED) / sizeof(Refused);
+               c = sizeof(METAMASK_DECODED) / sizeof(Enf), d = sizeof(METAMASK_REFUSED) / sizeof(Refused),
+               e = sizeof(RIPAR_REGISTRY) / sizeof(Pinned), f = sizeof(RIPAR_RELAY) / sizeof(Pinned);
   if (i < a) {
     *table = 0;
     *chainId = RIPAR_COSIGN[i].chainId;
@@ -212,6 +244,16 @@ bool row(size_t i, int* table, uint64_t* chainId, const char** addr, const char*
     *chainId = 0;
     *addr = METAMASK_REFUSED[i - a - b - c].addr;
     *name = METAMASK_REFUSED[i - a - b - c].name;
+  } else if (i < a + b + c + d + e) {
+    *table = 4;
+    *chainId = RIPAR_REGISTRY[i - a - b - c - d].chainId;
+    *addr = RIPAR_REGISTRY[i - a - b - c - d].addr;
+    *name = "RiparDeviceRegistry";
+  } else if (i < a + b + c + d + e + f) {
+    *table = 5;
+    *chainId = RIPAR_RELAY[i - a - b - c - d - e].chainId;
+    *addr = RIPAR_RELAY[i - a - b - c - d - e].addr;
+    *name = "RiparReputationRelay";
   } else {
     return false;
   }

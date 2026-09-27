@@ -48,8 +48,9 @@ struct Response {
   Context next;             // the context after this signature (meaningful when save != None)
 };
 
-// ripar-pair-req: check_pair(r, ctx); P1 and K1 both sign BindDevice(k1, p1xy) (RiparDeviceRegistry domain of the request's
-// chain + registry, as shown on the review); next = context_after_pair(ctx, r), Save::Required.
+// ripar-pair-req: check_pair(r, ctx, k1); P1 and K1 both sign BindDevice(k1, p1xy) (RiparDeviceRegistry domain of the request's
+// chain + registry, as shown on the review); next = context_after_pair(ctx, r, k1) (vault = vault_address(k1)),
+// Save::Required.
 bool respond_pair(const PairReq& r, const Context& ctx, const Addr& k1, const uint8_t p1xy[64], const uint8_t fwid[8],
                   Signer& s, Response& out, std::string& err);
 // ripar-cosign-req: check_cosign; r.h.presenceHash = presence_hash(ev12, salt16) (ev12 = the evidence of the pulse
@@ -58,7 +59,8 @@ bool respond_pair(const PairReq& r, const Context& ctx, const Addr& k1, const ui
 bool respond_cosign(CosignReq& r, const Context& ctx, const uint8_t ev12[12], const uint8_t salt16[16], Signer& s,
                     Response& out, std::string& err);
 // ripar-mandate-req: check_mandate (p1xy = this device's P1 key); K1 signs the Delegation; next =
-// context_after_mandate (lastDelegationHash of THIS mandate), Save::Required.
+// context_after_mandate (lastDelegationHash of THIS mandate, its pulse terms, unpanickedMandates = true),
+// Save::Required.
 bool respond_mandate(const MandateReq& r, const Context& ctx, const uint8_t p1xy[64], Signer& s, Response& out,
                      std::string& err);
 // Deny (a ripar-deny-req, or one built by policy.h deny_from_cosign): check_deny; P1 signs
@@ -69,9 +71,11 @@ bool respond_deny(const DenyReq& r, const Context& ctx, const uint8_t ev12[12], 
 // bytes); DER signature.
 bool respond_privy(const PrivyReq& r, Signer& s, Response& out, std::string& err);
 // Device-initiated, pinned contracts only (policy.h pinned_cosign_enforcer / ctx.sentinel / ctx.vault).
-// Revoke(lastDelegationHash); next = context_after_revoke (the mandate is forgotten), Save::BestEffort
+// Revoke(lastDelegationHash); next = context_after_revoke (the mandate is forgotten; unpanickedMandates stays),
+// Save::BestEffort
 bool respond_revoke(const Context& ctx, Signer& s, Response& out, std::string& err);
-// Panic(panic_next_epoch(ctx)); next.minEpoch = that epoch, Save::Restrict (panic works even when NVS does not)
+// Panic(panic_next_epoch(ctx)); next.minEpoch = that epoch and next.unpanickedMandates = false (PANIC FIRST satisfied),
+// Save::Restrict (panic works even when NVS does not)
 bool respond_panic(const Context& ctx, Signer& s, Response& out, std::string& err);
 // Reopen(vault, reopen_next_nonce(ctx)); next.reopenNonce = that nonce, Save::Required (a nonce is never reused)
 bool respond_reopen(const Context& ctx, Signer& s, Response& out, std::string& err);

@@ -9,7 +9,8 @@ parse_response. The device-initiated messages (revoke / panic / reopen) and the 
 review use exactly the functions the tool uses for them (revoke_digest / panic_digest / reopen_digest + sign_p1,
 simulate_deny_from_cosign).
 
-Sections: pair, mandate (pulse caveat), co-signs for the four call shapes the device decodes (cosignErc20 = transfer,
+Sections: vault (the vault derivation of firmware v1.2), pair, mandate (pulse caveat), co-signs for the four call
+shapes the device decodes (cosignErc20 = transfer,
 cosignNative, cosignApprove, cosignTransferFrom), deny (from the ERC-20 co-sign review), denyRequest (ripar-deny-req from
 the companion), revoke, panic, reopen, repair (the device lost its context after panic(1) / reopen(1): re-pair with
 the on-chain floors as keys 10 / 11, a new mandate with epoch = floor and a MetaMask TimestampEnforcer caveat before the
@@ -28,8 +29,16 @@ recover). Any disagreement aborts with a CHECK FAILED message and exit code 1.
     python test/vectors/gen_device_vectors.py --check    exit 1 unless the JSON on disk is what this script writes
     python test/vectors/gen_device_vectors.py --out F    write F instead
 
-Environment: RIPAR_FW_TOOLS = path of firmware/tools (default: found by walking up from this file). Pure stdlib.
-The addresses are fixed, fake (0x7e57... = "test") and non-zero, except the real MetaMask v1.3.0 DelegationManager.
+Firmware v1.2 addresses: the device refuses every Ripar contract but the ones compiled into it, and derives its vault
+from K1 (docs/PROTOCOL.md sections 2.1 and 4). So the vectors use the real pinned addresses on 10143 (make_request.py
+RIPAR_REGISTRY / RIPAR_COSIGN / RIPAR_RELAY, MUSD_10143: RiparDeviceRegistry, PulseCosignEnforcer, RiparReputationRelay,
+MockUSD), the real MetaMask v1.3.0 DelegationManager, SimpleFactory, HybridDeleGator implementation and EntryPoint v0.7,
+and as vault / delegator the demo K1's derived vault 0xc36F625D426eBa8f1e0129276B284a939CD3A57D (the SimpleFactory
+CREATE2 address, salt 0, of the kit's ERC1967Proxy init code). The vault section carries that init code, checked here
+three ways: this script's own abi encoding, make_request.py vault_*, and the firmware's known answers
+(firmware/test/host/vectors_protocol.h VAULT[] / DEMO_VAULT / PROXY_CREATION_KECCAK, which the C++ vault.cpp is
+host-tested against), plus the on-chain-verified answer of docs/PROTOCOL.md 2.1 (make_request.DEMO_VAULT_KAT).
+The other addresses (sentinel, agent, payees, ...) are fixed, fake (0x7e57... = "test") and non-zero.
 The demo private keys in the output are public (derived from a published seed): never fund them.
 """
 import argparse
@@ -99,22 +108,42 @@ REPAIR_REOPEN_NONCE = REPAIR_REOPEN_FLOOR + 1
 REPAIR_SALT = SALT + 1
 TS_BEFORE = NOW + 30 * 86400  # MetaMask TimestampEnforcer caveat of the second mandate: usable before this time
 
-A = {  # fixed, clearly fake, non-zero addresses ("7e57" = test); the DelegationManager is the real v1.3.0 one
-    "delegationManager": MR.DELEGATION_MANAGER,
-    "registry": bytes.fromhex("7e57000000000000000000000000000000000001"),
-    "enforcer": bytes.fromhex("7e57000000000000000000000000000000000002"),
-    "sentinel": bytes.fromhex("7e57000000000000000000000000000000000003"),
-    "relay": bytes.fromhex("7e57000000000000000000000000000000000004"),
-    "vault": bytes.fromhex("7e57000000000000000000000000000000000005"),  # delegator (HybridDeleGator owned by K1)
+# the canonical MetaMask v1.3.0 accounts contracts (the same on 10143 and 143; contracts/.work/vault-derivation.md)
+SIMPLE_FACTORY = MR.VAULT_FACTORY
+HYBRID_IMPL = MR.VAULT_IMPL
+ENTRY_POINT = bytes.fromhex("0000000071727De22E5E9d8BAf0edAc6f37da032")  # ERC-4337 EntryPoint v0.7 (impl immutable)
+VAULT_SALT = b"\x00" * 32  # the kit's deploySalt "0x", left-padded: Ripar always uses 0
+# keccak256 of the 1008-byte ERC1967Proxy creation code (@metamask/delegation-abis@2.0.0), docs/PROTOCOL.md 2.1
+PROXY_CREATION_KECCAK = "c8fb9314d27cddb08b374dd2bf47cd06c6fb879756ddfbedf522a8c58756a8e0"
+DEMO_K1_ADDR = MR.demo_keys()["k1addr"]
+
+A = {  # firmware v1.2: the real pinned / derived addresses where the device checks them, fake ("7e57" = test) elsewhere
+    "delegationManager": MR.DELEGATION_MANAGER,  # MetaMask v1.3.0 (compiled in)
+    "registry": MR.RIPAR_REGISTRY[CHAIN],  # RiparDeviceRegistry (compiled in)
+    "enforcer": MR.RIPAR_COSIGN[CHAIN],  # PulseCosignEnforcer (compiled in)
+    "sentinel": bytes.fromhex("7e57000000000000000000000000000000000003"),  # not compiled in: pinned as given
+    "relay": MR.RIPAR_RELAY[CHAIN],  # RiparReputationRelay (compiled in on 10143)
+    "vault": MR.vault_address(DEMO_K1_ADDR),  # delegator: the vault the device derives from its K1
     "agent": bytes.fromhex("7e57000000000000000000000000000000000006"),  # delegate = redeemer
-    "token": bytes.fromhex("7e57000000000000000000000000000000000007"),  # MockUSD
+    "token": MR.MUSD_10143,  # MockUSD (in the firmware token table on 10143 since v1.2)
     "payee": bytes.fromhex("7e57000000000000000000000000000000000008"),
     "spender": bytes.fromhex("7e57000000000000000000000000000000000009"),  # approve(spender, ..)
     "holder": bytes.fromhex("7e5700000000000000000000000000000000000a"),  # transferFrom(holder, payee2, ..)
     "payee2": bytes.fromhex("7e5700000000000000000000000000000000000b"),
     "timestampEnforcer": MR.unhex(MR.MM_ENF["TimestampEnforcer"]),  # real MetaMask v1.3.0 address (10143 and 143)
+    "simpleFactory": SIMPLE_FACTORY,  # deploys the vault (CREATE2)
+    "hybridDeleGatorImpl": HYBRID_IMPL,  # the vault's implementation (behind the ERC1967Proxy)
+    "entryPoint": ENTRY_POINT,
 }
+# typed from docs/PROTOCOL.md (firmware v1.2 compiled-in table, vault known answer), independently of make_request.py
 assert MR.h(A["delegationManager"]) == "db9b1e94b5b69df7e401ddbede43491141047db3"
+assert MR.h(A["registry"]) == "a08a47c9d645926615cf04d69b7a048133f68c9f"
+assert MR.h(A["enforcer"]) == "64d61fe5438981dc803ed61250fef024617ae7ee"
+assert MR.h(A["relay"]) == "e433dca75ca6cd730b1006f51a26208b000ea9e2"
+assert MR.h(A["token"]) == "b5b7eaffbf9bf68cbcc1ce8b5850b2ea9d6f9a2a"
+assert MR.h(A["vault"]) == "c36f625d426eba8f1e0129276b284a939cd3a57d"
+assert MR.h(A["simpleFactory"]) == "69aa2f9fe1572f1b640e1bbc512f5c3a734fc77c"
+assert MR.h(A["hybridDeleGatorImpl"]) == "48dbe696a4d990079e039489ba2053b36e8ffec4"
 
 # type strings typed here from contracts/SPEC.md "Structs" and docs/PROTOCOL.md section 3
 DOMAIN_TYPE = "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
@@ -249,6 +278,64 @@ def msg(cb, ur):
     return {"cbor": hx(cb), "ur": ur}
 
 
+# ------------------------------------------------------------------ the vault (firmware v1.2 derivation), second implementation
+def own_vault_initcode(owner):
+    """abi.encodeWithSignature("initialize(address,string[],uint256[],uint256[])", owner, [], [], []), encoded here:
+    selector, the owner word, three offsets (0x80, 0xa0, 0xc0) and three empty arrays (a zero length word each)"""
+    sel = keccak(b"initialize(address,string[],uint256[],uint256[])")[:4]
+    return sel + aword(owner) + word(0x80) + word(0xA0) + word(0xC0) + word(0) * 3
+
+
+def own_vault_args(owner):
+    """abi.encode(address implementation, bytes initcode): the ERC1967Proxy constructor arguments"""
+    init = own_vault_initcode(owner)
+    return aword(HYBRID_IMPL) + word(0x40) + word(len(init)) + init + b"\x00" * (-len(init) % 32)
+
+
+def own_vault(owner):
+    """-> (init code = proxy creation code || args, its keccak, the SimpleFactory CREATE2 address with salt 0)"""
+    init_code = MR.ERC1967_PROXY_CREATION + own_vault_args(owner)
+    ich = keccak(init_code)
+    return init_code, ich, keccak(b"\xff" + SIMPLE_FACTORY + VAULT_SALT + ich)[12:]
+
+
+_VAULT_ROW = re.compile(r'\{"([0-9a-f]{40})", "([0-9a-f]+)", "([0-9a-f]+)", "([0-9a-f]{64})", "([0-9a-f]{40})", '
+                        r'"(0x[0-9a-fA-F]{40})"\},')
+
+
+def firmware_vault_vectors():
+    """VAULT[], DEMO_VAULT and PROXY_CREATION_KECCAK of firmware/test/host/vectors_protocol.h (the known answers the C++
+    vault.cpp is host-tested against), each entry checked against this script's own derivation and make_request's."""
+    path = os.path.normpath(os.path.join(TOOLS, "..", "test", "host", "vectors_protocol.h"))
+    with open(path, "r", encoding="utf-8") as fh:
+        text = fh.read()
+    demo = re.search(r'static const char DEMO_VAULT\[\] = "([0-9a-f]{40})";', text).group(1)
+    pk = re.search(r'static const char PROXY_CREATION_KECCAK\[\] = "([0-9a-f]{64})";', text).group(1)
+    check(pk == PROXY_CREATION_KECCAK == keccak(MR.ERC1967_PROXY_CREATION).hex(),
+          "vault: proxy creation code keccak == firmware PROXY_CREATION_KECCAK == docs/PROTOCOL.md 2.1")
+    check(demo == MR.h(A["vault"]), "vault: firmware DEMO_VAULT == the vectors' vault")
+    start = text.index("static const Vault VAULT[] = {")
+    block = text[start:text.index("\n};", start)]
+    rows = [ln.strip() for ln in block.split("\n")[1:] if ln.strip()]
+    out = []
+    for ln in rows:
+        mt = _VAULT_ROW.fullmatch(ln)
+        check(mt is not None, "VAULT row parses: " + ln[:60])
+        owner = bytes.fromhex(mt.group(1))
+        init_code, ich, vault = own_vault(owner)
+        check(mt.group(2) == own_vault_initcode(owner).hex() == MR.vault_initcode(owner).hex(),
+              "VAULT %s: initialize calldata == firmware == make_request" % mt.group(1))
+        check(mt.group(3) == own_vault_args(owner).hex() == MR.vault_constructor_args(owner).hex(),
+              "VAULT %s: proxy constructor args == firmware == make_request" % mt.group(1))
+        check(mt.group(4) == ich.hex() == MR.vault_init_code_hash(owner).hex(),
+              "VAULT %s: initCodeHash == firmware == make_request" % mt.group(1))
+        check(mt.group(5) == vault.hex() == MR.vault_address(owner).hex() and mt.group(6) == ad(vault),
+              "VAULT %s: vault address == firmware == make_request" % mt.group(1))
+        out.append({"owner": ad(owner), "initCodeHash": hx(ich), "vault": ad(vault)})
+    check(len(out) >= 8 and out[0]["owner"] == ad(DEMO_K1_ADDR), "VAULT: %d owners, the demo K1 first" % len(out))
+    return out
+
+
 FW_KIND = {"None": "none", "Transfer": "transfer", "Approve": "approve", "TransferFrom": "transferFrom",
            "Unknown": "unknown"}
 _ERC20_ROW = re.compile(r'\{"([0-9a-f]*)", ripar::Erc20Call::(\w+), 0x([0-9a-f]{8})u, "([0-9a-f]{40})", '
@@ -300,12 +387,35 @@ def build():
     check(rc.on_curve(rc.P1, P1PUB), "demo P1 key on P-256")
     check(rc.eth_address(K1PUB) == k1addr, "demo K1 address = keccak(pub)[12:]")
 
+    # ---------------------------------------------------------------- the vault (derived from K1, firmware v1.2)
+    vault_init_code, vault_ich, vault_addr = own_vault(k1addr)
+    kat_k1, kat_ich, kat_vault = MR.DEMO_VAULT_KAT
+    check(MR.unhex(kat_k1) == k1addr and MR.unhex(kat_ich) == vault_ich and MR.unhex(kat_vault) == vault_addr,
+          "vault: demo K1 -> initCodeHash -> vault == the on-chain-verified answer (docs/PROTOCOL.md 2.1)")
+    check(vault_addr == A["vault"] == MR.demo_keys()["vault"], "vault: the vectors' vault is the demo K1's derived vault")
+    check(len(MR.ERC1967_PROXY_CREATION) == 1008 and len(vault_init_code) == 1008 + 352,
+          "vault: init code = 1008-byte ERC1967Proxy creation code || 352-byte constructor args")
+    fw_vaults = firmware_vault_vectors()
+    vault_doc = {
+        "note": "firmware v1.2 derives its vault from K1 (docs/PROTOCOL.md 2.1): SimpleFactory.deploy(initCode, salt) "
+                "of the kit's ERC1967Proxy init code, owner K1; the device pins no other vault",
+        "owner": ad(k1addr), "factory": ad(SIMPLE_FACTORY), "implementation": ad(HYBRID_IMPL),
+        "entryPoint": ad(ENTRY_POINT), "salt": hx(VAULT_SALT),
+        "proxyCreationCode": hx(MR.ERC1967_PROXY_CREATION), "proxyCreationCodeHash": "0x" + PROXY_CREATION_KECCAK,
+        "initializeCalldata": hx(own_vault_initcode(k1addr)), "constructorArgs": hx(own_vault_args(k1addr)),
+        "initCode": hx(vault_init_code), "initCodeHash": hx(vault_ich), "address": ad(vault_addr),
+        "firmwareTableCount": len(fw_vaults), "firmwareTable": fw_vaults,
+    }
+
     # ---------------------------------------------------------------- pair (ripar-pair-req -> ripar-pair)
+    # keys 4 / 5 / 7 name the compiled-in contracts; no key 8: the device pins the vault it derives from K1
     pair_f = {"reqId": fixed("pair req-id", 16), "chainId": CHAIN, "registry": A["registry"],
               "manager": A["delegationManager"], "enforcer": A["enforcer"], "sentinel": A["sentinel"],
-              "relay": A["relay"], "vault": A["vault"], "now": NOW}
+              "relay": A["relay"], "now": NOW}
     pr = device_roundtrip("pair", pair_f, salt16=fixed("salt pair", 16))
+    check(8 not in pr["m"], "pair request: no key 8 (vault)")
     check(pr["r"][2] == k1addr and pr["r"][3] == p1xy, "pair response carries the demo K1 address and P1 key")
+    check(MR.unhex(pr["rep"].fields["vault"]) == A["vault"], "parse of the pairing response: vault = the derived vault")
     bind_digest = m_digest("registry", m_struct("BindDevice", aword(k1addr), px, py))
     check(MR.unhex(pr["rep"].fields["bindDigest"]) == bind_digest, "BindDevice digest == hand-written EIP-712")
     check(MR.pair_digest(CHAIN, A["registry"], k1addr, p1xy) == bind_digest, "BindDevice digest == pair_digest")
@@ -437,10 +547,10 @@ def build():
     check(MR.unhex(c20["calldata"]) == bytes.fromhex("a9059cbb") + aword(A["payee"]) + word(ERC20_AMOUNT),
           "cosign erc20: calldata = transfer(payee, amount)")
     q20 = c20r["q"]
-    check(q20["hasDecimals"] and q20["hasSymbol"] and MR.token_check(q20) == (False, -1, "mUSD"),
-          "cosign erc20: MockUSD is not in the firmware token table: keys 15/16 are companion claims")
-    c20["tokenDecimalsClaim"] = q20["decimals"]  # key 15 as sent (MockUSD has 6 decimals, SPEC.md)
-    c20["tokenSymbolClaim"] = q20["symbol"]  # key 16 as sent
+    check(q20["hasDecimals"] and q20["hasSymbol"] and MR.token_check(q20) == (True, 6, "mUSD"),
+          "cosign erc20: MockUSD is in the firmware v1.2 token table on 10143 (6, mUSD): keys 15/16 must agree with it")
+    c20["tokenDecimalsClaim"] = q20["decimals"]  # key 15 as sent (= the firmware token table: MockUSD has 6 decimals)
+    c20["tokenSymbolClaim"] = q20["symbol"]  # key 16 as sent (= the firmware token table)
     cnat, _cnatr = cosign("cosign native", {
         "target": A["payee"], "value": NATIVE_VALUE,
         "ai": {"text": "Send 0.5 MON to the design studio",
@@ -581,9 +691,11 @@ def build():
     # ---------------------------------------------------------------- document
     doc = {
         "description": "Ripar device-conformance vectors: requests built, answered by the make_request.py demo device "
-                       "(DEMO_SEED = sha256('ripar demo seed'), responses byte-identical to the firmware, no pulse "
+                       "(DEMO_SEED = sha256('ripar demo seed'), responses byte-identical to firmware v1.2, no pulse "
                        "check) and parsed back. Generated by contracts/test/vectors/gen_device_vectors.py - do not "
-                       "edit. Addresses are fake except the MetaMask v1.3.0 DelegationManager.",
+                       "edit. Registry, enforcer, relay and MockUSD are the addresses compiled into firmware v1.2, the "
+                       "vault is the demo K1's derived vault, the MetaMask contracts are the canonical v1.3.0 ones; "
+                       "sentinel, agent and payees are fake.",
         "chainId": CHAIN,
         "now": NOW,
         "addresses": {k: ad(v) for k, v in A.items()},
@@ -594,6 +706,7 @@ def build():
             "k1": ad(k1addr), "k1PrivateKey": hx(rc.i2b(KEYS["k1"])),
             "p1PrivateKey": hx(rc.i2b(KEYS["p1"])), "px": hx(px), "py": hx(py), "keyId": hx(key_id),
         },
+        "vault": vault_doc,
         "pair": {
             "reqId": hx(pair_f["reqId"]), "request": msg(pr["cb"], pr["req_ur"]), "requestParts": pr["nparts"],
             "response": msg(pr["resp"], pr["resp_ur"]),

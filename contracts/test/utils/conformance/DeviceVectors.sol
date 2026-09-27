@@ -12,20 +12,48 @@ import { Delegation, Caveat } from "@delegation-framework/utils/Types.sol";
 abstract contract DeviceVectors is P256TestUtils {
     string internal constant DEVICE_VECTORS = "/test/vectors/device_vectors.json";
 
+    /// @dev firmware v1.2: registry, enforcer, relay and MockUSD are the addresses compiled into the firmware (10143),
+    ///      the vault is the demo K1's derived vault, the MetaMask contracts are the canonical v1.3.0 ones; the sentinel,
+    ///      the agent and the payees are fake.
     struct Addrs {
         address dm; // MetaMask DelegationManager v1.3.0 (real address)
-        address enforcer;
-        address registry;
+        address enforcer; // PulseCosignEnforcer (compiled into the firmware)
+        address registry; // RiparDeviceRegistry (compiled into the firmware)
         address sentinel;
-        address relay;
-        address vault; // delegator (HybridDeleGator owned by the demo K1)
+        address relay; // RiparReputationRelay (compiled into the firmware on 10143)
+        address vault; // delegator: the HybridDeleGator proxy the device derives from the demo K1 (SimpleFactory CREATE2)
         address agent; // delegate = redeemer
-        address token; // MockUSD
+        address token; // MockUSD (in the firmware token table on 10143)
         address payee;
         address spender; // approve(spender, ..) co-sign
         address holder; // transferFrom(holder, payee2, ..) co-sign
         address payee2;
         address timestampEnforcer; // MetaMask v1.3.0 TimestampEnforcer (real address) in the re-paired mandate
+        address simpleFactory; // MetaMask SimpleFactory v1.3.0 (real address): deploys the vault with CREATE2
+        address hybridImpl; // MetaMask HybridDeleGator v1.3.0 implementation (real address)
+        address entryPoint; // ERC-4337 EntryPoint v0.7 (real address), an immutable of the implementation
+    }
+
+    /// @dev The vault derivation of firmware v1.2 (docs/PROTOCOL.md 2.1): SimpleFactory.deploy(initCode, salt) with
+    ///      initCode = the 1008-byte MetaMask ERC1967Proxy creation code || abi.encode(implementation,
+    ///      initialize(owner, [], [], [])). `owners` / `initCodeHashes` / `vaults`: the firmware's own known answers
+    ///      (firmware/test/host/vectors_protocol.h VAULT[]), the demo K1 first.
+    struct VaultV {
+        address owner;
+        address factory;
+        address implementation;
+        address entryPoint;
+        bytes32 salt;
+        bytes proxyCreationCode;
+        bytes32 proxyCreationCodeHash;
+        bytes initializeCalldata;
+        bytes constructorArgs;
+        bytes initCode;
+        bytes32 initCodeHash;
+        address vault;
+        address[] owners;
+        bytes32[] initCodeHashes;
+        address[] vaults;
     }
 
     struct Domains {
@@ -173,6 +201,34 @@ abstract contract DeviceVectors is P256TestUtils {
         a.holder = _a(j, ".addresses.holder");
         a.payee2 = _a(j, ".addresses.payee2");
         a.timestampEnforcer = _a(j, ".addresses.timestampEnforcer");
+        a.simpleFactory = _a(j, ".addresses.simpleFactory");
+        a.hybridImpl = _a(j, ".addresses.hybridDeleGatorImpl");
+        a.entryPoint = _a(j, ".addresses.entryPoint");
+    }
+
+    function _loadVault(string memory j) internal pure returns (VaultV memory v) {
+        v.owner = _a(j, ".vault.owner");
+        v.factory = _a(j, ".vault.factory");
+        v.implementation = _a(j, ".vault.implementation");
+        v.entryPoint = _a(j, ".vault.entryPoint");
+        v.salt = _h(j, ".vault.salt");
+        v.proxyCreationCode = _b(j, ".vault.proxyCreationCode");
+        v.proxyCreationCodeHash = _h(j, ".vault.proxyCreationCodeHash");
+        v.initializeCalldata = _b(j, ".vault.initializeCalldata");
+        v.constructorArgs = _b(j, ".vault.constructorArgs");
+        v.initCode = _b(j, ".vault.initCode");
+        v.initCodeHash = _h(j, ".vault.initCodeHash");
+        v.vault = _a(j, ".vault.address");
+        uint256 n = _u(j, ".vault.firmwareTableCount");
+        v.owners = new address[](n);
+        v.initCodeHashes = new bytes32[](n);
+        v.vaults = new address[](n);
+        for (uint256 i; i < n; ++i) {
+            string memory e = string.concat(".vault.firmwareTable[", vm.toString(i), "]");
+            v.owners[i] = _a(j, string.concat(e, ".owner"));
+            v.initCodeHashes[i] = _h(j, string.concat(e, ".initCodeHash"));
+            v.vaults[i] = _a(j, string.concat(e, ".vault"));
+        }
     }
 
     function _loadDomains(string memory j) internal pure returns (Domains memory d) {

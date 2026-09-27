@@ -1,4 +1,4 @@
-// DEPS: hashes util cbor ur eip712 abi crypto protocol enforcers json_strict tokens policy review respond context
+// DEPS: hashes util cbor ur eip712 abi crypto protocol enforcers json_strict tokens policy review respond context vault
 // Host tests for the SIGN step of every flow (src/respond.cpp, called by src/flows.cpp; security review B1):
 //   - every response is byte-equal to the independent Python reference (tools/make_request.py simulate, RFC 6979
 //     signatures with the demo seed -> test/host/vectors_protocol.h): pair, co-sign, mandate, deny request, deny built
@@ -9,6 +9,9 @@
 //     Save::BestEffort for co-sign / revoke, Save::Restrict for panic, none for deny / Privy) and the counters it
 //     advances; a re-pairing that would abandon a live mandate is never signed (fork review N2)
 //   - the co-sign presenceHash is sha256(evidence || salt) of exactly the evidence + salt that are returned
+//   - firmware v1.2: the pairing pins the vault derived from K1 (a request naming another vault is never signed), the
+//     mandate stores its pulse terms + sets unpanickedMandates, a panic clears it, a re-pairing that moves the chain
+//     away from unpanicked mandates is never signed (PANIC FIRST)
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -23,6 +26,7 @@
 #include "respond.h"
 #include "ur.h"
 #include "util.h"
+#include "vault.h"
 #include "vectors_protocol.h"
 
 using namespace ripar;
@@ -110,7 +114,7 @@ int main() {
       cur.reopenNonce = 9;
       DemoSigner s;
       Response out;
-      const bool want = check_pair(r, cur, err);
+      const bool want = check_pair(r, cur, k1addr, err);
       const bool ok = respond_pair(r, cur, k1addr, xy.data(), HX(v.fwid).data(), s, out, err);
       CHECK_EQ(ok, want);
       if (!ok) {
@@ -124,36 +128,65 @@ int main() {
       CHECK_EQ(ur_encode(out.urType, out.cbor), std::string(v.respUr));
       CHECK_EQ(std::string(out.urType), std::string("ripar-pair"));
       CHECK(out.save == Save::Required);
-      CHECK(same_ctx(out.next, context_after_pair(cur, r)));
+      CHECK(same_ctx(out.next, context_after_pair(cur, r, k1addr)));
       CHECK_EQ(out.next.chainId, r.chainId);
+      CHECK_EQ_HEX(out.next.vault.v, 20, pv::DEMO_VAULT);  // v1.2: the vault derived from the demo K1, key 8 or not
+      CHECK_EQ_HEX(out.next.pulseCosignEnforcer.v, 20, pv::PULSE_ENFORCER);
+      CHECK_EQ_HEX(out.next.registry.v, 20, pv::REGISTRY);
+      if (r.chainId == 10143) CHECK_EQ_HEX(out.next.relay.v, 20, pv::RELAY_10143);
+      if (r.chainId == 143) CHECK_EQ_HEX(out.next.relay.v, 20, pv::RELAY_143);
       // monotonic counters survive a pairing; a companion floor (keys 10 / 11) can only raise them
       CHECK_EQ(out.next.minEpoch, r.hasMinEpoch && r.minEpoch > 5 ? r.minEpoch : 5u);
       CHECK_EQ(out.next.reopenNonce, r.hasReopenNonce && r.reopenNonce > 9 ? r.reopenNonce : 9u);
       CHECK_EQ(s.p1Calls, 1);
       CHECK_EQ(s.k1Calls, 1);
     }
-    CHECK(signedN >= 1);
+    CHECK(signedN >= 3);
     {
-      // a re-pairing that changes the enforcer while this device's mandate is live: refused, nothing signed
+      // a re-pairing that moves the chain while mandates signed since the last panic may be live: refused (PANIC
+      // FIRST), nothing signed; the same scope is fine; after a panic the move is signed
       CborVal m;
       PairReq r;
       std::string err;
       decode(pv::PAIR[0].cbor, m);
       parse_pair_req(m, r, err);
-      Context cur = context_after_pair(Context(), r);
+      Context cur = context_after_pair(Context(), r, k1addr);
       cur.lastDelegationHash.v[0] = 0x22;
-      Addr other = r.enforcer;
-      other.v[19] ^= 1;
+      cur.unpanickedMandates = true;
       PairReq moved = r;
-      moved.enforcer = other;
+      moved.chainId = 143;
+      moved.relay = Addr();  // (the relay compiled in for 143 is pinned)
       DemoSigner s;
       Response out;
       CHECK(!respond_pair(moved, cur, k1addr, xy.data(), HX(pv::PAIR[0].fwid).data(), s, out, err));
-      CHECK(err.find("REVOKE FIRST") == 0);
+      CHECK(err.find("PANIC FIRST") == 0);
       CHECK_EQ(s.calls(), 0);
       CHECK(empty(out));
       CHECK(respond_pair(r, cur, k1addr, xy.data(), HX(pv::PAIR[0].fwid).data(), s, out, err));  // same scope: OK
-      CHECK(out.next.lastDelegationHash == cur.lastDelegationHash);
+      CHECK(out.next.lastDelegationHash == cur.lastDelegationHash && out.next.unpanickedMandates);
+      Context panicked = cur;
+      context_after_panic(panicked, panic_next_epoch(panicked));
+      DemoSigner s2;
+      CHECK(respond_pair(moved, panicked, k1addr, xy.data(), HX(pv::PAIR[0].fwid).data(), s2, out, err));
+      CHECK(out.next.chainId == 143 && out.next.lastDelegationHash == B32() && !out.next.unpanickedMandates);
+      // a request naming another vault (key 8) or registry (key 3): refused, nothing signed
+      PairReq bad = r;
+      bad.vault.v[0] ^= 1;
+      DemoSigner s3;
+      CHECK(!respond_pair(bad, Context(), k1addr, xy.data(), HX(pv::PAIR[0].fwid).data(), s3, out, err));
+      CHECK(err.find("VAULT IS NOT THIS DEVICE'S VAULT") == 0 && s3.calls() == 0 && empty(out));
+      bad = r;
+      bad.registry.v[19] ^= 1;
+      CHECK(!respond_pair(bad, Context(), k1addr, xy.data(), HX(pv::PAIR[0].fwid).data(), s3, out, err));
+      CHECK(err.find("WRONG REGISTRY") == 0 && s3.calls() == 0 && empty(out));
+      // the same pairing on another device (another K1) pins that device's vault: PAIR[0]'s key 8 is refused there
+      Addr otherK1 = k1addr;
+      otherK1.v[0] ^= 1;
+      CHECK(!respond_pair(r, Context(), otherK1, xy.data(), HX(pv::PAIR[0].fwid).data(), s3, out, err));
+      PairReq noVault = r;
+      noVault.vault = Addr();
+      CHECK(respond_pair(noVault, Context(), otherK1, xy.data(), HX(pv::PAIR[0].fwid).data(), s3, out, err));
+      CHECK(out.next.vault == vault_address(otherK1) && !(out.next.vault == A(pv::DEMO_VAULT)));
     }
     // a failing K1 signature: nothing comes out
     CborVal m;
@@ -253,8 +286,19 @@ int main() {
       CHECK_EQ_HEX(out.next.lastDelegationHash.v, 32, v.delegationHash);
       CHECK_EQ(out.next.hasAgentId, v.hasAgentId != 0);
       CHECK_EQ(out.next.agentId, v.hasAgentId ? v.agentId : 0u);
+      CHECK(!c.unpanickedMandates && out.next.unpanickedMandates);  // v3: PANIC FIRST until the next panic
+      CHECK_EQ_HEX(out.next.pulseToken.v, 20, "a9012a055bd4e0edff8ce09f960291c09d5322dc");  // the vector's pulse terms
+      CHECK(out.next.perTxAutoCap.low_u64() == 25000000 && out.next.periodAutoCap.low_u64() == 50000000);
+      CHECK(out.next.period == 86400 && out.next.newPayeeNeedsHuman);
       CHECK_EQ(s.k1Calls, 1);
       CHECK_EQ(s.p1Calls, 0);
+      // another vault than the device's: refused, not signed
+      Context cv = c;
+      cv.vault.v[0] ^= 1;
+      DemoSigner s3;
+      Response out3;
+      CHECK(!respond_mandate(r, cv, xy.data(), s3, out3, err));
+      CHECK(err.find("NOT THIS DEVICE'S VAULT") == 0 && s3.calls() == 0 && empty(out3));
       // another device's P1 key in the pulse terms: refused, not signed
       uint8_t other[64];
       std::memcpy(other, xy.data(), 64);
@@ -380,7 +424,7 @@ int main() {
       CHECK(respond_revoke(c, s, out, err));
       CHECK_EQ(hexs(out.cbor), std::string(v.resp));
       CHECK_EQ(ur_encode(out.urType, out.cbor), std::string(v.respUr));
-      CHECK(out.save == Save::BestEffort);  // the revoked mandate is forgotten (a re-pairing may then move contracts)
+      CHECK(out.save == Save::BestEffort);  // the revoked mandate is forgotten; PANIC FIRST stays until a panic
       CHECK(out.next.lastDelegationHash == B32());
       Context expect = c;
       context_after_revoke(expect);
@@ -397,10 +441,12 @@ int main() {
       c.chainId = v.chainId;
       c.pulseCosignEnforcer = A(v.enforcer);
       c.minEpoch = v.minEpoch - 1;
+      c.unpanickedMandates = true;
       DemoSigner s;
       Response out;
       std::string err;
       CHECK(respond_panic(c, s, out, err));
+      CHECK(!out.next.unpanickedMandates);  // every mandate the device signed is killed by this panic
       CHECK_EQ(hexs(out.cbor), std::string(v.resp));
       CHECK_EQ(ur_encode(out.urType, out.cbor), std::string(v.respUr));
       CHECK(out.save == Save::Restrict);  // used in RAM even when NVS fails (fork review m4)
@@ -417,6 +463,7 @@ int main() {
       c.chainId = v.chainId;
       c.sentinel = A(v.sentinel);
       c.vault = A(v.vault);
+      CHECK_EQ_HEX(c.vault.v, 20, pv::DEMO_VAULT);  // v1.2: the device reopens its own (derived) vault
       c.reopenNonce = nonce.low_u64() - 1;
       DemoSigner s;
       Response out;

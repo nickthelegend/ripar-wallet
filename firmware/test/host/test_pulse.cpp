@@ -2,7 +2,9 @@
 // Host tests for src/pulse_algo.cpp. Every input is a synthetic MAX30102-like IR/red stream at 100 Hz, generated
 // here with a deterministic PRNG: a PPG beat train (systolic wave, dicrotic wave, diastolic tail) with heart-rate
 // variability, respiratory sinus arrhythmia and amplitude modulation, baseline wander, sensor noise and a
-// finger-landing transient, plus the spoofs / failure cases the pulse gate has to reject.
+// finger-landing transient, plus the spoofs / failure cases the pulse gate has to reject, including spoofs that
+// switch shape or rate while the "finger" stays on (the emulator finding: a 66 bpm square wave followed by a 72 bpm
+// sine passed, the mix of two perfect rhythms looking irregular enough).
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -36,7 +38,18 @@ struct Rng {
   }
 };
 
-enum Kind { PPG, SINE, SQUARE, FLAT, NOFINGER, CONSTANT, RED_UNCORR, RED_DEAD, RED_STUCK, SATURATED };
+enum Kind {
+  PPG, SINE, SQUARE, FLAT, NOFINGER, CONSTANT, RED_UNCORR, RED_DEAD, RED_STUCK, SATURATED,
+  PPG_PERFECT,  // the PPG beat shape, strictly periodic (one recorded beat, replayed)
+  TRIANGLE
+};
+
+// A spoof segment: from `at` seconds after the finger placement on, shape `kind` at `bpm` (finger stays on).
+struct Seg {
+  double at;
+  Kind kind;
+  double bpm;
+};
 
 struct Sim {
   Kind kind = PPG;
@@ -57,6 +70,9 @@ struct Sim {
   double duration = 20;                // s
   uint32_t t0 = 1000;                  // timestamp of the first sample (ms)
   uint64_t seed = 1;
+  // Shape / rate changes (SINE, SQUARE, FLAT, PPG_PERFECT, TRIANGLE) while the finger stays on; empty = kind / bpm.
+  std::vector<Seg> segs;
+  bool absPhase = true;  // spoof phase = 2 pi f x (as the emulator's synth: a switch jumps the phase); else continuous
 };
 
 // one PPG beat, tau = seconds since beat onset; peak ~1.1 at 0.14 s
@@ -74,6 +90,7 @@ struct Gen {
   Rng rng;
   std::vector<double> bt, ba, bt2, ba2;  // beat onsets + amplitudes (second train: uncorrelated red)
   double ph1, ph2;
+  double phase = 0, lastX = -1;  // continuous spoof phase (Sim::absPhase = false)
 
   static void train(Rng& rng, const Sim& p, double bpm, std::vector<double>& t, std::vector<double>& a) {
     const double rr0 = 60.0 / bpm;
@@ -127,9 +144,17 @@ struct Gen {
     double base = 1.0 + p.wander * (std::sin(2 * kPi * p.wanderHz * x + ph1) + 0.6 * std::sin(2 * kPi * 0.31 * x + ph2));
     const double tl = x - placedAt(x);
     if (p.landing) base *= 1.0 + 0.04 * std::exp(-tl / 0.5);
-    const double f = p.bpm / 60.0;
+    Seg now = {0, p.kind, p.bpm};
+    for (size_t i = 0; i < p.segs.size(); i++)
+      if (i == 0 || p.segs[i].at <= tl) now = p.segs[i];
+    const double f = now.bpm / 60.0;
+    phase = lastX < 0 ? 2 * kPi * f * x : phase + 2 * kPi * f * (x - lastX);
+    lastX = x;
+    const double ph = p.absPhase ? 2 * kPi * f * x : phase;
+    double u = std::fmod(ph / (2 * kPi), 1.0);  // cycle position of a periodic spoof
+    if (u < 0) u += 1;
     double pi = 0, pr = 0;
-    switch (p.kind) {
+    switch (now.kind) {
       case PPG:
       case RED_DEAD:
       case RED_STUCK:
@@ -141,10 +166,17 @@ struct Gen {
         pr = pulse(bt2, ba2, x);
         break;
       case SINE:
-        pi = pr = 0.5 * (1 + std::sin(2 * kPi * f * x));
+        pi = pr = 0.5 * (1 + std::sin(ph));
         break;
       case SQUARE:
-        pi = pr = std::sin(2 * kPi * f * x) >= 0 ? 1.0 : 0.0;
+        pi = pr = std::sin(ph) >= 0 ? 1.0 : 0.0;
+        break;
+      case TRIANGLE:
+        pi = pr = u < 0.5 ? 2 * u : 2 - 2 * u;
+        break;
+      case PPG_PERFECT:
+        for (int j = 0; j < 6; j++) pi += shape((u + j) * 60.0 / now.bpm);
+        pr = pi;
         break;
       default:
         break;
@@ -254,18 +286,23 @@ bool evidence_matches(const uint8_t ev[12], const PulseResult& r) {
   return ok;
 }
 
-// A real pulse: must pass within maxS seconds of placement for every seed, report the right rate, stay passed.
-void expect_pass(const char* name, Sim s, double maxS = 8.0, int seeds = 8) {
+// A real pulse: must pass within maxS seconds of placement for every seed (for at least minPassed seeds when given:
+// a weak signal whose beat-to-beat variability is close to the sensor's timing noise, see test_realistic_hrv), report
+// the right rate and stay passed (>= minStay of the remaining samples).
+void expect_pass(const char* name, Sim s, double maxS = 8.0, int seeds = 8, int minPassed = -1, double minStay = 0.90) {
   CHECK_SECTION(name);
   double tMin = 1e9, tMax = 0, errMax = 0;
+  int passed = 0;
   for (int k = 1; k <= seeds; k++) {
     s.seed = uint64_t(k) * 1000 + uint64_t(s.bpm);
     const Stats st = run(s, PulseConfig());
-    if (!CHECK(st.everPassed)) {
+    if (!st.everPassed) {
+      if (minPassed < 0) CHECK(st.everPassed);
       std::printf("   seed %d never passed: beats=%d bpm=%.1f jitter=%.4f finger=%d\n", k, st.last.beats,
                   double(st.last.bpm), double(st.last.jitter), int(st.last.finger));
       continue;
     }
+    passed++;
     if (st.firstPass < tMin) tMin = st.firstPass;
     if (st.firstPass > tMax) tMax = st.firstPass;
     if (!CHECK(st.firstPass <= maxS)) std::printf("   seed %d passed late: %.2f s\n", k, st.firstPass);
@@ -280,12 +317,13 @@ void expect_pass(const char* name, Sim s, double maxS = 8.0, int seeds = 8) {
     CHECK(st.atPass.jitter >= 0.005f && st.atPass.jitter <= 0.35f);
     CHECK(evidence_matches(st.ev, st.atPass));
     CHECK(!st.evLeak);
-    // once passed it has to stay passed while the pulse continues (>= 90 % of the remaining samples)
+    // once passed it has to stay passed while the pulse continues (>= minStay of the remaining samples)
     const double frac = st.afterPass ? double(st.passedAfter) / st.afterPass : 0;
-    if (!CHECK(frac >= 0.90)) std::printf("   seed %d stayed passed only %.1f %%\n", k, 100 * frac);
-    CHECK(st.last.passed);
+    if (!CHECK(frac >= minStay)) std::printf("   seed %d stayed passed only %.1f %%\n", k, 100 * frac);
+    if (minStay >= 0.90) CHECK(st.last.passed);
   }
-  std::printf("   pass time %.2f..%.2f s, max |bpm error| %.1f\n", tMin, tMax, errMax);
+  if (minPassed >= 0 && !CHECK(passed >= minPassed)) std::printf("   only %d of %d seeds passed\n", passed, seeds);
+  std::printf("   %d/%d passed, pass time %.2f..%.2f s, max |bpm error| %.1f\n", passed, seeds, tMin, tMax, errMax);
 }
 
 // Must never pass (any sample) for any seed.
@@ -312,11 +350,11 @@ void test_real_pulses() {
   s.bpm = 120;
   expect_pass("clean 120 bpm", s);
   s.bpm = 45;
-  expect_pass("clean 45 bpm", s);
+  expect_pass("clean 45 bpm", s, 11.0);  // slow rates: the cross-channel test needs a few more beats
   s.bpm = 170;
   expect_pass("clean 170 bpm", s);
   s.bpm = 42;
-  expect_pass("clean 42 bpm (near the 40 bpm floor)", s, 8.5);
+  expect_pass("clean 42 bpm (near the 40 bpm floor)", s, 11.0);
   s.bpm = 165;
   expect_pass("clean 165 bpm", s);
 
@@ -325,7 +363,7 @@ void test_real_pulses() {
   n.noiseIr = 60;
   n.noiseRed = 80;
   n.wander = 0.03;  // 3600 counts of baseline wander: 3x the pulse amplitude
-  expect_pass("noisy + baseline wander 72 bpm", n);
+  expect_pass("noisy + baseline wander 72 bpm", n, 13.0);  // noise 60-80: timing noise close to the HRV
 
   Sim r;
   r.bpm = 80;
@@ -340,20 +378,20 @@ void test_real_pulses() {
   lp.bpm = 66;
   lp.piIr = 0.0025;
   lp.piRed = 0.002;
-  expect_pass("low perfusion 0.25 % 66 bpm", lp);
+  expect_pass("low perfusion 0.25 % 66 bpm", lp, 10.5);
 
   Sim lo;
   lo.bpm = 90;
   lo.dcIr = 62000;
   lo.dcRed = 50000;
-  expect_pass("IR DC just above the finger threshold 90 bpm", lo);
+  expect_pass("IR DC just above the finger threshold 90 bpm", lo, 9.5);
 
   Sim nl;
   nl.bpm = 100;
   nl.landing = false;
   nl.hrv = 0.015;
   nl.rsa = 0.01;
-  expect_pass("low HRV 100 bpm, no landing transient", nl);
+  expect_pass("low HRV 100 bpm, no landing transient", nl, 9.5);
 
   Sim w;
   w.bpm = 75;
@@ -432,6 +470,271 @@ void test_rejections() {
   expect_fail("irregular rhythm 0.5x/1.6x/0.9x at 70 bpm (jitter > 0.35)", s);
   s.bpm = 50;
   expect_fail("irregular rhythm 0.5x/1.6x/0.9x at 50 bpm", s);
+}
+
+// ---- spoofs that change shape or rate while the finger stays on ---------------------------------------------------
+// Each segment alone is perfectly periodic; the gate must not take the mix of two perfect rhythms (or the step
+// between them) for heart-rate variability. Run as the emulator would: the phase jumps at a switch (2 pi f t), and
+// also phase-continuous. Every run lasts at least 14 s past the last switch and must never pass, on any sample.
+
+bool spoof_never_passes(const Sim& s, const char* what) {
+  const Stats st = run(s, PulseConfig());
+  CHECK(!st.evLeak);
+  if (!st.everPassed) return true;
+  std::printf("   %s seed %llu amp %.3f %s PASSED at %.2f s: beats=%d bpm=%.1f jitter=%.4f\n", what,
+              (unsigned long long)s.seed, s.piIr, s.absPhase ? "phase-jump" : "continuous", st.firstPass,
+              st.atPass.beats, double(st.atPass.bpm), double(st.atPass.jitter));
+  return false;
+}
+
+Sim spoof_sim(const std::vector<Seg>& segs, double amp, bool absPhase, uint64_t seed) {
+  Sim s;
+  s.kind = segs[0].kind;
+  s.bpm = segs[0].bpm;
+  s.segs = segs;
+  s.absPhase = absPhase;
+  s.piIr = amp;
+  s.piRed = 0.8 * amp;
+  s.seed = seed;
+  s.duration = s.onAt + segs.back().at + 14.0;
+  if (s.duration < 26) s.duration = 26;
+  return s;
+}
+
+// spoof k1 at b1, switched to k2 at b2 2..12 s after placement; amplitude 1 % (the emulator's default) and 2 %
+void expect_switch_fails(const char* name, Kind k1, double b1, Kind k2, double b2) {
+  CHECK_SECTION(name);
+  const double switches[] = {2.0, 3.0, 4.0, 5.0, 6.5, 8.0, 10.0, 12.0};
+  int runs = 0, passed = 0;
+  for (double sw : switches)
+    for (double amp : {0.01, 0.02})
+      for (int ph = 0; ph < 2; ph++)
+        for (int k = 1; k <= 3; k++) {
+          const Sim s = spoof_sim({{0, k1, b1}, {sw, k2, b2}}, amp, ph == 0, uint64_t(k) * 7919 + uint64_t(sw * 10));
+          runs++;
+          char what[48];
+          std::snprintf(what, sizeof what, "switch at %.1f s", sw);
+          if (!CHECK(spoof_never_passes(s, what))) passed++;
+        }
+  std::printf("   %d runs, %d passed\n", runs, passed);
+}
+
+// two perfect rhythms alternating: every beat (segT = 0: intervals a, b, a, b, ...) or every segT seconds
+void expect_alternation_fails(const char* name, Kind k, double b1, double b2, double segT) {
+  CHECK_SECTION(name);
+  int runs = 0, passed = 0;
+  for (double amp : {0.01, 0.02})
+    for (int ph = 0; ph < 2; ph++) {
+      if (segT <= 0 && ph == 0) continue;  // beat-wise alternation: phase-continuous only (a jump would split beats)
+      for (int n = 1; n <= 3; n++) {
+        std::vector<Seg> segs;
+        double x = 0;
+        for (int i = 0; x < 30; i++) {
+          const double b = (i & 1) ? b2 : b1;
+          segs.push_back({x, k, b});
+          x += segT > 0 ? segT : 60.0 / b;
+        }
+        Sim s = spoof_sim(segs, amp, ph == 0, uint64_t(n) * 104729 + uint64_t(b1));
+        s.duration = 30;
+        runs++;
+        if (!CHECK(spoof_never_passes(s, name))) passed++;
+      }
+    }
+  std::printf("   %d runs, %d passed\n", runs, passed);
+}
+
+void test_switched_spoofs() {
+  // the emulator finding: 66 bpm square wave, then (finger kept on) a 72 bpm sine; before this fix it passed ~6.5 s
+  // after the switch (jitter ~0.16) on 3 seeds
+  CHECK_SECTION("emulator finding: square 66 bpm, then sine 72 bpm (finger kept on)");
+  for (double sw : {5.0, 8.0, 10.0, 15.0})
+    for (int k = 1; k <= 3; k++) {
+      const Sim s = spoof_sim({{0, SQUARE, 66}, {sw, SINE, 72}}, 0.01, true, uint64_t(k));
+      CHECK(spoof_never_passes(s, "square 66 -> sine 72"));
+    }
+  expect_switch_fails("square 66 -> sine 72", SQUARE, 66, SINE, 72);
+  expect_switch_fails("sine 72 -> square 66", SINE, 72, SQUARE, 66);
+  expect_switch_fails("flat (finger, no pulse) -> sine 72", FLAT, 72, SINE, 72);
+  expect_switch_fails("flat -> perfect PPG shape 66", FLAT, 66, PPG_PERFECT, 66);
+  expect_switch_fails("square 66 -> perfect PPG shape 72", SQUARE, 66, PPG_PERFECT, 72);
+  expect_switch_fails("rate step: sine 60 -> 72", SINE, 60, SINE, 72);
+  expect_switch_fails("rate step: sine 72 -> 60", SINE, 72, SINE, 60);
+  expect_switch_fails("rate step: sine 66 -> 70", SINE, 66, SINE, 70);
+  expect_switch_fails("rate step: sine 45 -> 50", SINE, 45, SINE, 50);
+  expect_switch_fails("rate step: sine 150 -> 160", SINE, 150, SINE, 160);
+  expect_switch_fails("rate step: perfect PPG shape 60 -> 75", PPG_PERFECT, 60, PPG_PERFECT, 75);
+  expect_switch_fails("rate step: perfect PPG shape 120 -> 140", PPG_PERFECT, 120, PPG_PERFECT, 140);
+  expect_switch_fails("triangle 60 -> sine 70", TRIANGLE, 60, SINE, 70);
+
+  expect_alternation_fails("alternating every beat: sine 60 / 75 bpm", SINE, 60, 75, 0);
+  expect_alternation_fails("alternating every beat: perfect PPG 66 / 72 bpm", PPG_PERFECT, 66, 72, 0);
+  expect_alternation_fails("alternating every beat: sine 100 / 120 bpm", SINE, 100, 120, 0);
+  expect_alternation_fails("alternating every beat: perfect PPG 140 / 160 bpm", PPG_PERFECT, 140, 160, 0);
+  expect_alternation_fails("alternating every 6 s: sine 60 / 75 bpm", SINE, 60, 75, 6);
+  expect_alternation_fails("alternating every 8 s: perfect PPG 66 / 72 bpm", PPG_PERFECT, 66, 72, 8);
+  expect_alternation_fails("alternating every 8 s: sine 66 / 72 bpm", SINE, 66, 72, 8);
+  expect_alternation_fails("alternating every 8 s: perfect PPG 140 / 160 bpm", PPG_PERFECT, 140, 160, 8);
+
+  // perfectly periodic spoofs of other shapes (the rejection tests above cover sine and square)
+  Sim s;
+  s.kind = PPG_PERFECT;
+  s.bpm = 60;
+  expect_fail("perfect PPG shape 60 bpm (one recorded beat, replayed)", s);
+  s.bpm = 120;
+  expect_fail("perfect PPG shape 120 bpm", s);
+  s.bpm = 175;
+  expect_fail("perfect PPG shape 175 bpm", s);
+  s = Sim();
+  s.kind = TRIANGLE;
+  s.bpm = 50;
+  expect_fail("triangle 50 bpm (slow symmetric upstroke)", s);
+  s.bpm = 150;
+  expect_fail("triangle 150 bpm", s);
+  s = Sim();
+  s.kind = SINE;
+  s.bpm = 45;
+  s.wander = 0.01;  // slow sine + wander: timing too noisy to look regular, but the upstroke gives it away
+  expect_fail("sine 45 bpm with 1 % baseline wander (slow symmetric upstroke)", s);
+}
+
+// ---- strictly periodic spoofs plus white sensor noise (firmware v1.2 review, high finding) ------------------------
+// Additive noise shifts the beat timing points of a perfectly periodic source from beat to beat; up to v1.2 the gate
+// read that jitter as heart-rate variability (a 66 bpm square wave at 1 % with noise 120 passed 10/10, a perfect PPG
+// shape at noise 120 37/60, some sines and triangles even at the nominal noise 8). The cross-channel test rejects them:
+// the noise is independent in the IR and red channels, a heart's variability is common to both.
+
+Sim noisy_spoof(Kind k, double bpm, double amp, double noise, uint64_t seed) {
+  Sim s;
+  s.kind = k;
+  s.bpm = bpm;
+  s.piIr = amp;
+  s.piRed = 0.8 * amp;
+  s.noiseIr = noise;
+  s.noiseRed = 1.5 * noise;
+  s.duration = 25;
+  s.seed = seed;
+  return s;
+}
+
+const char* kind_name(Kind k) {
+  return k == SINE ? "sine" : k == SQUARE ? "square" : k == TRIANGLE ? "triangle" : k == PPG_PERFECT ? "perfect PPG" : "?";
+}
+
+void test_noisy_periodic_spoofs() {
+  // the review's reproductions, with its seeds
+  CHECK_SECTION("review: periodic spoofs at the nominal noise 8 (sine 130 bpm, triangle 100 bpm, 0.5 %)");
+  CHECK(spoof_never_passes(noisy_spoof(SINE, 130, 0.005, 8, 16072), "sine 130 noise 8"));
+  CHECK(spoof_never_passes(noisy_spoof(TRIANGLE, 100, 0.005, 8, 8123), "triangle 100 noise 8"));
+  CHECK_SECTION("review: square 66 bpm 1 % + noise 120 (the emulator-finding shape), 10 seeds");
+  for (int k = 1; k <= 10; k++) CHECK(spoof_never_passes(noisy_spoof(SQUARE, 66, 0.01, 120, uint64_t(k) * 31 + 7), "square 66"));
+  CHECK_SECTION("review: perfect PPG shape 1 % + noise 120 at 50-130 bpm, 10 seeds each");
+  for (double bpm : {50.0, 66.0, 80.0, 100.0, 130.0})
+    for (int k = 1; k <= 10; k++)
+      CHECK(spoof_never_passes(noisy_spoof(PPG_PERFECT, bpm, 0.01, 120, uint64_t(k) * 31 + 7), "perfect PPG"));
+  CHECK_SECTION("review: sine 100 / 130 bpm at 0.5-2 % + noise 120, 10 seeds each");
+  for (double bpm : {100.0, 130.0})
+    for (double amp : {0.005, 0.01, 0.02})
+      for (int k = 1; k <= 10; k++)
+        CHECK(spoof_never_passes(noisy_spoof(SINE, bpm, amp, 120, uint64_t(k) * 31 + 7), "sine"));
+
+  // the sweep: every shape, 50-130 bpm, 0.5-4 %, noise 8-120 (0.007-0.1 % of the IR DC): must never pass
+  const Kind kinds[] = {SINE, PPG_PERFECT, SQUARE, TRIANGLE};
+  for (Kind k : kinds) {
+    char name[96];
+    std::snprintf(name, sizeof name, "%s spoof + white noise 8-120, 50-130 bpm, 0.5-4 %%: never passes", kind_name(k));
+    CHECK_SECTION(name);
+    int runs = 0, passed = 0;
+    for (double noise : {8.0, 30.0, 60.0, 120.0})
+      for (double bpm : {50.0, 66.0, 80.0, 100.0, 130.0})
+        for (double amp : {0.005, 0.01, 0.02, 0.04})
+          for (int seed = 1; seed <= 3; seed++) {
+            runs++;
+            const Sim s = noisy_spoof(k, bpm, amp, noise, uint64_t(seed) * 7919 + uint64_t(bpm) + uint64_t(noise * 13));
+            if (!CHECK(spoof_never_passes(s, kind_name(k)))) passed++;
+          }
+    std::printf("   %d runs, %d passed\n", runs, passed);
+  }
+  // very noisy (noise 250 / 500 = 0.2 / 0.4 % of the IR DC, at or above the pulse itself for the weak amplitudes): the
+  // cross-channel test's residual false-accept rate (per evaluation 0.1 % for Gaussian timing noise) shows up here;
+  // at most 1 % of these runs may pass (measured: 0-1 of 480)
+  CHECK_SECTION("all shapes + white noise 250 / 500: at most 1 % of runs pass");
+  {
+    int runs = 0, passed = 0;
+    for (Kind k : kinds)
+      for (double noise : {250.0, 500.0})
+        for (double bpm : {50.0, 66.0, 80.0, 100.0, 130.0})
+          for (double amp : {0.005, 0.01, 0.02, 0.04})
+            for (int seed = 1; seed <= 3; seed++) {
+              runs++;
+              const Sim s = noisy_spoof(k, bpm, amp, noise, uint64_t(seed) * 7919 + uint64_t(bpm) + uint64_t(noise * 13));
+              if (!spoof_never_passes(s, kind_name(k))) passed++;
+            }
+    std::printf("   %d runs, %d passed\n", runs, passed);
+    CHECK(passed * 100 <= runs);
+  }
+  // a switched spoof with noise (the step and the noise together)
+  CHECK_SECTION("square 66 -> sine 72 bpm switched at 5 / 8 s, 1 % + noise 60 / 120");
+  for (double noise : {60.0, 120.0})
+    for (double sw : {5.0, 8.0})
+      for (int k = 1; k <= 3; k++) {
+        Sim s = spoof_sim({{0, SQUARE, 66}, {sw, SINE, 72}}, 0.01, true, uint64_t(k) * 13 + uint64_t(noise));
+        s.noiseIr = noise;
+        s.noiseRed = 1.5 * noise;
+        CHECK(spoof_never_passes(s, "square 66 -> sine 72 + noise"));
+      }
+}
+
+// Realistic pulses: heart-rate variability that shrinks with the rate (random RR std / respiratory sinus arrhythmia
+// from 3 % / 4 % at 45 bpm to 1.2 % / 0.5 % at 175 bpm), with weak, strong and noisy + wandering signals (8 seeds each).
+// Since v1.2 the gate only credits beat-to-beat variability that the IR and red channels share (the cross-channel
+// test; independent sensor noise is no heartbeat), so the time to pass grows as the variability approaches the timing
+// noise of the weaker (red) channel:
+//   - strong signals (2.5 %, noise 8): every seed within the usual 8 s, stays passed;
+//   - weak (0.4 %, noise 20) or noisy + wandering (1 %, noise 40, 2 %) signals at rest (45-72 bpm): every seed within
+//     15 s, stays passed >= 75 % of the time;
+//   - the same at 100 bpm (RR 1.5 %): >= 6 of 8 seeds within 30 s;
+//   - the same at 150-175 bpm with RR variability ~1 %: the variability is at the red channel's timing noise, exactly
+//     what a periodic source plus sensor noise looks like - not required to pass (docs/FIRMWARE.md, known limitations);
+//     reported only.
+void test_realistic_hrv() {
+  struct R {
+    double bpm, hrv, rsa;
+  };
+  const R rates[] = {{45, 0.03, 0.04},    {60, 0.025, 0.03},   {72, 0.02, 0.03},
+                     {100, 0.015, 0.015}, {150, 0.012, 0.006}, {175, 0.012, 0.005}};
+  struct V {
+    const char* name;
+    double amp, noise, wander;
+  };
+  const V vars[] = {{"weak 0.4 %, noise 20, wander 0.5 %", 0.004, 20, 0.005},
+                    {"strong 2.5 %, noise 8, wander 0.2 %", 0.025, 8, 0.002},
+                    {"1 %, noise 40, wander 2 %", 0.01, 40, 0.02}};
+  for (const R& r : rates)
+    for (const V& v : vars) {
+      Sim s;
+      s.bpm = r.bpm;
+      s.hrv = r.hrv;
+      s.rsa = r.rsa;
+      s.piIr = v.amp;
+      s.piRed = 0.8 * v.amp;
+      s.noiseIr = v.noise;
+      s.noiseRed = 1.5 * v.noise;
+      s.wander = v.wander;
+      char name[112];
+      std::snprintf(name, sizeof name, "realistic HRV %.0f bpm (RR %.1f %% + RSA %.1f %%), %s", r.bpm, 100 * r.hrv,
+                    100 * r.rsa, v.name);
+      if (v.amp >= 0.02) {
+        expect_pass(name, s);
+      } else if (r.bpm <= 72) {
+        expect_pass(name, s, 15.0, 8, -1, 0.75);
+      } else {
+        s.duration = 30;
+        if (r.bpm <= 100)
+          expect_pass(name, s, 30.0, 8, 6, 0.75);
+        else
+          expect_pass(name, s, 30.0, 8, 0, 0.0);
+      }
+    }
 }
 
 void test_200bpm_not_halved() {
@@ -627,6 +930,9 @@ void test_config_and_ui() {
 int main() {
   test_real_pulses();
   test_rejections();
+  test_switched_spoofs();
+  test_noisy_periodic_spoofs();
+  test_realistic_hrv();
   test_200bpm_not_halved();
   test_finger_removed();
   test_pulse_stops();

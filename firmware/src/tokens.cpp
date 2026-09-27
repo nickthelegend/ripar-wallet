@@ -20,9 +20,9 @@ const ChainInfo CHAINS[] = {
 const TokenInfo TOKENS_10143[] = {
     // Agora AUSD on Monad testnet (research/judge_merge.md §6, verify_tech.md #17: 6 decimals).
     {"0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC", 6, "AUSD", "Agora USD"},
-    // MockUSD - Ripar's 6-decimal demo token (research/VERIFIED_PLAN_CORRECTIONS.md). PLACEHOLDER:
-    // TODO(team): paste the deployed address and make "mUSD" equal the contract's symbol(). "" never matches.
-    {"", 6, "mUSD", "MockUSD (Ripar demo)"},
+    // MockUSD - Ripar's 6-decimal demo token (contracts/src/MockUSD.sol: ERC20("MockUSD (Ripar demo)", "mUSD"),
+    // decimals() = 6). CREATE2 address from the bytecode frozen at main 5cea7cf (contracts/SPEC.md v1.2).
+    {"0xB5b7eaffbF9bf68cbcC1Ce8B5850b2ea9d6f9a2a", 6, "mUSD", "MockUSD (Ripar demo)"},
 };
 
 // ---- Monad mainnet (143): no token verified yet (AUSD's mainnet address has not been checked on 143).

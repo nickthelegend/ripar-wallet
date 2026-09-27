@@ -7,6 +7,10 @@
 //     hashes are full 0x + 64 hex; amounts never rounded (tokens.h token_amount); times as UTC
 //   - companion-provided text is marked "(companion)"; values are printable ASCII (UTF-8 shown as '?')
 //   - Review::ok == false -> the first line is REFUSED + the reason, and SIGN must not be armed
+//   - firmware v1.2: the vault is shown as "<address> (derived from this device)" (vault.h); a co-sign for the
+//     remembered mandate shows "<payee> becomes an AUTO payee of this mandate: ..." with the mandate's caps exactly
+//     when policy.h cosign_whitelists_payee() holds; the mandate's AUTO period reads "never resets (lifetime cap)" for
+//     0, else the duration + "(fixed windows from the first AUTO spend)"; the agent id is marked "(companion)"
 #pragma once
 #include <cstdint>
 #include <string>

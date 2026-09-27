@@ -50,6 +50,7 @@
 #include "respond.h"
 #include "review.h"
 #include "ur.h"
+#include "vault.h"
 
 namespace ripar {
 namespace {
@@ -67,6 +68,7 @@ Fsm g_fsm;
 // ---- device identity + pinned context
 Context g_ctx;  // from NVS; replaced only by a saved context_after_*() result
 Addr g_k1;
+Addr g_vault;  // vault_address(g_k1): the only vault this device pins (vault.h)
 uint8_t g_p1xy[64];
 uint8_t g_fwid[8];
 bool g_havePulse = false, g_haveCam = false;
@@ -668,14 +670,19 @@ void app_setup() {
   }
   if (!keys_init()) return enter_fail("cannot load the device keys");
   g_k1 = k1_address();
+  g_vault = vault_address(g_k1);
   p1_pubkey(g_p1xy);
   bool lost = false;
-  if (!store_load_context(g_ctx)) {  // none / old layout / corrupt: unpaired
+  if (!store_load_context(g_ctx)) {  // none / older layout (v1, v2 before firmware v1.2) / corrupt: unpaired
     g_ctx = Context();
     lost = store_has_context();  // something was stored but cannot be read: the counters restart at 0
+  } else if (g_ctx.paired() && g_ctx.vault != g_vault) {
+    // a context pinned for another K1 (cannot happen without writing NVS behind the firmware's back): fail closed
+    g_ctx = Context();
+    lost = true;
   }
   if (Serial)
-    Serial.printf("ripar: K1 %s, %s\n", addr_checksum(g_k1).c_str(),
+    Serial.printf("ripar: K1 %s, vault %s, %s\n", addr_checksum(g_k1).c_str(), addr_checksum(g_vault).c_str(),
                   g_ctx.paired() ? chain_text(g_ctx.chainId).c_str() : lost ? "PAIRING LOST" : "not paired");
   buzz_ok();
   go(Screen::Home);  // drains the key queue, draws the home screen
@@ -683,8 +690,9 @@ void app_setup() {
     // fork review N1: a PANIC / REOPEN signed now would repeat epoch / nonce 1, which the chain refuses
     buzz_err();
     show_message("PAIRING LOST",
-                 "Stored pairing unreadable (old layout or corrupt). Panic epoch and reopen nonce restart at 0: pair "
-                 "again with the on-chain floors (pair keys 10 / 11: minEpoch, reopenNonce) before PANIC or REOPEN.",
+                 "Stored pairing unreadable (older firmware layout, or corrupt). Panic epoch and reopen nonce restart "
+                 "at 0: pair again with the on-chain floors (pair keys 10 / 11: minEpoch, reopenNonce) before PANIC or "
+                 "REOPEN.",
                  UI_WARN);
   }
 }

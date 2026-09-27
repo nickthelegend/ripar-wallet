@@ -30,7 +30,7 @@ const char* const kSigFailed = "signature failed (self-check)";
 bool respond_pair(const PairReq& r, const Context& ctx, const Addr& k1, const uint8_t p1xy[64], const uint8_t fwid[8],
                   Signer& s, Response& out, std::string& err) {
   out = Response();
-  if (!check_pair(r, ctx, err)) return fail(out, err, err);
+  if (!check_pair(r, ctx, k1, err)) return fail(out, err, err);
   const B32 digest = pair_digest(r.chainId, r.registry, k1, p1xy);  // BindDevice(owner = K1, P1 key)
   uint8_t rs[64], rsv[65];
   const bool ok = s.p1(digest, rs) && s.k1(digest, rsv);
@@ -40,7 +40,7 @@ bool respond_pair(const PairReq& r, const Context& ctx, const Addr& k1, const ui
   if (!ok) return fail(out, err, kSigFailed);
   out.urType = "ripar-pair";
   out.save = Save::Required;
-  out.next = context_after_pair(ctx, r);  // pins exactly what review_pair showed
+  out.next = context_after_pair(ctx, r, k1);  // pins exactly what review_pair showed (vault derived from k1)
   err.clear();
   return true;
 }

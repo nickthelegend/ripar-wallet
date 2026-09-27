@@ -2,7 +2,8 @@
 # Compiles firmware host tests to WebAssembly with the emulator's toolchain and runs them under Node, to show that
 # the portable modules the emulator links behave the same compiled by Emscripten as by the host compiler.
 #
-#   bash emu/test/run_wasm_host_tests.sh              # test_fsm + test_pulse (the emulator's key gate + pulse gate)
+#   bash emu/test/run_wasm_host_tests.sh              # test_fsm + test_pulse + test_vault (the emulator's key gate,
+#                                                     # pulse gate and vault derivation)
 #   bash emu/test/run_wasm_host_tests.sh respond policy   # any other test/host/test_<name>.cpp
 #
 # Each test's "// DEPS:" line names the firmware sources it links (as for test/host/run_host_tests.py).
@@ -27,7 +28,7 @@ mkdir -p "$OUT/tmp"
 export TMP="$OUT/tmp" TEMP="$OUT/tmp" TMPDIR="$OUT/tmp"
 
 names=("$@")
-[ ${#names[@]} -gt 0 ] || names=(fsm pulse)
+[ ${#names[@]} -gt 0 ] || names=(fsm pulse vault)
 fails=0
 for n in "${names[@]}"; do
   src="$FW/test/host/test_$n.cpp"

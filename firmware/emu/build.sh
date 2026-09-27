@@ -37,7 +37,7 @@ awk '/QR-CAPACITY-BEGIN/{f=1;next} /QR-CAPACITY-END/{f=0} f' "$FW/src/ui.cpp" > 
 [ -s "$GEN/qr_capacity.inc" ] || { echo "build.sh: QR-CAPACITY block not found in src/ui.cpp" >&2; exit 1; }
 
 # the portable firmware modules, unchanged (NOT io / pulse / qrscan / ui / store / keys / flows / main)
-FW_MODULES="hashes util cbor ur eip712 abi crypto protocol enforcers json_strict tokens policy review respond context fsm pulse_algo"
+FW_MODULES="hashes util cbor ur eip712 abi crypto protocol enforcers json_strict tokens policy review respond context fsm pulse_algo vault"
 SRCS=()
 for m in $FW_MODULES; do SRCS+=("$FW/src/$m.cpp"); done
 for m in emu_core emu_state emu_hw emu_ui ppg_synth emu_api; do SRCS+=("$HERE/src/$m.cpp"); done

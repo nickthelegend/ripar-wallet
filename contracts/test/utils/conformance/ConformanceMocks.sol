@@ -109,15 +109,3 @@ contract MockERC8004Reputation is IERC8004Reputation {
         return _feedback[i];
     }
 }
-
-/// @title MockOwnedVault
-/// @notice ERC-173 `owner()` only: what RiparSentinel.reopen reads from a vault. Deployed at the vector's vault
-///         address. No storage (immutable owner), so a HybridDeleGator proxy can later be etched over it.
-contract MockOwnedVault {
-    // forge-lint: disable-next-line(screaming-snake-case-immutable)
-    address public immutable owner; // ERC-173 owner()
-
-    constructor(address owner_) {
-        owner = owner_;
-    }
-}

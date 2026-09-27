@@ -6,6 +6,7 @@
 #include "abi.h"
 #include "review.h"
 #include "tokens.h"
+#include "vault.h"
 
 namespace ripar {
 
@@ -30,6 +31,13 @@ bool fail(std::string& err, const std::string& m) {
   return false;
 }
 
+// "WRONG <what>: key <k> = <given> is not the <contract> this firmware pins on <chain>: <compiled>"
+std::string wrong_pinned(const char* what, int key, const Addr& given, const char* contract, uint64_t chainId,
+                         const Addr& compiled) {
+  return std::string("WRONG ") + what + ": key " + u64_text(uint64_t(key)) + " = " + addr_checksum(given) +
+         " is not the " + contract + " this firmware pins on " + chain_text(chainId) + ": " + addr_checksum(compiled);
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------------------------------------- pinned
@@ -46,6 +54,9 @@ bool check_pinned_manager(const Context& ctx, uint64_t chainId, const Addr& mana
   err.clear();
   if (!check_pinned_chain(ctx, chainId, err)) return false;
   if (ctx.delegationManager.is_zero()) return fail(err, "NO DELEGATION MANAGER PINNED - pair again");
+  Addr compiled;  // like the enforcer and the relay: a stored manager other than the firmware's is not trusted
+  if (compiled_delegation_manager(chainId, compiled) && ctx.delegationManager != compiled)
+    return fail(err, "PINNED DELEGATION MANAGER DIFFERS FROM FIRMWARE TABLE - pair again");
   if (manager != ctx.delegationManager)
     return fail(err, "WRONG DELEGATION MANAGER: " + addr_checksum(manager) + " is not the pinned " +
                          addr_checksum(ctx.delegationManager));
@@ -64,18 +75,21 @@ bool check_pinned_enforcer(const Context& ctx, uint64_t chainId, const Addr& enf
 
 bool check_pinned_relay(const Context& ctx, uint64_t chainId, const Addr& relay, std::string& err) {
   err.clear();
-  if (!check_pinned_chain(ctx, chainId, err)) return false;
-  if (ctx.relay.is_zero()) return fail(err, "NO REPUTATION RELAY PINNED - pair again");
-  if (relay != ctx.relay)
-    return fail(err, "RELAY NOT PINNED: " + addr_checksum(relay) + " is not the paired " + addr_checksum(ctx.relay));
+  Addr pinned;
+  if (!pinned_relay(ctx, chainId, pinned, err)) return false;
+  if (relay != pinned)
+    return fail(err, "RELAY NOT PINNED: " + addr_checksum(relay) + " is not the paired " + addr_checksum(pinned));
   return true;
 }
 
 bool check_pinned_vault(const Context& ctx, const Addr& delegator, std::string& err) {
   err.clear();
-  if (!ctx.vault.is_zero() && delegator != ctx.vault)
-    return fail(err, "NOT THE PAIRED VAULT: delegator " + addr_checksum(delegator) + " is not the pinned vault " +
-                         addr_checksum(ctx.vault));
+  // since v1.2 every pairing pins the vault derived from K1 (context_after_pair), so a paired context always has one;
+  // fail closed if it does not
+  if (ctx.vault.is_zero()) return fail(err, "NO VAULT PINNED - pair again");
+  if (delegator != ctx.vault)
+    return fail(err, "NOT THIS DEVICE'S VAULT: delegator " + addr_checksum(delegator) + " is not the vault " +
+                         addr_checksum(ctx.vault) + " derived from this device's K1");
   return true;
 }
 
@@ -102,6 +116,17 @@ bool pinned_cosign_enforcer(const Context& ctx, uint64_t chainId, Addr& out, std
   return true;
 }
 
+bool pinned_relay(const Context& ctx, uint64_t chainId, Addr& out, std::string& err) {
+  err.clear();
+  if (!check_pinned_chain(ctx, chainId, err)) return false;
+  if (ctx.relay.is_zero()) return fail(err, "NO REPUTATION RELAY PINNED - pair again");
+  Addr compiled;
+  if (compiled_relay(chainId, compiled) && ctx.relay != compiled)
+    return fail(err, "PINNED RELAY DIFFERS FROM FIRMWARE TABLE - pair again");
+  out = ctx.relay;
+  return true;
+}
+
 // ---------------------------------------------------------------------------------------------------------- time
 uint64_t effective_not_before(uint64_t notBefore) {
   return notBefore > RIPAR_TIME_FLOOR ? notBefore : uint64_t(RIPAR_TIME_FLOOR);
@@ -123,25 +148,42 @@ bool same_mandate_scope(const Context& cur, const Context& next) {
          cur.pulseCosignEnforcer == next.pulseCosignEnforcer && cur.vault == next.vault;
 }
 
-bool check_pair(const PairReq& r, const Context& cur, std::string& err) {
+bool check_pair(const PairReq& r, const Context& cur, const Addr& k1, std::string& err) {
   err.clear();
   if (!chain_find(r.chainId)) return fail(err, "UNSUPPORTED CHAIN " + u64_text(r.chainId));
+  // firmware v1.2: every contract the firmware has compiled in for this chain is the only one a pairing may name
   Addr fw;
+  if (compiled_registry(r.chainId, fw) && r.registry != fw)
+    return fail(err, wrong_pinned("REGISTRY", 3, r.registry, "RiparDeviceRegistry", r.chainId, fw));
   if (compiled_delegation_manager(r.chainId, fw) && !r.manager.is_zero() && r.manager != fw)
-    return fail(err, "WRONG DELEGATION MANAGER: " + addr_checksum(r.manager) + " (firmware: " + addr_checksum(fw) +
-                         ")");
+    return fail(err, wrong_pinned("DELEGATION MANAGER", 4, r.manager, "MetaMask DelegationManager", r.chainId, fw));
   if (compiled_cosign_enforcer(r.chainId, fw) && !r.enforcer.is_zero() && r.enforcer != fw)
-    return fail(err, "WRONG PULSE CO-SIGN ENFORCER: " + addr_checksum(r.enforcer) + " (firmware: " +
-                         addr_checksum(fw) + ")");
+    return fail(err, wrong_pinned("PULSE CO-SIGN ENFORCER", 5, r.enforcer, "PulseCosignEnforcer", r.chainId, fw));
+  if (compiled_relay(r.chainId, fw) && !r.relay.is_zero() && r.relay != fw)
+    return fail(err, wrong_pinned("REPUTATION RELAY", 7, r.relay, "RiparReputationRelay", r.chainId, fw));
+  // the vault is derived from this device's K1 (vault.h); the companion can only confirm it
+  const Addr vault = vault_address(k1);
+  if (!r.vault.is_zero() && r.vault != vault)
+    return fail(err, "VAULT IS NOT THIS DEVICE'S VAULT: key 8 = " + addr_checksum(r.vault) + ", but this device's K1 " +
+                         addr_checksum(k1) + " owns the vault " + addr_checksum(vault) +
+                         " (MetaMask SimpleFactory CREATE2, salt 0; leave key 8 out to pin it)");
   if (r.hasNow && r.now >= EXPIRY_LIMIT) return fail(err, "BAD TIME");
   if ((r.hasMinEpoch && r.minEpoch >= PAIR_FLOOR_LIMIT) || (r.hasReopenNonce && r.reopenNonce >= PAIR_FLOOR_LIMIT))
     return fail(err, "BAD COUNTER FLOOR");
-  // security review N2: never abandon a mandate this device signed while it may still be live on chain
-  if (cur.paired() && !(cur.lastDelegationHash == B32()) && !same_mandate_scope(cur, context_after_pair(cur, r)))
-    return fail(err, "REVOKE FIRST: this pairing changes the chain, DelegationManager, PulseCosignEnforcer or vault of "
-                     "mandate " + to_hex(cur.lastDelegationHash.v, 32) +
-                     ", which this device signed; the device would forget it and could no longer revoke it. Revoke "
-                     "it (home: hold 2 s + release, hold 2 s -> REVOKE), then pair again");
+  // PANIC FIRST (v1.2; replaces v1.1's REVOKE FIRST): never move the chain / contracts away from mandates this device
+  // signed that its last panic did not kill. After such a pairing its PANIC would be signed for the new chain /
+  // enforcer and no longer cover them.
+  if (cur.paired() && cur.unpanickedMandates && !same_mandate_scope(cur, context_after_pair(cur, r, k1))) {
+    Addr enf;
+    std::string why;
+    const std::string enfText = pinned_cosign_enforcer(cur, cur.chainId, enf, why) ? addr_checksum(enf)
+                                : cur.pulseCosignEnforcer.is_zero()               ? std::string("none")
+                                                                                  : addr_checksum(cur.pulseCosignEnforcer);
+    return fail(err, "PANIC FIRST: mandates signed on " + chain_text(cur.chainId) + " (PulseCosignEnforcer " +
+                         enfText + ", vault " + addr_checksum(cur.vault) +
+                         ") would not be covered by PANIC after re-pairing. Sign a PANIC (home: hold 5 s) and relay "
+                         "it, then pair again");
+  }
   return true;
 }
 
@@ -156,6 +198,42 @@ bool check_cosign(const CosignReq& r, const Context& ctx, std::string& err) {
   if (r.call.kind != Erc20Call::None && !r.h.value.is_zero())
     return fail(err, "ERC-20 CALL WITH NATIVE VALUE attached - refused");
   return expiry_check(r.h.expiry, ctx.notBefore, err);
+}
+
+// The payee a signed co-sign would pass to the enforcer's known-payee rule when the mandate's asset is native (a native
+// send with value > 0: the target) or the token `token` (a transfer on it, no native value, amount > 0: the recipient).
+namespace {
+bool meterable_payee(const CosignReq& r, bool native, const Addr& token, Addr& payee) {
+  Addr p;
+  if (native) {
+    if (r.call.kind != Erc20Call::None || r.h.value.is_zero()) return false;
+    p = r.h.target;
+  } else {
+    if (r.call.kind != Erc20Call::Transfer || r.h.target != token || !r.h.value.is_zero() || r.call.amount.is_zero())
+      return false;
+    p = r.call.to;
+  }
+  if (p.is_zero()) return false;
+  payee = p;
+  return true;
+}
+}  // namespace
+
+bool cosign_whitelists_payee(const CosignReq& r, const Context& ctx, Addr& payee) {
+  std::string err;
+  if (!check_cosign(r, ctx, err)) return false;  // refused: nothing is signed, nothing whitelisted (v1.2 review)
+  if (ctx.lastDelegationHash == B32() || !(r.h.delegationHash == ctx.lastDelegationHash)) return false;
+  if (!ctx.newPayeeNeedsHuman) return false;  // every payee may use the AUTO path anyway
+  // native terms: a native send with value > 0; token terms: transfer on that token, no native value, amount > 0
+  return meterable_payee(r, ctx.pulseToken.is_zero(), ctx.pulseToken, payee);
+}
+
+bool cosign_may_whitelist_payee(const CosignReq& r, const Context& ctx, Addr& payee) {
+  std::string err;
+  if (!check_cosign(r, ctx, err)) return false;
+  if (!(ctx.lastDelegationHash == B32()) && r.h.delegationHash == ctx.lastDelegationHash) return false;  // known
+  // the mandate's asset is unknown: meterable if it is native, or if it is the token this call transfers
+  return meterable_payee(r, true, Addr(), payee) || meterable_payee(r, false, r.h.target, payee);
 }
 
 // ---------------------------------------------------------------------------------------------------------- mandate
@@ -225,12 +303,14 @@ bool check_deny(const DenyReq& r, const Context& ctx, std::string& err) {
 
 bool deny_from_cosign(const CosignReq& c, const Context& ctx, DenyReq& out, std::string& err) {
   if (!ctx.paired()) return fail(err, "NOT PAIRED - cannot file a deny");
-  if (ctx.relay.is_zero()) return fail(err, "NO REPUTATION RELAY PINNED - cannot file a deny");
+  Addr relay;
+  std::string why;
+  if (!pinned_relay(ctx, ctx.chainId, relay, why)) return fail(err, "CANNOT FILE A DENY: " + why);
   if (!ctx.hasAgentId) return fail(err, "NO AGENT PINNED - cannot file a deny");
   DenyReq d;
   d.reqId = c.reqId;
   d.chainId = ctx.chainId;
-  d.relay = ctx.relay;
+  d.relay = relay;
   d.agentId = ctx.agentId;
   d.requestHash = cosign_request_hash(c);
   out = d;
@@ -259,13 +339,13 @@ bool check_reopen(const Context& ctx, std::string& err) {
   err.clear();
   if (!ctx.paired()) return fail(err, "NOT PAIRED - pair the device first (home -> PAIR)");
   if (ctx.sentinel.is_zero()) return fail(err, "NO SENTINEL PINNED - pair again with the sentinel address");
-  if (ctx.vault.is_zero()) return fail(err, "NO VAULT PINNED - pair again with the vault address");
+  if (ctx.vault.is_zero()) return fail(err, "NO VAULT PINNED - pair again");
   if (ctx.reopenNonce == kMax64) return fail(err, "NONCE COUNTER EXHAUSTED");
   return true;
 }
 
 // ---------------------------------------------------------------------------------------------------------- writers
-Context context_after_pair(const Context& cur, const PairReq& r) {
+Context context_after_pair(const Context& cur, const PairReq& r, const Addr& k1) {
   Context c;
   c.chainId = r.chainId;
   c.registry = r.registry;
@@ -273,13 +353,20 @@ Context context_after_pair(const Context& cur, const PairReq& r) {
   c.delegationManager = !r.manager.is_zero() ? r.manager : (compiled_delegation_manager(r.chainId, fw) ? fw : Addr());
   c.pulseCosignEnforcer = !r.enforcer.is_zero() ? r.enforcer : (compiled_cosign_enforcer(r.chainId, fw) ? fw : Addr());
   c.sentinel = r.sentinel;
-  c.relay = r.relay;
-  c.vault = r.vault;
+  c.relay = !r.relay.is_zero() ? r.relay : (compiled_relay(r.chainId, fw) ? fw : Addr());
+  c.vault = vault_address(k1);  // never the companion's key 8 (check_pair refuses one that differs)
   if (same_mandate_scope(cur, c)) {
     c.lastDelegationHash = cur.lastDelegationHash;
     c.hasAgentId = cur.hasAgentId;
     c.agentId = cur.agentId;
+    c.pulseToken = cur.pulseToken;
+    c.perTxAutoCap = cur.perTxAutoCap;
+    c.periodAutoCap = cur.periodAutoCap;
+    c.period = cur.period;
+    c.newPayeeNeedsHuman = cur.newPayeeNeedsHuman;
   }
+  // PANIC FIRST: the flag follows the device, not the pairing (check_pair refuses to move the scope while it is set)
+  c.unpanickedMandates = cur.unpanickedMandates;
   // never go back: a later Panic must exceed every epoch signed before, a nonce is never reused. A floor from the
   // companion (keys 10 / 11, e.g. the on-chain values after the context was lost) can only raise them.
   c.minEpoch = cur.minEpoch;
@@ -293,9 +380,28 @@ Context context_after_pair(const Context& cur, const PairReq& r) {
 }
 
 void context_after_mandate(Context& ctx, const MandateReq& r) {
+  // the pulse terms of the (single, check_mandate) PulseCosignEnforcer caveat, decoded against the context the mandate
+  // was checked with
+  PulseTerms t;
+  bool found = false;
+  for (const Caveat& c : r.d.caveats) {
+    CaveatView v;
+    std::string e;
+    if (enforcer_kind(r.chainId, c.enforcer, ctx) == EnfKind::PulseCosign && decode_caveat(r.chainId, c, ctx, v, e)) {
+      t = v.pulse;
+      found = true;
+      break;
+    }
+  }
   ctx.lastDelegationHash = hash_delegation(r.d);
   ctx.hasAgentId = r.hasAgentId;
   ctx.agentId = r.hasAgentId ? r.agentId : 0;
+  ctx.pulseToken = found ? t.token : Addr();
+  ctx.perTxAutoCap = found ? t.perTxAutoCap : U256();
+  ctx.periodAutoCap = found ? t.periodAutoCap : U256();
+  ctx.period = found ? t.period : 0;
+  ctx.newPayeeNeedsHuman = found && t.newPayeeNeedsHuman;
+  ctx.unpanickedMandates = true;  // PANIC FIRST: covered only by the next panic
 }
 
 void context_after_cosign(Context& ctx, const CosignReq& r) {
@@ -305,12 +411,22 @@ void context_after_cosign(Context& ctx, const CosignReq& r) {
   if (t > ctx.notBefore) ctx.notBefore = t;
 }
 
-void context_after_revoke(Context& ctx) { ctx.lastDelegationHash = B32(); }
+void context_after_revoke(Context& ctx) {
+  ctx.lastDelegationHash = B32();
+  ctx.pulseToken = Addr();
+  ctx.perTxAutoCap = U256();
+  ctx.periodAutoCap = U256();
+  ctx.period = 0;
+  ctx.newPayeeNeedsHuman = false;
+}
 
 uint64_t panic_next_epoch(const Context& ctx) { return ctx.minEpoch == kMax64 ? kMax64 : ctx.minEpoch + 1; }
 
 void context_after_panic(Context& ctx, uint64_t signedMinEpoch) {
-  if (signedMinEpoch > ctx.minEpoch) ctx.minEpoch = signedMinEpoch;
+  if (signedMinEpoch > ctx.minEpoch) {
+    ctx.minEpoch = signedMinEpoch;
+    ctx.unpanickedMandates = false;  // every mandate this device signed has an epoch <= the old minEpoch: all killed
+  }
 }
 
 uint64_t reopen_next_nonce(const Context& ctx) {
