@@ -1,11 +1,21 @@
-// Ripar contract addresses come from contracts/deployments/<chainId>.json (written by contracts/script/Deploy.s.sol),
-// never from constants: parseDeployment() validates such a file, pairFieldsFromDeployment() turns it into the
-// contracts a pairing pins.
+// Ripar contract addresses of a deployment come from contracts/deployments/<chainId>.json (written by
+// contracts/script/Deploy.s.sol): parseDeployment() validates such a file, pairFieldsFromDeployment() turns it into the
+// contracts a pairing pins. Firmware v1.2 compiles the CREATE2 addresses of the registry, the enforcer and the relay in
+// (constants FIRMWARE_*): a deployment at other addresses cannot be paired with (checkDeploymentPins says why).
 import { type Address, type IntLike, toAddr, toBytes, toHex, toInt, type Hex } from './bytes.js';
-import { DELEGATION_MANAGER, FIRMWARE_CHAIN_IDS } from './constants.js';
+import {
+  DELEGATION_MANAGER,
+  FIRMWARE_CHAIN_IDS,
+  FIRMWARE_PULSE_ENFORCER,
+  FIRMWARE_REGISTRY,
+  FIRMWARE_RELAY,
+  type FirmwareTable,
+  firmwareAddress,
+} from './constants.js';
 import { ProtoError } from './errors.js';
 import { isValidAddress, toChecksumAddress } from './hash.js';
 import type { PairFields } from './requests.js';
+import { MUSD_10143 } from './tokens.js';
 
 /** contracts/deployments/<chainId>.json, addresses EIP-55 */
 export interface RiparDeployment {
@@ -17,7 +27,7 @@ export interface RiparDeployment {
   enforcer: Address;
   sentinel: Address;
   relay: Address;
-  /** MockUSD (testnet demo token; 6 decimals, symbol mUSD; not in the firmware token table) */
+  /** MockUSD (testnet demo token; 6 decimals, symbol mUSD; in the firmware v1.2 token table on 10143) */
   mockUsd: Address;
   creForwarder: Address;
   expectedWorkflowOwner: Address;
@@ -88,10 +98,45 @@ export function parseDeployment(json: string | Record<string, unknown>, expectCh
   };
 }
 
+/** one deployment contract that differs from the address compiled into firmware v1.2 for the chain */
+export interface PinMismatch {
+  /** RiparDeployment field */
+  field: 'registry' | 'enforcer' | 'relay' | 'mockUsd' | 'delegationManager';
+  /** the pair-request key the device checks (0 = MockUSD, only the token table) */
+  key: number;
+  name: string;
+  deployed: Address;
+  firmware: Address;
+}
+
+/**
+ * The contracts of a deployment that differ from the ones compiled into firmware v1.2 for its chain (the device refuses
+ * a pairing that names another registry / DelegationManager / enforcer / relay; a MockUSD elsewhere is an unlisted
+ * token on the device). Empty = the deployment is the one the firmware pins.
+ */
+export function checkDeploymentPins(d: RiparDeployment): PinMismatch[] {
+  const out: PinMismatch[] = [];
+  const pins: [PinMismatch['field'], number, string, FirmwareTable | Record<string, Address>][] = [
+    ['registry', 3, 'RiparDeviceRegistry', FIRMWARE_REGISTRY],
+    ['delegationManager', 4, 'DelegationManager', { '10143': DELEGATION_MANAGER, '143': DELEGATION_MANAGER }],
+    ['enforcer', 5, 'PulseCosignEnforcer', FIRMWARE_PULSE_ENFORCER],
+    ['relay', 7, 'RiparReputationRelay', FIRMWARE_RELAY],
+    ['mockUsd', 0, 'MockUSD', { '10143': MUSD_10143 }],
+  ];
+  for (const [field, key, name, table] of pins) {
+    const want = firmwareAddress(table, d.chainId);
+    if (want === undefined) continue;
+    const have = toChecksumAddress(toAddr(d[field]));
+    if (have !== want) out.push({ field, key, name, deployed: have, firmware: want });
+  }
+  return out;
+}
+
 /**
  * The pair request fields of a deployment: chain, registry, DelegationManager, enforcer, sentinel, relay, plus the
- * vault (computeVaultAddress(K1)) and the optional clock / floors. Refuses a chain outside the firmware table and a
- * DelegationManager other than the one compiled into the firmware (the device would refuse both).
+ * optional vault (only computeVaultAddress(K1) is accepted by the device; best left out: the device pins the vault it
+ * derives) and the optional clock / floors. Refuses a chain outside the firmware table and a registry /
+ * DelegationManager / enforcer / relay other than the ones compiled into firmware v1.2 (the device refuses them all).
  */
 export function pairFieldsFromDeployment(
   d: RiparDeployment,
@@ -102,6 +147,13 @@ export function pairFieldsFromDeployment(
   }
   if (toChecksumAddress(toAddr(d.delegationManager)) !== DELEGATION_MANAGER) {
     throw new ProtoError(`DelegationManager ${d.delegationManager} is not the firmware's ${DELEGATION_MANAGER}`);
+  }
+  const bad = checkDeploymentPins(d).filter((x) => x.key !== 0);
+  if (bad.length) {
+    throw new ProtoError(
+      'the device (firmware v1.2) refuses this deployment: ' +
+        bad.map((x) => `${x.name} ${x.deployed} is not the one compiled in for chain ${d.chainId} (${x.firmware})`).join('; '),
+    );
   }
   return {
     chainId: d.chainId,

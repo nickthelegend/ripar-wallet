@@ -10,6 +10,7 @@ import { errorText } from '../lib/format';
 import { type NetworkId, NETWORKS, isLocalRpc } from '../lib/networks';
 import { type CodeCheck, checkContracts } from '../lib/reads';
 import { store, useDeployment, useStore } from '../lib/store';
+import { type RiparDeployment, checkDeploymentPins } from '@ripar/protocol';
 import { formatEther } from 'viem';
 
 export function Connect() {
@@ -291,7 +292,8 @@ export function Connect() {
         <Step n={3} title="Ripar contracts" state={states[2]!}>
           <p className="small muted">
             The addresses come from the deployments JSON that <code>contracts/script/Deploy.s.sol</code> writes (
-            <code>deployments/{settings.chainId}.json</code>). They are never built into the companion.
+            <code>deployments/{settings.chainId}.json</code>). Firmware v1.2 has the CREATE2 addresses of the registry,
+            the PulseCosignEnforcer and the relay compiled in: the device refuses to pair with any other.
           </p>
           <div className="field-row">
             <Field label="Deployments JSON URL" htmlFor="dep-url" error={depLoadErr}>
@@ -344,6 +346,7 @@ export function Connect() {
                   { k: 'DelegationManager', v: <Hex value={deployment.delegationManager} explorer={explorer} /> },
                 ]}
               />
+              <DeploymentPinsNote deployment={deployment} />
               <div className="row">
                 <Button onClick={checkCode} busy={depBusy} icon="check">
                   Check the code on this RPC
@@ -471,5 +474,36 @@ export function Connect() {
         </div>
       )}
     </div>
+  );
+}
+
+/** firmware v1.2 pins: does the device accept this deployment's contracts? (checkDeploymentPins) */
+function DeploymentPinsNote({ deployment }: { deployment: RiparDeployment }) {
+  const bad = checkDeploymentPins(deployment);
+  if (!bad.length) {
+    return (
+      <p className="small muted">
+        Registry, PulseCosignEnforcer, relay and MockUSD are the addresses compiled into firmware v1.2 for chain{' '}
+        {deployment.chainId.toString()}: the device accepts this deployment.
+      </p>
+    );
+  }
+  const refused = bad.filter((x) => x.key !== 0);
+  return (
+    <Note kind={refused.length ? 'warning' : 'caution'} title={refused.length ? 'The device will refuse to pair with this deployment' : 'MockUSD is not the one the device knows'}>
+      <ul className="small">
+        {bad.map((x) => (
+          <li key={x.field}>
+            {x.name} is <Hex value={x.deployed} />, firmware v1.2 has <Hex value={x.firmware} />
+            {x.key ? ` (pair key ${x.key}: WRONG ${x.field === 'registry' ? 'REGISTRY' : x.field === 'enforcer' ? 'PULSE CO-SIGN ENFORCER' : x.field === 'relay' ? 'REPUTATION RELAY' : 'DELEGATION MANAGER'})` : ' (the device shows it as UNKNOWN TOKEN)'}
+          </li>
+        ))}
+      </ul>
+      <p className="small">
+        {refused.length
+          ? 'Deploy with contracts/script/Deploy.s.sol (CREATE2, the frozen v1.2 bytecode): on Monad testnet, and on an anvil fork of it, it lands exactly at the compiled-in addresses.'
+          : 'Payments in this token show raw base units on the device.'}
+      </p>
+    </Note>
   );
 }

@@ -1,15 +1,22 @@
 // Pairing, in two rounds (docs/PROTOCOL.md §4 ripar-pair-req):
 //   1. keys only: the device's HOME -> hold 2 s -> release shows a ripar-pair QR with K1, P1 and the firmware id
 //      (nothing signed, nothing pinned). The companion learns K1 and derives the canonical vault from it.
-//   2. the full pairing request pins chain, registry, DelegationManager, enforcer, sentinel, relay and that vault;
-//      the device signs BindDevice(K1, P1) with both keys, which the companion verifies and relays to the registry.
+//   2. the full pairing request pins chain, registry, DelegationManager, enforcer, sentinel and relay; firmware v1.2
+//      only accepts the registry / manager / enforcer / relay compiled into it and pins the vault it derives from K1
+//      itself (key 8 is left out). The device signs BindDevice(K1, P1) with both keys, which the companion verifies
+//      and relays to the registry.
 import {
   type BuiltRequest,
   type RiparDeployment,
+  DELEGATION_MANAGER,
+  FIRMWARE_PULSE_ENFORCER,
+  FIRMWARE_RELAY,
   ProtoError,
   buildRequest,
   computeVaultAddress,
   decodeRequest,
+  firmwareAddress,
+  firmwareRefusal,
   pairFieldsFromDeployment,
   parseResponse,
   toChecksumAddress,
@@ -45,8 +52,9 @@ export interface PairPlan {
 }
 
 /**
- * The full pairing request for a device whose K1 is known: the deployment's contracts plus the canonical vault of
- * K1. `floors` raise the device's panic epoch / reopen nonce after a lost context (only sent when > 0).
+ * The full pairing request for a device whose K1 is known: the deployment's contracts (which must be the ones compiled
+ * into firmware v1.2, else ProtoError), no key 8 (the device pins the vault it derives from K1: `vault` below). `floors`
+ * raise the device's panic epoch / reopen nonce after a lost context (only sent when > 0).
  */
 export function planPairing(
   dep: RiparDeployment,
@@ -55,28 +63,32 @@ export function planPairing(
 ): PairPlan {
   const vault = computeVaultAddress(k1Address);
   const fields = pairFieldsFromDeployment(dep, {
-    vault,
     now: opts.now,
     ...(opts.minEpoch && opts.minEpoch > 0n ? { minEpoch: opts.minEpoch } : {}),
     ...(opts.reopenNonce && opts.reopenNonce > 0n ? { reopenNonce: opts.reopenNonce } : {}),
   });
   const request = buildRequest('pair', fields, { frag: opts.fragLen ?? 70 });
-  return { request, vault, pinned: pinnedOf(request) };
+  const why = firmwareRefusal(decodeRequest('pair', request.cbor), k1Address);
+  if (why) throw new ProtoError(`the device would refuse this pairing: ${why}`);
+  return { request, vault, pinned: pinnedOf(request, k1Address) };
 }
 
-/** the context a pair request pins (the device pins the firmware DelegationManager when key 4 is absent) */
-export function pinnedOf(request: BuiltRequest | { kind: 'pair'; cbor: Uint8Array }): PinnedContext {
+/**
+ * The context a pair request pins on a firmware v1.2 device: absent keys 4 / 5 / 7 pin the addresses compiled in for
+ * the chain, and the vault is always the one derived from K1 (never key 8).
+ */
+export function pinnedOf(request: BuiltRequest | { kind: 'pair'; cbor: Uint8Array }, k1Address: string): PinnedContext {
   const q = decodeRequest('pair', request.cbor);
   if (q.kind !== 'pair') throw new ProtoError('not a pair request');
-  const a = (b: Uint8Array | null) => (b ? toChecksumAddress(b) : (ZERO as `0x${string}`));
+  const a = (b: Uint8Array | null, fw?: `0x${string}`) => (b ? toChecksumAddress(b) : (fw ?? (ZERO as `0x${string}`)));
   return {
     chainId: Number(q.chainId),
     registry: a(q.registry),
-    manager: q.manager ? a(q.manager) : toChecksumAddress('0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3'),
-    enforcer: a(q.enforcer),
+    manager: a(q.manager, DELEGATION_MANAGER),
+    enforcer: a(q.enforcer, firmwareAddress(FIRMWARE_PULSE_ENFORCER, q.chainId)),
     sentinel: a(q.sentinel),
-    relay: a(q.relay),
-    vault: a(q.vault),
+    relay: a(q.relay, firmwareAddress(FIRMWARE_RELAY, q.chainId)),
+    vault: computeVaultAddress(k1Address),
   };
 }
 
@@ -91,8 +103,8 @@ export function answersRequest(ur: string, request: BuiltRequest): boolean {
 }
 
 /**
- * Verifies the signed pairing (both BindDevice signatures, req-id) and that it is the device whose keys-only QR was
- * read, whose canonical vault the request pinned. Returns the record to store.
+ * Verifies the signed pairing (both BindDevice signatures, req-id, only the firmware's pinned contracts) and that it
+ * is the device whose keys-only QR was read, whose derived vault the plan expects. Returns the record to store.
  */
 export function acceptPairing(pairUr: string, plan: PairPlan, keysOnly: KeysOnly | null, now = Date.now()): PairedDevice {
   const id = verifyPairing(pairUr, plan.request);
@@ -103,7 +115,9 @@ export function acceptPairing(pairUr: string, plan: PairPlan, keysOnly: KeysOnly
     throw new ProtoError('the P1 key differs from the keys-only pairing QR');
   }
   const vault = computeVaultAddress(id.k1Address);
-  if (vault !== plan.vault) throw new ProtoError(`the pinned vault ${plan.vault} is not the canonical vault ${vault} of this K1`);
+  if (vault !== plan.vault) {
+    throw new ProtoError(`this device (K1 ${id.k1Address}) pinned its own vault ${vault}, not ${plan.vault}: read its keys again (step 1)`);
+  }
   return {
     k1Address: id.k1Address,
     p1Key: id.p1Key,

@@ -5,7 +5,7 @@ import { AUSD_10143 } from '@ripar/protocol';
 import { PageHead } from '../App';
 import { AgentRun } from '../components/AgentRun';
 import { DeviceExchangePanel } from '../components/DeviceExchangePanel';
-import { DemoTokenNote, ReviewPanel } from '../components/Review';
+import { UnknownTokenNote, ReviewPanel } from '../components/Review';
 import { Button, Empty, Field, Figure, Hex, Mark, NextStep, Note, Procedure, Spec, Step, type StepState } from '../components/ui';
 import { agentClientOf } from '../lib/agent';
 import { publicClientFor } from '../lib/clients';
@@ -444,7 +444,7 @@ export function Mandate() {
                     <Note kind="caution">
                       <p>Check the delegate, the vault and every cap on the device's screen, not here. This page is only the courier.</p>
                     </Note>
-                    <DemoTokenNote
+                    <UnknownTokenNote
                       chainId={device.pinned.chainId}
                       token={form.token}
                       decimals={form.tokenDecimals}

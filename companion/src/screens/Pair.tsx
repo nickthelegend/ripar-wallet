@@ -1,7 +1,7 @@
 // 3 Pair: learn K1 from the keys-only pairing QR, derive the canonical vault, send the full pairing request (the
 // device pins the contracts after pulse + SIGN and signs BindDevice with P1 and K1), verify, register on-chain.
 import { useEffect, useState } from 'react';
-import { type VerifyReport, parseResponse } from '@ripar/protocol';
+import { type VerifyReport, parseResponse, checkDeploymentPins, type RiparDeployment } from '@ripar/protocol';
 import { PageHead } from '../App';
 import { DeviceExchangePanel } from '../components/DeviceExchangePanel';
 import { VerifyPanel } from '../components/Review';
@@ -149,18 +149,25 @@ export function Pair() {
               <Spec
                 rows={[
                   { k: 'Chain', v: `${deployment.chainId}` },
-                  { k: 'Vault (derived from K1)', v: <Hex value={computeVaultAddress(keys.k1Address)} explorer={explorer} /> },
-                  { k: 'Registry', v: <Hex value={deployment.registry} /> },
-                  { k: 'DelegationManager', v: <Hex value={deployment.delegationManager} /> },
-                  { k: 'PulseCosignEnforcer', v: <Hex value={deployment.enforcer} /> },
+                  { k: 'Vault (derived by the device from K1; key 8 not sent)', v: <Hex value={computeVaultAddress(keys.k1Address)} explorer={explorer} /> },
+                  { k: 'Registry', v: <>{<Hex value={deployment.registry} />} {pinMark(deployment, 'registry')}</> },
+                  { k: 'DelegationManager', v: <>{<Hex value={deployment.delegationManager} />} {pinMark(deployment, 'delegationManager')}</> },
+                  { k: 'PulseCosignEnforcer', v: <>{<Hex value={deployment.enforcer} />} {pinMark(deployment, 'enforcer')}</> },
                   { k: 'Sentinel', v: <Hex value={deployment.sentinel} /> },
-                  { k: 'Reputation relay', v: <Hex value={deployment.relay} /> },
+                  { k: 'Reputation relay', v: <>{<Hex value={deployment.relay} />} {pinMark(deployment, 'relay')}</> },
                 ]}
               />
-              {mandate && device && (
+              {checkDeploymentPins(deployment).some((x) => x.key !== 0) && (
+                <Note kind="warning">
+                  Firmware v1.2 refuses these contracts (WRONG REGISTRY / PULSE CO-SIGN ENFORCER / REPUTATION RELAY): it
+                  only pairs with the addresses compiled into it. Load the CREATE2 deployment on the Connect page.
+                </Note>
+              )}
+              {mandate && device && device.pinned.chainId !== Number(deployment.chainId) && (
                 <Note kind="caution">
-                  The device remembers a mandate. A pairing that changes the chain, DelegationManager, enforcer or vault
-                  is refused (REVOKE FIRST): revoke it on the Kill switch page, then pair again.
+                  The device signed mandates on chain {device.pinned.chainId}. Moving it to chain {deployment.chainId.toString()}{' '}
+                  is refused (PANIC FIRST) until it signs a PANIC that covers them: on Home hold SIGN 5 s, relay the QR
+                  on the Kill switch page, then pair again. A revoke is not enough.
                 </Note>
               )}
               <div className="row">
@@ -193,10 +200,10 @@ export function Pair() {
                 round="pair"
               />
               <p className="small muted">
-                The device checks the vault itself: firmware v1.2 refuses any vault but the SimpleFactory vault of its own
-                K1, which is exactly the one derived above (never typed in). If it answers VAULT IS NOT THIS DEVICE'S VAULT,
-                another device answered than the one whose keys were read: read the keys again. PANIC FIRST or REVOKE
-                FIRST: use the Kill switch page, then pair again.
+                The device derives its vault itself: firmware v1.2 pins only the SimpleFactory vault of its own K1, the one
+                shown above (key 8 is left out of the request). It also pins only the registry, enforcer and relay compiled
+                into it (WRONG REGISTRY / PULSE CO-SIGN ENFORCER / REPUTATION RELAY otherwise: load the CREATE2 deployment on
+                the Connect page). PANIC FIRST: sign and relay a PANIC on the Kill switch page, then pair again.
               </p>
             </>
           )}
@@ -253,4 +260,10 @@ export function Pair() {
       {registered && <NextStep to="vault" label="Vault">The device is paired and registered. Deploy and fund its vault next.</NextStep>}
     </div>
   );
+}
+
+/** "(firmware table)" when the deployment's contract is the one compiled into firmware v1.2, else a warning mark */
+function pinMark(d: RiparDeployment, field: 'registry' | 'enforcer' | 'relay' | 'delegationManager') {
+  const bad = checkDeploymentPins(d).find((x) => x.field === field);
+  return bad ? <Mark tone="bad">NOT THE FIRMWARE'S</Mark> : <span className="small muted">(firmware table)</span>;
 }

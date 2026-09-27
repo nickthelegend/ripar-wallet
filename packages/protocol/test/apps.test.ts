@@ -38,6 +38,7 @@ import {
   SIMPLE_FACTORY,
   ENTRY_POINT_V07,
   autoPathDecision,
+  checkDeploymentPins,
   computeAutoBudget,
   computeVaultAddress,
   decodePermissionContext,
@@ -290,11 +291,12 @@ describe('deployments JSON (Deploy.s.sol format)', () => {
     chainId: 10143,
     salt: '0x' + '52'.repeat(32),
     create2Deployer: '0x4e59b44847b379578588920cA78FbF26c0B4956C',
-    RiparDeviceRegistry: getAddress(rnd(20, 21)),
-    PulseCosignEnforcer: getAddress(rnd(20, 22)),
+    // firmware v1.2: the Deploy script's CREATE2 addresses are compiled into the firmware (constants FIRMWARE_*)
+    RiparDeviceRegistry: '0xA08a47c9d645926615CF04D69b7a048133F68c9f',
+    PulseCosignEnforcer: '0x64d61fe5438981DC803ED61250FEf024617ae7eE',
     RiparSentinel: getAddress(rnd(20, 23)),
-    RiparReputationRelay: getAddress(rnd(20, 24)),
-    MockUSD: getAddress(rnd(20, 25)),
+    RiparReputationRelay: '0xE433dCA75CA6cd730b1006F51A26208B000eA9E2',
+    MockUSD: '0xB5b7eaffbF9bf68cbcC1Ce8B5850b2ea9d6f9a2a',
     creForwarder: getAddress(rnd(20, 26)),
     expectedWorkflowOwner: getAddress(rnd(20, 27)),
     erc8004Identity: '0x8004A818BFB912233c491871b3d84c89A494BD9e',
@@ -306,8 +308,20 @@ describe('deployments JSON (Deploy.s.sol format)', () => {
     expect(d.enforcer).toBe(sample.PulseCosignEnforcer);
     expect(d.registry).toBe(sample.RiparDeviceRegistry);
     expect(d.chainId).toBe(10143n);
+    expect(checkDeploymentPins(d)).toEqual([]);
     const f = pairFieldsFromDeployment(d, { vault: computeVaultAddress(DEMO_K1), now: 1790500000 });
     expect(f).toMatchObject({ chainId: 10143n, registry: d.registry, manager: DELEGATION_MANAGER, enforcer: d.enforcer, sentinel: d.sentinel, relay: d.relay, vault: DEMO_VAULT });
+    expect(pairFieldsFromDeployment(d).vault).toBeUndefined(); // no key 8: the device pins the vault it derives
+  });
+  it('refuses a deployment at other addresses than the ones compiled into firmware v1.2', () => {
+    const d = parseDeployment({ ...sample, PulseCosignEnforcer: getAddress(rnd(20, 22)), MockUSD: getAddress(rnd(20, 25)) });
+    const bad = checkDeploymentPins(d);
+    expect(bad.map((x) => [x.field, x.key])).toEqual([['enforcer', 5], ['mockUsd', 0]]);
+    expect(() => pairFieldsFromDeployment(d)).toThrow(/PulseCosignEnforcer .* is not the one compiled in for chain 10143/);
+    // a MockUSD elsewhere alone is only an unlisted token on the device: pairing is still possible
+    expect(() => pairFieldsFromDeployment(parseDeployment({ ...sample, MockUSD: getAddress(rnd(20, 25)) }))).not.toThrow();
+    expect(() => pairFieldsFromDeployment(parseDeployment({ ...sample, RiparDeviceRegistry: getAddress(rnd(20, 21)) }))).toThrow(/RiparDeviceRegistry/);
+    expect(() => pairFieldsFromDeployment(parseDeployment({ ...sample, RiparReputationRelay: getAddress(rnd(20, 24)) }))).toThrow(/RiparReputationRelay/);
   });
   it('refuses wrong chains, bad addresses, a foreign DelegationManager', () => {
     expect(() => parseDeployment(sample, 143)).toThrow(/chainId/);

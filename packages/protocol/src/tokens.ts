@@ -1,5 +1,6 @@
-// The firmware token table (firmware/src/tokens.cpp, security review B3), the AI-claims rule (MINOR 1) and the
-// token check of a co-sign request (make_request.py TOKENS / NATIVE / token_check / ai_matches).
+// The firmware v1.2 token table (firmware/src/tokens.cpp, security review B3: AUSD and MockUSD on 10143, MON), the
+// AI-claims rule (MINOR 1) and the token check of a co-sign request (make_request.py TOKENS / NATIVE / token_check /
+// ai_matches).
 import { type Address, type BytesLike, type IntLike, bytesEqual, h, isZero, toAddr, toInt } from './bytes.js';
 import { decodeErc20 } from './erc20.js';
 import { ProtoError } from './errors.js';
@@ -13,9 +14,13 @@ export interface TokenInfo {
 /** Agora USD on Monad testnet (listed in the firmware token table) */
 export const AUSD_10143: Address = '0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC';
 
+/** MockUSD (contracts/src/MockUSD.sol, CREATE2) on Monad testnet: in the firmware v1.2 token table */
+export const MUSD_10143: Address = '0xB5b7eaffbF9bf68cbcC1Ce8B5850b2ea9d6f9a2a';
+
 /** ERC-20 tokens listed in the firmware table, keyed `${chainId}:${lowercase address without 0x}` */
 export const FIRMWARE_TOKENS: Readonly<Record<string, TokenInfo>> = {
   [`10143:${AUSD_10143.slice(2).toLowerCase()}`]: { decimals: 6, symbol: 'AUSD', name: 'Agora USD' },
+  [`10143:${MUSD_10143.slice(2).toLowerCase()}`]: { decimals: 6, symbol: 'mUSD', name: 'MockUSD (Ripar demo)' },
 };
 
 /** native coins of the supported chains */

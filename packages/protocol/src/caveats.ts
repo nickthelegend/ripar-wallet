@@ -17,6 +17,7 @@ import {
   unhex,
   word,
 } from './bytes.js';
+import { FIRMWARE_PULSE_ENFORCER, firmwareAddress } from './constants.js';
 import { ProtoError } from './errors.js';
 import { toChecksumAddress } from './hash.js';
 
@@ -159,8 +160,11 @@ export function decodePulseTerms(terms: BytesLike): DecodedPulseTerms {
 export type CaveatSpecTyped =
   | {
       kind: 'pulse';
-      /** the PulseCosignEnforcer pinned at pairing (required) */
-      enforcer: BytesLike;
+      /**
+       * the PulseCosignEnforcer pinned at pairing; default (with the mandate's chain): the one compiled into firmware
+       * v1.2 for that chain (FIRMWARE_PULSE_ENFORCER)
+       */
+      enforcer?: BytesLike;
       /** px‖py (64 bytes), or px + py */
       p1Key?: BytesLike;
       px?: BytesLike;
@@ -244,18 +248,20 @@ export function caveatTerms(kind: string, c: AnyRec): Uint8Array {
 /** one caveat as [enforcer (20 bytes), terms] */
 export type CaveatPair = [Uint8Array, Uint8Array];
 
-/** make_request caveat_from_spec */
-export function caveatFromSpec(c: CaveatSpec | unknown): CaveatPair {
+/** make_request caveat_from_spec (chainId: the mandate's chain, for the compiled-in pulse enforcer default) */
+export function caveatFromSpec(c: CaveatSpec | unknown, chainId?: IntLike | null): CaveatPair {
   if (c !== null && typeof c === 'object' && !Array.isArray(c) && !(c instanceof Uint8Array)) {
     const o = c as AnyRec;
     if ('kind' in o) {
       const k = String(o.kind);
       let enf: unknown;
       if (k === 'pulse') {
-        if (!('enforcer' in o) || o.enforcer === undefined) {
+        // firmware v1.2: the PulseCosignEnforcer compiled in for the chain is the default
+        const compiled = chainId == null ? undefined : firmwareAddress(FIRMWARE_PULSE_ENFORCER, toInt(chainId));
+        if ((!('enforcer' in o) || o.enforcer === undefined) && compiled === undefined) {
           throw new ProtoError('pulse caveat: give the PulseCosignEnforcer address (enforcer)');
         }
-        enf = o.enforcer;
+        enf = 'enforcer' in o && o.enforcer !== undefined ? o.enforcer : compiled;
       } else {
         const name = (KIND_ENFORCER as Record<string, keyof typeof MM_ENFORCERS>)[k];
         if (name === undefined) throw new ProtoError('unknown caveat kind ' + k);

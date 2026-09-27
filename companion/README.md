@@ -190,7 +190,9 @@ RIPAR_E2E_RPC=http://127.0.0.1:8545 RIPAR_E2E_DEPLOYMENTS=<path>/deployments/101
   against a physical device; the emulator path and a pasted-QR path have.
 - The ERC-8004 identity registry on Monad testnet reverted `register` (even as an `eth_call`, 2026-09-27), so the
   anvil e2e files its denial against an existing agent id.
-- Ripar contract addresses are not final; nothing works until a deployments JSON is loaded.
+- Nothing works until a deployments JSON is loaded. Firmware v1.2 pairs only with the RiparDeviceRegistry,
+  PulseCosignEnforcer and RiparReputationRelay compiled into it (the CREATE2 addresses of `Deploy.s.sol` on Monad
+  testnet, which an anvil fork of it reproduces); the Connect and Pair pages say so for any other deployment.
 - The emulated device's seed is in localStorage (by design: it is a demo). Clearing site data erases it and its vault.
 - `GET /events` cannot carry a bearer token (EventSource), so with `AGENT_API_TOKEN` the inbox polls only.
 - The main bundle is about 250 KB gzipped (viem, React, the protocol); smart-accounts-kit (about 190 KB gzipped) and

@@ -7,7 +7,23 @@ import { describe, expect, it } from 'vitest';
 import {
   type BuiltRequest,
   type CaveatSpec,
+  DELEGATION_MANAGER,
+  ENTRY_POINT_V07,
+  ERC1967_PROXY_CREATION_CODE,
   ERC20_KIND_NUM,
+  FIRMWARE_PULSE_ENFORCER,
+  FIRMWARE_REGISTRY,
+  FIRMWARE_RELAY,
+  HYBRID_DELEGATOR_IMPL,
+  MUSD_10143,
+  SIMPLE_FACTORY,
+  VAULT_DEPLOY_SALT,
+  computeVaultAddress,
+  firmwareRefusal,
+  tokenCheck,
+  vaultCreationCode,
+  vaultInitCalldata,
+  vaultInitCodeHash,
   ROOT_AUTHORITY,
   TYPE_STRINGS,
   buildRequest,
@@ -39,6 +55,7 @@ import {
   utf8,
 } from '../src/index.js';
 import {
+  DEMO_VAULT,
   demoEvidence,
   panicResponse,
   reopenResponse,
@@ -73,6 +90,7 @@ function checkRequest(built: BuiltRequest, doc: { request: { cbor: string; ur: s
   expect(bytesToHex(urRead(built.ur).cbor)).toBe(doc.request.cbor);
 }
 
+// firmware v1.2: keys 4 / 5 / 7 name the compiled-in contracts, no key 8 (the device pins the vault it derives)
 const pairF = {
   reqId: fixed('pair req-id', 16),
   chainId: CHAIN,
@@ -81,7 +99,6 @@ const pairF = {
   enforcer: A.enforcer,
   sentinel: A.sentinel,
   relay: A.relay,
-  vault: A.vault,
   now: NOW,
 };
 
@@ -127,10 +144,49 @@ describe('device_vectors.json: domains and type hashes', () => {
   });
 });
 
+describe('device_vectors.json: firmware v1.2 pins and the derived vault', () => {
+  it('the vectors use exactly the contracts compiled into the firmware (constants FIRMWARE_*, MUSD_10143)', () => {
+    expect(A.registry).toBe(FIRMWARE_REGISTRY[String(CHAIN)]);
+    expect(A.enforcer).toBe(FIRMWARE_PULSE_ENFORCER[String(CHAIN)]);
+    expect(A.relay).toBe(FIRMWARE_RELAY[String(CHAIN)]);
+    expect(A.delegationManager).toBe(DELEGATION_MANAGER);
+    expect(A.token).toBe(MUSD_10143);
+    expect(A.simpleFactory).toBe(SIMPLE_FACTORY);
+    expect(A.hybridDeleGatorImpl).toBe(HYBRID_DELEGATOR_IMPL);
+    expect(A.entryPoint).toBe(ENTRY_POINT_V07);
+  });
+  it('vault section: initialize calldata, proxy args, init code, initCodeHash, address', () => {
+    const v = V.vault;
+    expect(v.owner).toBe(V.demo.k1);
+    expect(v.factory).toBe(SIMPLE_FACTORY);
+    expect(v.implementation).toBe(HYBRID_DELEGATOR_IMPL);
+    expect(v.salt).toBe(VAULT_DEPLOY_SALT);
+    expect(lc(ERC1967_PROXY_CREATION_CODE)).toBe(lc(v.proxyCreationCode));
+    expect(toHex(keccak256(hexToBytes(ERC1967_PROXY_CREATION_CODE)))).toBe(v.proxyCreationCodeHash);
+    expect(vaultInitCalldata(v.owner)).toBe(v.initializeCalldata);
+    expect(vaultCreationCode(v.owner)).toBe(v.initCode);
+    expect(vaultCreationCode(v.owner).endsWith(v.constructorArgs.slice(2))).toBe(true);
+    expect(vaultInitCodeHash(v.owner)).toBe(v.initCodeHash);
+    expect(computeVaultAddress(v.owner)).toBe(v.address);
+    expect(v.address).toBe(A.vault);
+    expect(A.vault).toBe(DEMO_VAULT);
+  });
+  it(`the firmware's vault table (${V.vault.firmwareTableCount} owners, vectors_protocol.h VAULT[])`, () => {
+    expect(V.vault.firmwareTable.length).toBe(V.vault.firmwareTableCount);
+    for (const r of V.vault.firmwareTable) {
+      expect(vaultInitCodeHash(r.owner), r.owner).toBe(r.initCodeHash);
+      expect(computeVaultAddress(r.owner), r.owner).toBe(r.vault);
+    }
+  });
+});
+
 describe('device_vectors.json: pair', () => {
   const doc = V.pair;
   const built = buildRequest('pair', pairF);
-  it('request CBOR / UR / parts', () => checkRequest(built, doc));
+  it('request CBOR / UR / parts (no key 8)', () => {
+    checkRequest(built, doc);
+    expect(built.map.has(8)).toBe(false);
+  });
   it('the demo device answers byte-identically', () => {
     expect(bytesToHex(simulate('pair', built.cbor))).toBe(doc.response.cbor);
     expect(urSingle('ripar-pair', hexToBytes(doc.response.cbor))).toBe(doc.response.ur);
@@ -147,8 +203,10 @@ describe('device_vectors.json: pair', () => {
     expect(rep.fields.k1Signature).toBe(doc.k1Signature);
     expect(rep.fields.firmwareId).toBe(doc.firmwareId);
     expect(rep.fields.emulator).toBe(false);
+    expect(rep.fields.vault).toBe(A.vault);
     expect(rep.checks.map((c) => c.name)).toEqual([
       'req-id echoed',
+      "pair request names only the firmware's pinned contracts",
       'BindDevice P1 low-s',
       'BindDevice P1 P-256 signature',
       'BindDevice K1 v is 27/28',
@@ -216,6 +274,7 @@ describe('device_vectors.json: mandate', () => {
           'mandate K1 low-s',
           'mandate K1 recoverable',
           'mandate signed by the paired K1',
+          'mandate delegator is the vault derived from the paired K1',
         ]);
         const q = decodeRequest('mandate', built.cbor);
         if (q.kind !== 'mandate') throw new Error('kind');
@@ -364,11 +423,25 @@ describe('device_vectors.json: co-signs', () => {
       });
     });
   }
-  it('key 15 / 16 claims of an unlisted token are kept as sent', () => {
+  it('MockUSD is in the firmware v1.2 token table: keys 15 / 16 agree with it (6, mUSD)', () => {
     const q = decodeRequest('cosign', cosignBuilt(COSIGNS[0]).cbor);
     if (q.kind !== 'cosign') throw new Error('kind');
     expect(q.decimals).toBe(BigInt(V.cosignErc20.tokenDecimalsClaim));
     expect(q.symbol).toBe(V.cosignErc20.tokenSymbolClaim);
+    expect(tokenCheck(q)).toEqual({ listed: true, decimals: 6, symbol: 'mUSD' });
+    expect(() => tokenCheck({ ...q, decimals: 18n })).toThrow(/disagrees with the firmware token table/);
+    expect(() => tokenCheck({ ...q, symbol: 'MUSD' })).toThrow(/disagrees with the firmware token table/);
+  });
+  it('with the pairing, the co-sign delegator is checked against the derived vault', () => {
+    const c = COSIGNS[0];
+    const rep = expectVerified(parseResponse(V[c.key].response.ur, { request: cosignBuilt(c), pairing: V.pair.response.ur }));
+    expect(rep.checks.map((x) => x.name)).toEqual([
+      'req-id echoed',
+      'cosign low-s',
+      'cosign P-256 signature',
+      'delegator is the vault derived from the paired K1',
+    ]);
+    expect(firmwareRefusal(decodeRequest('cosign', cosignBuilt(c).cbor), V.demo.k1)).toBeNull();
   });
 });
 
@@ -440,6 +513,13 @@ describe('device_vectors.json: revoke / panic / reopen', () => {
       const rep = expectVerified(parseResponse(doc.response.ur, { chainId: CHAIN, contract, p1Key }));
       expect((rep.fields as { digest?: string }).digest).toBe(doc.digest);
       expect(rep.checks.map((c) => c.name)).toEqual([`${rep.type} low-s`, `${rep.type} P-256 signature`]);
+      if (!isReopen) {
+        // firmware v1.2: without a contract, revoke / panic verify against the compiled-in PulseCosignEnforcer
+        expect(expectVerified(parseResponse(doc.response.ur, { chainId: CHAIN, p1Key })).checks.length).toBe(2);
+      } else {
+        const withK1 = expectVerified(parseResponse(doc.response.ur, { chainId: CHAIN, contract, pairing: V.pair.response.ur }));
+        expect(withK1.checks[0]!.name).toBe('reopen vault is the vault derived from the paired K1');
+      }
       let resp: Uint8Array;
       if (rep.type === 'ripar-revoke') {
         expect(rep.fields.delegationHash).toBe(doc.delegationHash);

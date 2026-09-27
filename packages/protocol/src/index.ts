@@ -19,6 +19,7 @@ export * from './responses.js';
 export * from './delegation.js';
 export * from './constants.js';
 export * from './vault.js';
+export * from './firmware.js';
 export * from './proxy-bytecode.js';
 export * from './deployments.js';
 export * from './abis.js';

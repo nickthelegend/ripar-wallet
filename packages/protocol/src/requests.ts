@@ -17,6 +17,7 @@ import {
 } from './bytes.js';
 import { type CaveatSpec, caveatFromSpec } from './caveats.js';
 import { type CborMap, type CborValue, Tag, cborDecode, cborEncode, mget, mhas } from './cbor.js';
+import { FIRMWARE_PULSE_ENFORCER, FIRMWARE_REGISTRY, FIRMWARE_RELAY, firmwareAddress } from './constants.js';
 import { erc20Approve, erc20Transfer, erc20TransferFrom } from './erc20.js';
 import { ProtoError } from './errors.js';
 import { canonicalJson } from './privy.js';
@@ -51,17 +52,24 @@ interface Common {
   uuidTag?: boolean;
 }
 
+/**
+ * Firmware v1.2 pins registry / manager / enforcer / relay on 10143 and 143 (constants FIRMWARE_*): a pair request
+ * naming any other address is refused; an absent key 4 / 5 / 7 pins the firmware's. The vault is DERIVED by the device
+ * from its K1 (computeVaultAddress): leave it out (the device pins its own), or give exactly that address.
+ */
 export interface PairFields extends Common {
   chainId: IntLike;
-  /** RiparDeviceRegistry */
-  registry: BytesLike;
+  /** RiparDeviceRegistry (key 3, the BindDevice domain); default: the one compiled into the firmware for the chain */
+  registry?: BytesLike;
   /** DelegationManager (optional: the firmware pins its compiled-in MetaMask address when absent) */
   manager?: BytesLike | null;
-  /** PulseCosignEnforcer */
+  /** PulseCosignEnforcer (optional: the firmware pins its compiled-in address when absent) */
   enforcer?: BytesLike | null;
+  /** RiparSentinel (not compiled in: pinned as given; without one there is no reopen) */
   sentinel?: BytesLike | null;
+  /** RiparReputationRelay (optional: the firmware pins its compiled-in address when absent) */
   relay?: BytesLike | null;
-  /** HybridDeleGator vault owned by K1 (see computeVaultAddress) */
+  /** key 8: only the vault derived from K1 (computeVaultAddress) is accepted; best left out */
   vault?: BytesLike | null;
   /** companion clock, unix seconds (buildRequest adds the current time unless noNow) */
   now?: IntLike | null;
@@ -73,10 +81,10 @@ export interface PairFields extends Common {
 
 export interface CosignFields extends Common {
   chainId: IntLike;
-  /** PulseCosignEnforcer (the domain verifyingContract) */
-  enforcer: BytesLike;
+  /** PulseCosignEnforcer (the domain verifyingContract); default: the firmware's for the chain */
+  enforcer?: BytesLike;
   delegationHash: BytesLike;
-  /** the vault */
+  /** the vault = the vault derived from the device's K1 (computeVaultAddress), else the device refuses */
   delegator: BytesLike;
   redeemer: BytesLike;
   /** ERC-20 token or native payee */
@@ -108,7 +116,7 @@ export interface MandateFields extends Common {
   manager: BytesLike;
   /** the agent (not ANY_DELEGATE) */
   delegate: BytesLike;
-  /** the vault */
+  /** the vault = the vault derived from the device's K1 (computeVaultAddress), else the device refuses */
   delegator: BytesLike;
   /** default ROOT_AUTHORITY (the device refuses any other) */
   authority?: BytesLike;
@@ -123,8 +131,8 @@ export interface MandateFields extends Common {
 
 export interface DenyFields extends Common {
   chainId: IntLike;
-  /** RiparReputationRelay */
-  relay: BytesLike;
+  /** RiparReputationRelay; default: the firmware's for the chain */
+  relay?: BytesLike;
   agentId: IntLike;
   requestHash: BytesLike;
 }
@@ -186,11 +194,17 @@ const PAIR_FLOORS: [number, keyof PairFields][] = [
 /** make_request build_pair_req -> request CBOR map */
 export function buildPairReq(fields: PairFields): CborMap {
   const f = fields as unknown as Rec;
-  need(f, 'chainId', 'registry');
+  need(f, 'chainId');
+  const chain = toInt(f.chainId);
+  const reg = has(f, 'registry') ? f.registry : firmwareAddress(FIRMWARE_REGISTRY, chain);
+  if (reg === undefined) {
+    throw new ProtoError(`missing field: registry (no RiparDeviceRegistry is compiled in for chain ${chain})`);
+  }
+  // key 8 (vault) only when given: the device derives it
   const m: CborMap = new Map<number, CborValue>([
     [1, rid(f)],
-    [2, toInt(f.chainId)],
-    [3, toAddr(f.registry, 'registry')],
+    [2, chain],
+    [3, toAddr(reg, 'registry')],
   ]) as CborMap;
   for (const [k, name] of PAIR_OPT) if (present(f, name)) m.set(k, toAddr(f[name], name));
   if (present(f, 'now')) m.set(9, toInt(f.now));
@@ -234,11 +248,16 @@ export function cosignCalldata(fields: Pick<CosignFields, 'calldata' | 'transfer
 /** make_request build_cosign_req -> request CBOR map */
 export function buildCosignReq(fields: CosignFields): CborMap {
   const f = fields as unknown as Rec;
-  need(f, 'chainId', 'enforcer', 'delegationHash', 'delegator', 'redeemer', 'target', 'nonce', 'expiry');
+  need(f, 'chainId', 'delegationHash', 'delegator', 'redeemer', 'target', 'nonce', 'expiry');
+  const chain = toInt(f.chainId);
+  const enf = has(f, 'enforcer') ? f.enforcer : firmwareAddress(FIRMWARE_PULSE_ENFORCER, chain);
+  if (enf === undefined) {
+    throw new ProtoError(`missing field: enforcer (no PulseCosignEnforcer is compiled in for chain ${chain})`);
+  }
   const m: CborMap = new Map<number, CborValue>([
     [1, rid(f)],
-    [2, toInt(f.chainId)],
-    [3, toAddr(f.enforcer, 'enforcer')],
+    [2, chain],
+    [3, toAddr(enf, 'enforcer')],
     [4, toBytes(f.delegationHash, 32, 'delegationHash')],
     [5, toAddr(f.delegator, 'delegator')],
     [6, toAddr(f.redeemer, 'redeemer')],
@@ -293,7 +312,7 @@ export function buildMandateReq(fields: MandateFields): CborMap {
   const f = fields as unknown as Rec;
   need(f, 'chainId', 'manager', 'delegate', 'delegator', 'caveats', 'salt');
   if (!Array.isArray(f.caveats)) throw new ProtoError('caveats: expected an array');
-  const cav: CborValue[] = (f.caveats as unknown[]).map((c) => caveatFromSpec(c));
+  const cav: CborValue[] = (f.caveats as unknown[]).map((c) => caveatFromSpec(c, toInt(f.chainId)));
   const m: CborMap = new Map<number, CborValue>([
     [1, rid(f)],
     [2, toInt(f.chainId)],
@@ -312,11 +331,16 @@ export function buildMandateReq(fields: MandateFields): CborMap {
 /** make_request build_deny_req -> request CBOR map */
 export function buildDenyReq(fields: DenyFields): CborMap {
   const f = fields as unknown as Rec;
-  need(f, 'chainId', 'relay', 'agentId', 'requestHash');
+  need(f, 'chainId', 'agentId', 'requestHash');
+  const chain = toInt(f.chainId);
+  const relay = has(f, 'relay') ? f.relay : firmwareAddress(FIRMWARE_RELAY, chain);
+  if (relay === undefined) {
+    throw new ProtoError(`missing field: relay (no RiparReputationRelay is compiled in for chain ${chain})`);
+  }
   return new Map<number, CborValue>([
     [1, rid(f)],
-    [2, toInt(f.chainId)],
-    [3, toAddr(f.relay, 'relay')],
+    [2, chain],
+    [3, toAddr(relay, 'relay')],
     [4, toInt(f.agentId)],
     [5, toBytes(f.requestHash, 32, 'requestHash')],
   ]) as CborMap;

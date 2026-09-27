@@ -18,17 +18,21 @@ export const DEMO_VAULT = '0xc36F625D426eBa8f1e0129276B284a939CD3A57D';
 export const NOW = 1790500000; // 2026-09-27 09:06:40 UTC, after the firmware time floor
 export const AGENT = '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707';
 export const PAYEE = '0x0165878A594ca255338adfa4d48449f69242Eb8F';
-export const MOCK_USD = '0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9';
+/** MockUSD at its CREATE2 address: in the firmware v1.2 token table on 10143 (mUSD, 6 decimals) */
+export const MOCK_USD = '0xB5b7eaffbF9bf68cbcC1Ce8B5850b2ea9d6f9a2a';
 
-/** a deployments JSON as contracts/script/Deploy.s.sol writes it (anvil CREATE addresses as stand-ins) */
+/**
+ * a deployments JSON as contracts/script/Deploy.s.sol writes it for 10143: the CREATE2 addresses firmware v1.2
+ * compiles in (registry, enforcer, relay, MockUSD); the sentinel is not compiled in (a stand-in address here)
+ */
 export const DEPLOYMENT_JSON = JSON.stringify({
   chainId: 10143,
   salt: '0x' + '00'.repeat(31) + '01',
   create2Deployer: '0x4e59b44847b379578588920cA78FbF26c0B4956C',
-  RiparDeviceRegistry: '0x5FbDB2315678afecb367f032d93F642f64180aa3',
-  PulseCosignEnforcer: '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512',
+  RiparDeviceRegistry: '0xA08a47c9d645926615CF04D69b7a048133F68c9f',
+  PulseCosignEnforcer: '0x64d61fe5438981DC803ED61250FEf024617ae7eE',
   RiparSentinel: '0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0',
-  RiparReputationRelay: '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9',
+  RiparReputationRelay: '0xE433dCA75CA6cd730b1006F51A26208B000eA9E2',
   MockUSD: MOCK_USD,
   creForwarder: '0x0000000000000000000000000000000000000000',
   expectedWorkflowOwner: '0x0000000000000000000000000000000000000000',

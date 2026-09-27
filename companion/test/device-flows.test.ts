@@ -8,6 +8,8 @@ import {
   type RiparDeployment,
   DELEGATION_MANAGER,
   buildRequest,
+  pairFieldsFromDeployment,
+  parseDeployment,
   denyRequestHashOf,
   decodeRequest,
   toHex,
@@ -31,7 +33,8 @@ import type { KeysOnly, MandateRecord, PairedDevice } from '../src/lib/store';
 import { DeviceExchange } from '../src/device/transport';
 import type { EmuDisplay } from '../src/device/emulator';
 import { describeLcd, visibleReviewRows } from '../src/device/lcd';
-import { AGENT, DEMO_K1, DEMO_VAULT, DEP, MOCK_USD, NOW, PAYEE, Rig, loadEmu, tickPromises, track } from './helpers';
+import { AGENT, DEMO_K1, DEMO_VAULT, DEP, DEPLOYMENT_JSON, MOCK_USD, NOW, PAYEE, Rig, loadEmu, tickPromises, track } from './helpers';
+import { deviceGuide } from '../src/device/guide';
 
 let rig: Rig;
 let keys: KeysOnly;
@@ -73,9 +76,36 @@ describe('pairing over the emulator transport', () => {
     expect(v.factoryData).toBe(v.protocolFactoryData);
   });
 
+  it('firmware v1.2: other contracts / another vault are refused (companion first, then the device, with advice)', () => {
+    // a deployment at other addresses: the companion refuses to build the request
+    const other = parseDeployment({ ...JSON.parse(DEPLOYMENT_JSON), RiparDeviceRegistry: PAYEE }, 10143);
+    expect(() => planPairing(other, keys.k1Address, { now: NOW })).toThrow(/RiparDeviceRegistry .* is not the one compiled in/);
+    // the device refuses such requests on its own (a companion that skips the check): review REFUSED + guide advice
+    for (const [over, prefix, help] of [
+      [{ registry: PAYEE }, 'WRONG REGISTRY', /compiled in/],
+      [{ vault: PAYEE }, "VAULT IS NOT THIS DEVICE'S VAULT", /SimpleFactory vault of its own K1/],
+    ] as const) {
+      const req = buildRequest('pair', { ...pairFieldsFromDeployment(dep, { now: NOW }), ...over });
+      const ex = new DeviceExchange(rig.transport, { parts: req.parts, expect: ['ripar-pair'], accept: (u) => answersRequest(u, req) }, rig.sched);
+      track(ex);
+      const s = rig.scanRequest();
+      expect(s.screen).toBe('review');
+      expect(s.review!.ok).toBe(false);
+      expect(s.review!.refusal.startsWith(prefix), s.review!.refusal).toBe(true);
+      const g = deviceGuide(s, 'pair', true, false);
+      expect(g.tone).toBe('bad');
+      expect(g.text).toMatch(help);
+      ex.cancel();
+      rig.pageToEnd();
+      rig.home();
+    }
+    expect(rig.state.context.paired).toBe(false);
+  });
+
   it('pairs with the full request (multipart frames), verifies BindDevice and builds registerDevice', async () => {
     const plan = planPairing(dep, keys.k1Address, { now: NOW, fragLen: 70 });
     expect(plan.vault).toBe(DEMO_VAULT);
+    expect(plan.request.map.has(8)).toBe(false); // no key 8: the device pins the vault it derives from K1
     expect(plan.request.parts.length).toBeGreaterThan(1);
     expect(plan.pinned).toMatchObject({ chainId: 10143, enforcer: dep.enforcer, sentinel: dep.sentinel, relay: dep.relay, vault: DEMO_VAULT });
     const ex = new DeviceExchange(
@@ -98,6 +128,8 @@ describe('pairing over the emulator transport', () => {
     expect(device.emulator).toBe(true);
     expect(device.pinned.vault).toBe(DEMO_VAULT);
     expect(rig.state.context.paired).toBe(true);
+    expect(rig.state.context.vault).toBe(DEMO_VAULT);
+    expect(rig.state.context).toMatchObject({ registry: dep.registry, pulseCosignEnforcer: dep.enforcer, relay: dep.relay });
     const w = registerDeviceWrite(dep.registry, device);
     expect(w.to).toBe(dep.registry);
     expect(w.gas).toBe(GAS_LIMITS.registerDevice);
@@ -196,6 +228,7 @@ describe('co-sign and deny', () => {
       sentinel: dep.sentinel,
       minEpoch: 0n,
       lastDelegationHash: mandate.delegationHash,
+      lastMandatePulseTerms: mandate.pulseTerms,
     });
     const ex = new DeviceExchange(
       rig.transport,
@@ -207,6 +240,8 @@ describe('co-sign and deny', () => {
     expect(s.screen).toBe('review');
     expect(s.review!.ok, s.review!.refusal).toBe(true);
     expect(preview.lines).toEqual(linesOf(s));
+    // firmware v1.2: the co-sign whitelists the new payee for the mandate's AUTO path, and the review says so
+    expect(preview.lines.some((l) => l.value.startsWith(`${PAYEE} becomes an AUTO payee of this mandate`))).toBe(true);
     // the emulated LCD paints EVERY page: display.rows is already the visible page (firstRow is absolute)
     const pages: string[] = [];
     let p = s;
@@ -239,7 +274,7 @@ describe('co-sign and deny', () => {
   it('native send: the device shows MON from its own table', async () => {
     const e = escalation({ id: 'esc-2', call: { target: PAYEE, value: '1500000000000000000', callData: '0x' }, claims: { to: PAYEE, token: null, amount: '1500000000000000000' } });
     const plan = planCosign(e, { device, nonce: 99n, now: NOW });
-    const preview = previewCosign(plan.decoded, { p1Key: device.p1Key, vault: DEMO_VAULT, sentinel: dep.sentinel, minEpoch: 0n, lastDelegationHash: mandate.delegationHash });
+    const preview = previewCosign(plan.decoded, { p1Key: device.p1Key, vault: DEMO_VAULT, sentinel: dep.sentinel, minEpoch: 0n, lastDelegationHash: mandate.delegationHash, lastMandatePulseTerms: mandate.pulseTerms });
     expect(preview.lines[1]).toEqual({ label: 'Amount', value: '1.5 MON', tone: 'normal' });
     const ex = new DeviceExchange(rig.transport, { parts: plan.request.parts, expect: ['ripar-cosign', 'ripar-deny'], accept: (u) => answersCosign(u, plan.request) }, rig.sched);
     const got = track(ex);

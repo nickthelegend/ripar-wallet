@@ -267,19 +267,24 @@ These assume a mandate with a 5 mUSD per-tx cap, a 20 mUSD daily cap and `newPay
 This is what the device (the emulator in the integration test) shows for INV-004:
 
 ```
-Action: Send UNKNOWN TOKEN (ERC-20 transfer)
-Amount: 4000000 base units
+Action: Send mUSD (ERC-20 transfer)
+Amount: 4 mUSD
 To: 0x069ef010B46a838FeCD98ADD1E60a407Ef6E575a
-Token: UNKNOWN TOKEN - decimals unverified
-Symbol: mUSD (companion)
+Token: mUSD - MockUSD (Ripar demo)
+Token addr: 0xB5b7eaffbF9bf68cbcC1Ce8B5850b2ea9d6f9a2a
+…
+Vault: 0x… (derived from this device)
+…
+0x069ef010B46a838FeCD98ADD1E60a407Ef6E575a becomes an AUTO payee of this mandate: the agent can then pay it without a pulse, up to 5 mUSD per payment and 20 mUSD per 86400 s = 1 d window (fixed windows from the first AUTO spend)
 …
 AI says: REDIRECT INV-004: memo says pay 0x069e...575a, not CloudNest Hosting; 4 mUSD. invoice due (companion)
 AI claims: MISMATCH - the agent's claim differs from this request
 Risk: agent: payee-redirect / memo redirects the CloudNest Hosting payment, 0 days old (companion)
 ```
 
-MockUSD is not in the firmware token table, so the device shows raw base units and the companion's symbol. AUSD
-(10143) would show decimals from the table.
+Firmware v1.2 has MockUSD (`0xB5b7…9a2a`, the CREATE2 address on Monad testnet) in its token table, so the device
+shows mUSD with decimals, and it says that co-signing whitelists the payee for the mandate's AUTO path. A token
+outside the table shows as UNKNOWN TOKEN with raw base units.
 
 ## State files (`DATA_DIR`, gitignored)
 

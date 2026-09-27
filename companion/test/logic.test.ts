@@ -465,7 +465,17 @@ describe('device guidance (docs/FIRMWARE.md section 5)', () => {
     expect(g.tone).toBe('bad');
     expect(g.text).toMatch(/REFUSED.*VAULT IS NOT.*SimpleFactory vault of its own K1/);
     expect(refusalHelp('PANIC FIRST')).toMatch(/hold SIGN for 5 s/);
+    expect(refusalHelp('PANIC FIRST: mandates signed on Monad testnet (10143) ...')).toMatch(/A revoke is not enough/);
     expect(refusalHelp('REVOKE FIRST')).toMatch(/revoke it/);
+    // firmware v1.2 compiled-in contracts (policy.cpp wrong_pinned) and the delegator check
+    for (const w of ['REGISTRY', 'PULSE CO-SIGN ENFORCER', 'REPUTATION RELAY', 'DELEGATION MANAGER']) {
+      expect(refusalHelp(`WRONG ${w}: key 3 = 0x5FbDB2315678afecb367f032d93F642f64180aa3 is not the X this firmware pins on Monad testnet (10143): 0x...`)).toMatch(
+        /compiled in.*Deploy\.s\.sol/,
+      );
+    }
+    expect(refusalHelp("NOT THIS DEVICE'S VAULT: delegator 0x... is not the vault 0x...")).toMatch(/delegator is not the vault this device derives/);
+    expect(refusalHelp('PINNED ENFORCER DIFFERS FROM FIRMWARE TABLE - pair again')).toMatch(/pair it again/);
+    expect(refusalHelp('UNSUPPORTED CHAIN 1')).toMatch(/10143/);
     expect(refusalHelp('something else entirely')).toBeNull();
     const m = deviceGuide(st({ screen: 'message', message: { title: 'REFUSED', body: 'PANIC FIRST', color: 'bad' } }), 'pair', true, false);
     expect(m.text).toMatch(/PANIC FIRST.*Press SIGN to go Home.*5 s/);

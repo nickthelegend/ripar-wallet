@@ -360,6 +360,9 @@ async function inbox(escId, mandate, device) {
     sentinel: device.record.pinned.sentinel,
     minEpoch: 0n,
     lastDelegationHash: mandate?.delegationHash ?? null,
+    lastMandatePulseTerms: mandate?.pulseTerms ?? null,
+    // the chain's panic floor above the mandate's epoch: the device signed a PANIC after it (its review says so)
+    panicAfterMandate: !!mandate && BigInt(mandate.epoch) < (await Reads.readMinEpoch(pc, device.record.pinned.enforcer, device.record.keyId)),
   });
   return { e, plan, preview, warnings: chk.warnings };
 }
@@ -404,6 +407,10 @@ try {
     eq(await pc.getChainId(), 10143, 'chain id');
     const codes = await Reads.checkContracts(pc, dep);
     for (const c of codes) check(c.bytes > 0, `${c.name} ${c.address} has no code on the fork`);
+    // firmware v1.2 pairs only with the registry / enforcer / relay compiled into it (and knows MockUSD by address):
+    // the Deploy script's CREATE2 addresses on this fork (chain id 10143) must be exactly those
+    const pins = P.checkDeploymentPins(dep);
+    check(pins.length === 0, () => `the deployment differs from the firmware v1.2 pins: ${pins.map((x) => `${x.name} ${x.deployed} != ${x.firmware}`).join('; ')}`);
     const h = await agent.health();
     const planner = (await api('/health')).planner;
     eq(h.agent?.address, stack.agentAddress, 'agent address');
@@ -421,6 +428,7 @@ try {
     }
     return [
       `contracts: registry ${short(dep.registry)} enforcer ${short(dep.enforcer)} sentinel ${short(dep.sentinel)} relay ${short(dep.relay)} mUSD ${short(dep.mockUsd)}`,
+      `registry, enforcer, relay and MockUSD = the addresses compiled into firmware v1.2 (CREATE2)`,
       `agent ${stack.agentAddress} = ERC-8004 agentId ${agentId} (forked IdentityRegistry ${short(dep.erc8004Identity)}), ${planner} planner`,
     ];
   });
@@ -446,15 +454,19 @@ try {
     return [`vault ${v.address} (Hybrid, [K1, [], [], []], salt 0, SimpleFactory ${short(v.factory)})`];
   });
 
-  await step('full pairing with the derived vault (multipart QR, review, pulse + SIGN)', async () => {
+  await step('full pairing: the firmware-pinned contracts, no key 8 (the device derives the vault; multipart QR, pulse + SIGN)', async () => {
     const [minEpoch, reopenNonce] = await Promise.all([Reads.readMinEpoch(pc, dep.enforcer, keys.keyId), sentinel('lastReopenNonce', [vault.address])]);
     const plan = Pairing.planPairing(dep, keys.k1Address, { now: await chainNow(), minEpoch, reopenNonce, fragLen: settings.fragLen });
     eq(plan.vault, vault.address, 'pinned vault');
+    check(!plan.request.map.has(8), 'the pairing request names a vault (key 8): firmware v1.2 derives it');
     check(plan.request.parts.length > 1, 'expected a multipart pairing request');
     const ur = await device.exchange(plan.request.parts, ['ripar-pair'], (u) => Pairing.answersRequest(u, plan.request), () => {
       const s = device.scanRequest();
       check(s.review.ok, () => `the device refused the pairing: ${s.review.refusal}`);
-      check(device.reviewText().includes(vault.address), 'the pairing review does not show the vault');
+      check(device.reviewText().includes(`${vault.address} (derived from this device)`), 'the pairing review does not show the derived vault');
+      for (const l of ['Registry', 'Co-sign', 'Relay']) {
+        check(/\(firmware table\)$/.test(device.reviewLine(l) ?? ''), () => `pairing review ${l}: ${device.reviewLine(l)} (not the firmware table)`);
+      }
       device.pulseAndSign();
     });
     device.home();
@@ -462,6 +474,8 @@ try {
     const ctx = device.state.context;
     check(ctx.paired, 'the device is not paired');
     eq(ctx.vault, vault.address, 'device pinned vault');
+    eq(device.state.vault, vault.address, 'the vault the device derives from K1');
+    eq(ctx.registry, dep.registry, 'device pinned registry');
     eq(ctx.pulseCosignEnforcer, dep.enforcer, 'device pinned enforcer');
     eq(ctx.sentinel, dep.sentinel, 'device pinned sentinel');
     eq(ctx.relay, dep.relay, 'device pinned relay');

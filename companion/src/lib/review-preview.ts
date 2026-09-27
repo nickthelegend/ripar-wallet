@@ -1,5 +1,6 @@
-// "What your device will show": the review lines of a request, mirrored line for line from the firmware
-// (firmware/src/review.cpp review_mandate / review_cosign, tokens.cpp, enforcers.cpp). The device renders its own
+// "What your device will show": the review lines of a request, mirrored line for line from firmware v1.2
+// (firmware/src/review.cpp review_mandate / review_cosign, policy.cpp cosign_whitelists_payee, tokens.cpp,
+// enforcers.cpp). The device renders its own
 // review from the bytes it scanned; this preview is the companion's prediction, tested against the WASM emulator.
 // It assumes the device accepts the request (no REFUSED line) and that its context is the one the companion pinned.
 import {
@@ -108,24 +109,60 @@ class Out {
 export interface PreviewContext {
   /** the device's P1 key px‖py */
   p1Key: string;
-  /** the pinned vault / sentinel */
+  /** the pinned vault (firmware v1.2: always the vault derived from K1) / sentinel */
   vault: string;
   sentinel: string;
   /** the device's panic floor (the mandate's epoch must equal it) */
   minEpoch: bigint;
   /** the last mandate the device signed (co-sign: known / UNKNOWN MANDATE) */
   lastDelegationHash?: string | null;
+  /**
+   * co-sign: the 288-byte pulse terms of that mandate (the device keeps token, caps, period and newPayeeNeedsHuman in
+   * its context v3 and names the AUTO payee a co-sign whitelists). Without them the AUTO payee line is not predicted.
+   */
+  lastMandatePulseTerms?: string | null;
+  /** co-sign: the device signed a PANIC after that mandate (its unpanickedMandates flag is clear) */
+  panicAfterMandate?: boolean;
+}
+
+/** review.cpp auto_period_text (contracts/SPEC.md v1.2 "AUTO windows") */
+export function autoPeriodText(period: bigint): string {
+  if (period === 0n) return 'never resets (lifetime cap)';
+  return `${durationText(period)} (fixed windows from the first AUTO spend)`;
+}
+
+/**
+ * policy.cpp meterable_payee: the payee the PulseCosignEnforcer v1.2 records for a co-signed call when the mandate's
+ * asset is native (`token` null) or `token`: a native send with value > 0, or a transfer on that token with no native
+ * value and amount > 0; never the zero address. null = not meterable (approve, transferFrom, another asset, 0 amount).
+ */
+export function meterablePayee(r: CosignRequest, token: Uint8Array | null): Uint8Array | null {
+  const call = decodeErc20(r.calldata);
+  let p: Uint8Array;
+  if (token === null || isZero(token)) {
+    if (call.kind !== 'none' || r.value === 0n) return null;
+    p = r.target;
+  } else {
+    if (call.kind !== 'transfer' || !bytesEqual(r.target, token) || r.value !== 0n || call.amount === 0n) return null;
+    p = call.to;
+  }
+  return isZero(p) ? null : p;
 }
 
 const eqAddr = (a: Uint8Array, b: string) => bytesEqual(a, toAddr(b));
 
+/** the Vault line of a mandate / co-sign review: the device's own (derived) vault in green, anything else in red */
+function vaultLine(delegator: Uint8Array, ctx: PreviewContext): [string, string, Tone] {
+  const mine = !isZero(toAddr(ctx.vault)) && eqAddr(delegator, ctx.vault);
+  return ['Vault', toChecksumAddress(delegator) + (mine ? ' (derived from this device)' : ''), mine ? 'good' : 'bad'];
+}
+
 export function previewMandate(r: MandateRequest, ctx: PreviewContext): ReviewPreview {
   const o = new Out();
   if (r.label) o.add('Label', `${asciiText(r.label)} (companion)`, 'dim');
-  o.add('Agent id', r.agentId !== null ? String(r.agentId) : 'none');
+  o.add('Agent id', r.agentId !== null ? `${r.agentId} (companion)` : 'none');
   o.add('Delegate', toChecksumAddress(r.delegate));
-  const vaultPinned = !isZero(toAddr(ctx.vault)) && eqAddr(r.delegator, ctx.vault);
-  o.add('Vault', toChecksumAddress(r.delegator), vaultPinned ? 'good' : 'normal');
+  o.add(...vaultLine(r.delegator, ctx));
   o.add('Chain', chainText(r.chainId));
   o.add('Manager', toChecksumAddress(r.manager));
   const n = r.caveats.length;
@@ -143,7 +180,7 @@ export function previewMandate(r: MandateRequest, ctx: PreviewContext): ReviewPr
       else o.token(tv);
       o.add('Auto per tx', amountText(tv, t.perTxAutoCap));
       o.add('Auto per period', amountText(tv, t.periodAutoCap));
-      o.add('Period', durationText(t.period));
+      o.add('Period', autoPeriodText(t.period));
       const e = t.epoch;
       o.add(
         'Epoch',
@@ -257,13 +294,39 @@ export function previewCosign(r: CosignRequest, ctx: PreviewContext): ReviewPrev
   if (!tv.listed && r.hasDecimals) o.add('Decimals', `${r.decimals} (companion, unverified)`, 'warn');
   if (call.kind !== 'none' && r.value !== 0n) o.add('Native value', `${amountText(tokenView(r.chainId, true, null), r.value)} ALSO SENT`, 'bad');
   o.add('Chain', chainText(r.chainId));
-  const vaultPinned = !isZero(toAddr(ctx.vault)) && eqAddr(r.delegator, ctx.vault);
-  o.add('Vault', toChecksumAddress(r.delegator), vaultPinned ? 'good' : 'normal');
+  o.add(...vaultLine(r.delegator, ctx));
   o.add('Redeemer', toChecksumAddress(r.redeemer));
   const dh = toHex(r.delegationHash);
   const known = !!ctx.lastDelegationHash && ctx.lastDelegationHash.toLowerCase() === dh.toLowerCase();
   o.add('Mandate', dh, known ? 'good' : 'warn');
   if (!known) o.add('', 'UNKNOWN MANDATE - not the last mandate this device signed', 'warn');
+  if (known && ctx.panicAfterMandate) {
+    o.add('', 'this device signed a PANIC after this mandate: once that PANIC is relayed, the chain refuses it', 'warn');
+  }
+  // PulseCosignEnforcer v1.2: a co-signed payment to a new payee whitelists it for the AUTO path of the mandate
+  if (!known) {
+    const p = meterablePayee(r, null) ?? meterablePayee(r, r.target);
+    if (p) {
+      o.add(
+        '',
+        `${toChecksumAddress(p)} may become an AUTO payee of mandate ${dh}: the agent could then pay it without a pulse, up to caps this device does not know`,
+        'warn',
+      );
+    }
+  } else if (ctx.lastMandatePulseTerms) {
+    const t = decodePulseTerms(ctx.lastMandatePulseTerms);
+    const native = /^0x0{40}$/i.test(t.token);
+    const p = t.newPayeeNeedsHuman ? meterablePayee(r, native ? null : unhex(t.token)) : null;
+    if (p) {
+      const mt = tokenView(r.chainId, native, native ? null : unhex(t.token));
+      const window = t.period === 0n ? ' in total (lifetime cap)' : ` per ${durationText(t.period)} window (fixed windows from the first AUTO spend)`;
+      o.add(
+        '',
+        `${toChecksumAddress(p)} becomes an AUTO payee of this mandate: the agent can then pay it without a pulse, up to ${amountText(mt, t.perTxAutoCap)} per payment and ${amountText(mt, t.periodAutoCap)}${window}`,
+        'warn',
+      );
+    }
+  }
   o.add('Expires', utcText(r.expiry));
   o.add('Nonce', r.nonce.toString());
   if (r.budgetLeft !== null) o.add('Budget left', `${amountText(tv, r.budgetLeft)} (companion)`, 'dim');

@@ -13,13 +13,27 @@ export interface GuideLine {
 /** advice for a refusal the device showed (its REFUSED line or message screen), or null when there is none to add */
 export function refusalHelp(reason: string): string | null {
   const r = reason.toUpperCase();
-  if (/VAULT IS NOT THIS DEVICE'?S VAULT|NOT THIS DEVICE'?S VAULT|VAULT MISMATCH/.test(r)) {
-    return "The device only accepts the SimpleFactory vault of its own K1. This companion always sends that vault, so the device that answered is not the one whose keys were read: read the device keys again on the Pair page (step 1), then pair.";
+  if (/VAULT IS NOT THIS DEVICE'?S VAULT/.test(r)) {
+    return "The device pins only the SimpleFactory vault of its own K1 (firmware v1.2 derives it: CREATE2, salt 0). Pair-request key 8 named another vault: the keys read in step 1 are not this device's. Read the device keys again on the Pair page (step 1), then pair (this companion leaves key 8 out, so the device pins its own vault).";
+  }
+  if (/NOT THIS DEVICE'?S VAULT|VAULT MISMATCH/.test(r)) {
+    return "The request's delegator is not the vault this device derives from its K1. Pair this device on the Pair page (the companion then uses its derived vault) and prepare the mandate / co-sign again.";
+  }
+  if (/WRONG (REGISTRY|PULSE CO-?SIGN ENFORCER|REPUTATION RELAY|DELEGATION MANAGER)/.test(r)) {
+    return 'Firmware v1.2 has the RiparDeviceRegistry, PulseCosignEnforcer, relay and DelegationManager compiled in and refuses any other. This deployments JSON names other addresses: load the deployment made by contracts/script/Deploy.s.sol (CREATE2; on Monad testnet or an anvil fork of it it lands at the compiled-in addresses) on the Connect page, then pair again.';
+  }
+  if (/DIFFERS FROM FIRMWARE TABLE/.test(r)) {
+    return 'The device pinned a contract (from an older pairing) that is not the one compiled into its firmware: pair it again on the Pair page.';
+  }
+  if (/UNSUPPORTED CHAIN/.test(r)) return 'The device knows only Monad testnet (10143) and Monad (143): pick one of them on the Connect page.';
+  if (/PAIRING LOST/.test(r)) {
+    return 'The device dropped its pinned context (older layout, or not its vault): pair it again, with the on-chain panic floor and reopen nonce (the Pair page reads and sends them).';
   }
   if (/PANIC FIRST/.test(r)) {
-    return 'The device wants its kill switch first: on Home hold SIGN for 5 s (PANIC; every mandate it signed dies), relay that QR on the Kill switch page, then repeat this step.';
+    return 'Mandates this device signed may still be live and a panic has not covered them: moving the device to another chain now would leave them out of its PANIC. On Home hold SIGN for 5 s (PANIC; every mandate it signed dies), relay that QR on the Kill switch page, then repeat this step. A revoke is not enough.';
   }
   if (/REVOKE FIRST/.test(r)) {
+    // firmware v1.1 wording (v1.2 says PANIC FIRST)
     return 'The device still remembers a mandate: revoke it (Kill switch page, device menu > REVOKE) and relay it, then repeat this step.';
   }
   if (/STALE|EPOCH/.test(r)) {

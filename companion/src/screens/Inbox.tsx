@@ -8,7 +8,7 @@ import { CosignNonceTracker, decodeErc20, firmwareToken, nativeCoin, toChecksumA
 import { PageHead } from '../App';
 import { AgentRun } from '../components/AgentRun';
 import { DeviceExchangePanel } from '../components/DeviceExchangePanel';
-import { DemoTokenNote, ReviewPanel } from '../components/Review';
+import { UnknownTokenNote, ReviewPanel } from '../components/Review';
 import { TxAction } from '../components/TxAction';
 import { Button, Empty, Figure, Hex, Mark, Note, Procedure, Spec, Step, type StepState } from '../components/ui';
 import { type AgentClient, type Escalation, agentClientOf } from '../lib/agent';
@@ -27,7 +27,7 @@ import {
   resumePlan,
 } from '../lib/flows/cosign';
 import { NETWORKS, explorerTxUrl } from '../lib/networks';
-import { nonceUsed, readMandateStatus, readToken } from '../lib/reads';
+import { nonceUsed, readMandateStatus, readMinEpoch, readToken } from '../lib/reads';
 import { previewCosign } from '../lib/review-preview';
 import { useSetupStatus } from '../lib/setup';
 import { type AppState, type EscalationWork, currentMandate, ownEntry, store, useStore } from '../lib/store';
@@ -388,6 +388,21 @@ function EscalationDetail({
     else void deliverDeny(outcome, work.relayTx ?? null);
   }, [outcome, work?.answer, work?.agentAt, work?.relayTx, deliverCosign, deliverDeny]);
 
+  // The chain's panic floor of this device key. Above the mandate's epoch = the device signed (and someone relayed) a
+  // PANIC after that mandate: firmware v1.2 then adds "this device signed a PANIC after this mandate" to the review.
+  const [chainMinEpoch, setChainMinEpoch] = useState<bigint | null>(null);
+  useEffect(() => {
+    if (!device || !plan) return;
+    let live = true;
+    readMinEpoch(publicClientFor(settings), device.pinned.enforcer, device.keyId).then(
+      (v) => live && setChainMinEpoch(v),
+      () => live && setChainMinEpoch(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, [device, plan, settings]);
+
   if (!device) return null;
 
   const prepare = async (fresh = false) => {
@@ -484,6 +499,8 @@ function EscalationDetail({
         sentinel: device.pinned.sentinel,
         minEpoch: 0n,
         lastDelegationHash: mandate?.delegationHash ?? null,
+        lastMandatePulseTerms: mandate?.pulseTerms ?? null,
+        panicAfterMandate: !!mandate && chainMinEpoch !== null && BigInt(mandate.epoch) < chainMinEpoch,
       })
     : null;
   const call = decodeErc20(e.call.callData);
@@ -594,7 +611,7 @@ function EscalationDetail({
                         ]}
                       />
                       {call.kind !== 'none' && call.kind !== 'unknown' && (
-                        <DemoTokenNote
+                        <UnknownTokenNote
                           chainId={Number(e.chainId)}
                           token={e.call.target}
                           decimals={mandate?.token.toLowerCase() === e.call.target.toLowerCase() ? mandate.tokenDecimals : null}

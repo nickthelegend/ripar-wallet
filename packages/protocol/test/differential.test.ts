@@ -17,6 +17,7 @@ import {
   cosignRequestHash,
   decodeErc20,
   decodeRequest,
+  firmwareRefusal,
   delegationHash,
   formatUnitsDevice,
   keccak256,
@@ -32,13 +33,19 @@ import {
   urRead,
   urSingle,
 } from '../src/index.js';
-import { simulate, simulateDenyFromCosign, DEMO_K1, DEMO_P1 } from './helpers/demo-device.js';
+import { simulate, simulateDenyFromCosign, DEMO_K1, DEMO_P1, DEMO_VAULT } from './helpers/demo-device.js';
 import { bytesToHex, hexToBytes, makeRequest, oracle } from './helpers/env.js';
 
 // ------------------------------------------------------------------------------------------------ 1. build CLI
 const RID = (n: number): string => n.toString(16).padStart(2, '0').repeat(16);
 const DM = '0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3';
 const AUSD = '0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC';
+const MUSD = '0xB5b7eaffbF9bf68cbcC1Ce8B5850b2ea9d6f9a2a';
+// firmware v1.2 compiled-in contracts (typed from docs/PROTOCOL.md 4, independently of src/constants.ts)
+const REG = '0xA08a47c9d645926615CF04D69b7a048133F68c9f';
+const ENF = '0x64d61fe5438981DC803ED61250FEf024617ae7eE';
+const RELAY = '0xE433dCA75CA6cd730b1006F51A26208B000eA9E2';
+const VAULT = DEMO_VAULT;
 const P1 = DEMO_P1.slice(2);
 const ad = (n: number): string => '0x' + n.toString(16).padStart(2, '0').repeat(20);
 
@@ -52,17 +59,19 @@ interface CliSpec {
   noNow?: boolean;
 }
 
+// firmware v1.2: mostly the compiled-in contracts and the demo device's derived vault (the demo devices answer them);
+// RID(1) (pair), RID(8) (cosign) and RID(20) (mandate) name other contracts / vaults: both demo devices refuse them
 const CLI_SPECS: CliSpec[] = [
   { kind: 'pair', reqid: RID(1), fields: { chainId: 10143, registry: ad(1), manager: DM, enforcer: ad(2), sentinel: ad(3), relay: ad(4), vault: ad(5), now: 1790500000 } },
-  { kind: 'pair', reqid: RID(2), fields: { chainId: 143, registry: ad(1) }, noNow: true, uuidTag: true },
-  { kind: 'pair', reqid: RID(3), fields: { chainId: 10143, registry: ad(1), enforcer: ad(2), now: 1099511627775, minEpoch: '9223372036854775807', reopenNonce: 0 }, frag: 30, extra: 4 },
-  { kind: 'cosign', reqid: RID(4), fields: { chainId: 10143, enforcer: ad(2), delegationHash: '0x' + '22'.repeat(32), delegator: ad(5), redeemer: ad(6), target: AUSD, value: 0, nonce: 7, expiry: 1790000000, transfer: { to: ad(8), amount: 25000000 }, decimals: 6, symbol: 'AUSD' } },
-  { kind: 'cosign', reqid: RID(5), fields: { chainId: 10143, enforcer: ad(2), delegationHash: '0x' + '22'.repeat(32), delegator: ad(5), redeemer: ad(6), target: ad(8), value: '1500000000000000000', nonce: '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', expiry: 1790000000, ai: { text: 'send\tMON\nnow', claims: { to: ad(8), amount: '1500000000000000000' } } } },
-  { kind: 'cosign', reqid: RID(6), fields: { chainId: 10143, enforcer: ad(2), delegationHash: '0x' + '33'.repeat(32), delegator: ad(5), redeemer: ad(6), target: AUSD, nonce: 1, expiry: 1790000000, approve: { spender: ad(9), amount: '115792089237316195423570985008687907853269984665640564039457584007913129639935' }, risk: { src: 'Nansen', category: 'Exchange', label: 'Binance 14', ageDays: 1234 }, budgetLeft: 0 }, uuidTag: true, frag: 50 },
-  { kind: 'cosign', reqid: RID(7), fields: { chainId: 10143, enforcer: ad(2), delegationHash: '0x' + '44'.repeat(32), delegator: ad(5), redeemer: ad(6), target: AUSD, nonce: 2, expiry: 1790000000, transferFrom: { from: ad(5), to: ad(10), amount: 1 }, ai: { text: '€'.repeat(40) + 'é' }, risk: { label: 'x' } } },
+  { kind: 'pair', reqid: RID(2), fields: { chainId: 143, registry: REG }, noNow: true, uuidTag: true },
+  { kind: 'pair', reqid: RID(3), fields: { chainId: 10143, registry: REG, enforcer: ENF, now: 1099511627775, minEpoch: '9223372036854775807', reopenNonce: 0 }, frag: 30, extra: 4 },
+  { kind: 'cosign', reqid: RID(4), fields: { chainId: 10143, enforcer: ENF, delegationHash: '0x' + '22'.repeat(32), delegator: VAULT, redeemer: ad(6), target: AUSD, value: 0, nonce: 7, expiry: 1790000000, transfer: { to: ad(8), amount: 25000000 }, decimals: 6, symbol: 'AUSD' } },
+  { kind: 'cosign', reqid: RID(5), fields: { chainId: 10143, delegationHash: '0x' + '22'.repeat(32), delegator: VAULT, redeemer: ad(6), target: ad(8), value: '1500000000000000000', nonce: '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', expiry: 1790000000, ai: { text: 'send\tMON\nnow', claims: { to: ad(8), amount: '1500000000000000000' } } } },
+  { kind: 'cosign', reqid: RID(6), fields: { chainId: 10143, enforcer: ENF, delegationHash: '0x' + '33'.repeat(32), delegator: VAULT, redeemer: ad(6), target: AUSD, nonce: 1, expiry: 1790000000, approve: { spender: ad(9), amount: '115792089237316195423570985008687907853269984665640564039457584007913129639935' }, risk: { src: 'Nansen', category: 'Exchange', label: 'Binance 14', ageDays: 1234 }, budgetLeft: 0 }, uuidTag: true, frag: 50 },
+  { kind: 'cosign', reqid: RID(7), fields: { chainId: 10143, enforcer: ENF, delegationHash: '0x' + '44'.repeat(32), delegator: VAULT, redeemer: ad(6), target: MUSD, nonce: 2, expiry: 1790000000, transferFrom: { from: ad(5), to: ad(10), amount: 1 }, ai: { text: '€'.repeat(40) + 'é' }, risk: { label: 'x' }, decimals: 6, symbol: 'mUSD' } },
   { kind: 'cosign', reqid: RID(8), fields: { chainId: 10143, enforcer: ad(2), delegationHash: '0x' + '55'.repeat(32), delegator: ad(5), redeemer: ad(6), target: ad(11), nonce: 3, expiry: 1790000000, calldata: '0xdeadbeef00', symbol: 'S'.repeat(16), decimals: 255 }, extra: 6 },
-  { kind: 'mandate', reqid: RID(9), fields: { chainId: 10143, manager: DM, delegate: ad(6), delegator: ad(5), salt: 1, agentId: 42, label: 'demo agent', caveats: [{ kind: 'pulse', enforcer: ad(2), p1Key: P1, token: AUSD, perTxAutoCap: 5000000, periodAutoCap: 20000000, period: 86400, epoch: 0, newPayeeNeedsHuman: true, sentinel: ad(3) }] }, frag: 60 },
-  { kind: 'mandate', reqid: RID(10), fields: { chainId: 143, manager: DM, delegate: ad(6), delegator: ad(5), salt: '0x' + 'ab'.repeat(32), caveats: [
+  { kind: 'mandate', reqid: RID(9), fields: { chainId: 10143, manager: DM, delegate: ad(6), delegator: VAULT, salt: 1, agentId: 42, label: 'demo agent', caveats: [{ kind: 'pulse', p1Key: P1, token: MUSD, perTxAutoCap: 5000000, periodAutoCap: 20000000, period: 86400, epoch: 0, newPayeeNeedsHuman: true, sentinel: ad(3) }] }, frag: 60 },
+  { kind: 'mandate', reqid: RID(10), fields: { chainId: 143, manager: DM, delegate: ad(6), delegator: VAULT, salt: '0x' + 'ab'.repeat(32), caveats: [
     { kind: 'timestamp', after: 1790380800, before: 1792972800 },
     { kind: 'erc20TransferAmount', token: AUSD, amount: 500000000 },
     { kind: 'erc20PeriodTransfer', token: AUSD, amount: 50000000, duration: 86400, start: 1790380800 },
@@ -71,17 +80,23 @@ const CLI_SPECS: CliSpec[] = [
     { kind: 'limitedCalls', amount: 100 },
     { kind: 'allowedTargets', addresses: [AUSD, ad(12)] },
     { kind: 'redeemer', addresses: [ad(6)] },
-    { kind: 'pulse', enforcer: ad(2), px: '0x' + P1.slice(0, 64), py: '0x' + P1.slice(64), perTxAutoCap: 1, periodAutoCap: 2, period: 0, newPayeeNeedsHuman: false },
+    { kind: 'pulse', enforcer: ENF, px: '0x' + P1.slice(0, 64), py: '0x' + P1.slice(64), perTxAutoCap: 1, periodAutoCap: 2, period: 0, newPayeeNeedsHuman: false },
     { enforcer: ad(13), terms: '0x0102' },
     [ad(14), '0x'],
     { kind: 'limitedCalls', enforcer: ad(15), amount: 3 },
   ] } },
-  { kind: 'mandate', reqid: RID(11), fields: { chainId: 10143, manager: DM, delegate: ad(6), delegator: ad(5), salt: 0, authority: '0x' + '00'.repeat(32), caveats: [[ad(1), '0x' + 'ff'.repeat(300)]] }, uuidTag: true, extra: 3 },
-  { kind: 'deny', reqid: RID(12), fields: { chainId: 10143, relay: ad(4), agentId: 42, requestHash: '0x' + '77'.repeat(32) } },
+  { kind: 'mandate', reqid: RID(11), fields: { chainId: 10143, manager: DM, delegate: ad(6), delegator: VAULT, salt: 0, authority: '0x' + '00'.repeat(32), caveats: [[ad(1), '0x' + 'ff'.repeat(300)]] }, uuidTag: true, extra: 3 },
+  { kind: 'deny', reqid: RID(12), fields: { chainId: 10143, relay: RELAY, agentId: 42, requestHash: '0x' + '77'.repeat(32) } },
   { kind: 'deny', reqid: RID(13), fields: { chainId: '18446744073709551615', relay: ad(4), agentId: '18446744073709551615', requestHash: '0x' + '00'.repeat(32) }, uuidTag: true },
   { kind: 'privy', reqid: RID(14), fields: { json: { version: 1, method: 'PATCH', url: 'https://api.privy.io/v1/wallets/wl8yz4c2rq0q1cdz2q8a4', body: { additional_signers: [{ signer_id: 'kq7ks9z3n1v2lq4d7w0p8m3y', override_policy_ids: ['pol9x2'] }] }, headers: { 'privy-app-id': 'cm0appid1234' } } } },
   { kind: 'privy', reqid: RID(15), fields: { json: { z: 'é"\\/\u0001\u001f\t\n', a: [true, false, null, -7, 0], m: { b: {}, a: [] }, 'é': 1, 'Z': 2, '_': 3 } }, frag: 20 },
   { kind: 'privy', reqid: RID(16), fields: { json: ' {"version":1} ' } },
+  // the compiled-in defaults left out: registry (pair), relay (deny); the co-sign enforcer is left out in RID(5), the pulse
+  // caveat enforcer in RID(9); a manager the firmware does not pin (RID(20), refused by both demo devices)
+  { kind: 'pair', reqid: RID(17), fields: { chainId: 10143, now: 1790500000 } },
+  { kind: 'pair', reqid: RID(18), fields: { chainId: 143, sentinel: ad(3), vault: VAULT }, noNow: true },
+  { kind: 'deny', reqid: RID(19), fields: { chainId: 143, agentId: 7, requestHash: '0x' + '78'.repeat(32) } },
+  { kind: 'mandate', reqid: RID(20), fields: { chainId: 10143, manager: ad(1), delegate: ad(6), delegator: VAULT, salt: 5, caveats: [[ENF, '0x']] } },
 ];
 
 function cliArgs(s: CliSpec): string[] {
@@ -118,7 +133,12 @@ describe('make_request.py build --json vs buildRequest()', () => {
       { kind: 'cosign', reqid: RID(1), fields: { chainId: 10143, enforcer: ad(2), delegationHash: '0x' + '22'.repeat(31), delegator: ad(5), redeemer: ad(6), target: AUSD, nonce: 1, expiry: 1 } },
       { kind: 'cosign', reqid: RID(1), fields: { chainId: 10143, enforcer: ad(2), delegationHash: '0x' + '22'.repeat(32), delegator: ad(5), redeemer: ad(6), target: AUSD, expiry: 1 } },
       { kind: 'mandate', reqid: RID(1), fields: { chainId: 10143, manager: DM, delegate: ad(6), delegator: ad(5), salt: 1, label: 'x'.repeat(65), caveats: [] } },
-      { kind: 'mandate', reqid: RID(1), fields: { chainId: 10143, manager: DM, delegate: ad(6), delegator: ad(5), salt: 1, caveats: [{ kind: 'pulse', p1Key: P1, perTxAutoCap: 1, periodAutoCap: 1, period: 1 }] } },
+      // no PulseCosignEnforcer compiled in for chain 1: the pulse caveat needs `enforcer` there
+      { kind: 'mandate', reqid: RID(1), fields: { chainId: 1, manager: DM, delegate: ad(6), delegator: ad(5), salt: 1, caveats: [{ kind: 'pulse', p1Key: P1, perTxAutoCap: 1, periodAutoCap: 1, period: 1 }] } },
+      // nothing compiled in for chain 1: registry / enforcer / relay are required there
+      { kind: 'pair', reqid: RID(1), fields: { chainId: 1 }, noNow: true },
+      { kind: 'cosign', reqid: RID(1), fields: { chainId: 1, delegationHash: '0x' + '22'.repeat(32), delegator: ad(5), redeemer: ad(6), target: AUSD, nonce: 1, expiry: 1 } },
+      { kind: 'deny', reqid: RID(1), fields: { chainId: 1, agentId: 1, requestHash: '0x' + '77'.repeat(32) } },
       { kind: 'mandate', reqid: RID(1), fields: { chainId: 10143, manager: DM, delegate: ad(6), delegator: ad(5), salt: 1, caveats: [{ kind: 'pulse', enforcer: ad(2), p1Key: P1, perTxAutoCap: '340282366920938463463374607431768211456', periodAutoCap: 1, period: 1 }] } },
       { kind: 'mandate', reqid: RID(1), fields: { chainId: 10143, manager: DM, delegate: ad(6), delegator: ad(5), salt: 1, caveats: [{ kind: 'timestamp', before: '340282366920938463463374607431768211456' }] } },
       { kind: 'pair', reqid: RID(1), fields: { chainId: 10143, registry: ad(1), minEpoch: '9223372036854775808' }, noNow: true },
@@ -269,6 +289,11 @@ describe('corpus from make_request generators (oracle corpus)', () => {
       if (e.simulateError) {
         it('the demo device refuses it too', () => {
           expect(() => simulate(e.kind, built.cbor, { ev12: hexToBytes(e.ev12), salt16: hexToBytes(e.salt16) })).toThrow();
+          // firmware v1.2 refusals (compiled-in contracts, derived vault): the same text as make_request firmware_refusal
+          if (e.simulateError!.startsWith('device refuses: ')) {
+            const q = decodeRequest(e.kind, built.cbor);
+            expect('device refuses: ' + firmwareRefusal(q, CORPUS.k1)).toBe(e.simulateError);
+          }
         });
         return;
       }

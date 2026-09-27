@@ -23,8 +23,12 @@ ESM, TypeScript, runtime dependencies: `@noble/curves`, `@noble/hashes`, `viem`.
 - **The emulator is always labelled EMULATOR**: its `ripar-pair` firmware id (key 6) is
   `sha256("ripar-emulator v1")[:8]` = `EMULATOR_FIRMWARE_ID` (`0x7bc44601d30720f1`); `parseResponse` sets
   `fields.emulator` and `verifyPairing` returns `identity.emulator`. Show it, and never put real funds behind it.
-- Ripar contract addresses are not final: read them from `contracts/deployments/<chainId>.json` with
-  `parseDeployment`, never hard-code them.
+- Firmware v1.2 compiles the Ripar contracts in (docs/PROTOCOL.md §4): `FIRMWARE_REGISTRY`,
+  `FIRMWARE_PULSE_ENFORCER`, `FIRMWARE_RELAY` (and `MUSD_10143` in the token table) mirror make_request.py's tables.
+  A pairing that names other addresses is refused, and the device derives its vault from K1 (`computeVaultAddress`)
+  and refuses any other delegator. `firmwareRefusal(request, k1)` says what the device will refuse whatever it
+  pinned; `checkDeploymentPins(dep)` compares a deployments JSON with the compiled-in addresses. The sentinel is not
+  compiled in: read it from `contracts/deployments/<chainId>.json` with `parseDeployment`.
 
 ## Quick start
 
@@ -35,15 +39,16 @@ import {
   erc20Transfer, UrDecoder,
 } from '@ripar/protocol';
 
-// 1. pairing: the contracts to pin come from the deployment JSON; the vault is derived from K1, which the companion
-//    learns from the device's keys-only pairing QR (HOME: hold 2 s and release; parseResponse(qr).fields.k1Address)
+// 1. pairing: the contracts to pin come from the deployment JSON (they must be the ones compiled into firmware v1.2,
+//    pairFieldsFromDeployment refuses others); no key 8: the device pins the vault it derives from K1, which the
+//    companion learns from the keys-only pairing QR (HOME: hold 2 s and release; parseResponse(qr).fields.vault)
 const dep = parseDeployment(await (await fetch('/deployments/10143.json')).text(), 10143);
 const vault = computeVaultAddress(k1);
-const pair = buildRequest('pair', pairFieldsFromDeployment(dep, { vault }));
+const pair = buildRequest('pair', pairFieldsFromDeployment(dep));
 showQrLoop(pair.parts);                     // upper-case multipart UR parts, ~300 ms per frame
-const device = verifyPairing(scannedPairUr, pair); // throws unless both BindDevice signatures verify
+const device = verifyPairing(scannedPairUr, pair); // throws unless both BindDevice signatures and the pins verify
 if (device.emulator) showEmulatorBadge();
-if (computeVaultAddress(device.k1Address) !== vault) throw new Error('not the canonical vault of this device');
+if (computeVaultAddress(device.k1Address) !== vault) throw new Error('another device answered');
 
 // 2. a co-sign (HUMAN path)
 const req = buildRequest('cosign', {
@@ -151,7 +156,7 @@ sentinel, vault, nonce)`; viem typed data (`hashTypedData` gives the same digest
 - `SEL_TRANSFER`, `SEL_APPROVE`, `SEL_TRANSFER_FROM`, `erc20Transfer(to, amount)`, `erc20Approve(spender, amount)`,
   `erc20TransferFrom(from, to, amount)`, `decodeErc20(calldata)` → `Erc20Call {kind, from, to, amount}`,
   `ERC20_KIND_NUM`, `describeErc20`.
-- `AUSD_10143`, `FIRMWARE_TOKENS`, `NATIVE_COINS`, `SUPPORTED_CHAINS`, `firmwareToken(chain, token)`,
+- `AUSD_10143`, `MUSD_10143` (MockUSD, in the v1.2 table), `FIRMWARE_TOKENS`, `NATIVE_COINS`, `SUPPORTED_CHAINS`, `firmwareToken(chain, token)`,
   `nativeCoin(chain)`, `tokenCheck(q)` (throws for key 15/16 claims that contradict the firmware table, as the device
   refuses), `aiMatches(q)`, `formatUnits(amount, decimals)`, `formatUnitsDevice(amount, decimals, maxFrac = 6)` (the
   device's amount text, e.g. `1,234.5`, `0.000000...`).
@@ -213,7 +218,15 @@ r, s)` (plain ECDSA; low-s is a separate check), `k1RecoverAddress(digest, r, s,
 - `parseDeployment(json, expectChainId?)` → `RiparDeployment {chainId, salt, create2Deployer, registry, enforcer,
   sentinel, relay, mockUsd, creForwarder, expectedWorkflowOwner, erc8004Identity, erc8004Reputation,
   delegationManager}`, `DEPLOYMENT_JSON_KEYS`, `pairFieldsFromDeployment(dep, extra?)` (refuses a chain outside the
-  firmware table or a foreign DelegationManager).
+  firmware table, and a registry / DelegationManager / enforcer / relay other than the compiled-in ones),
+  `checkDeploymentPins(dep)` → `PinMismatch[]`.
+- Firmware v1.2 tables (`constants.ts`, `firmware.ts`): `PULSE_COSIGN_ENFORCER`, `RIPAR_DEVICE_REGISTRY`,
+  `FIRMWARE_PULSE_ENFORCER`, `FIRMWARE_REGISTRY`, `FIRMWARE_RELAY`, `FIRMWARE_MANAGER`, `firmwareAddress(table,
+  chainId)`; `firmwareRefusal(request, k1?)` (make_request `firmware_refusal`: other contracts, another vault /
+  delegator). The builders default a pair's registry, a co-sign's enforcer, a deny's relay and a pulse caveat's
+  enforcer to the compiled-in address of the chain; `parseResponse` defaults revoke / panic to the compiled-in
+  enforcer and a deny to the compiled-in relay, adds `fields.vault` to `ripar-pair`, and with the K1 checks that a
+  mandate / co-sign delegator and a reopen vault are the vault derived from it (make_request's check names).
 - `AutoBudget {spent, remaining, periodStart, periodEnd}` (the enforcer's `autoBudget` view), `StoredPeriod`,
   `rolloverPeriod`, `computeAutoBudget(terms, stored, now)`, `autoPathDecision(terms, call, state)` →
   `{path: 'auto', …} | {path: 'human', reason}` with `EscalationReason = 'not-meterable' | 'lane-closed' |

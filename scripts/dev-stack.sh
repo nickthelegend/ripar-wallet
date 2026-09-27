@@ -11,7 +11,9 @@
 #   2. refreshes a PRIVATE copy of contracts/ (src, script, foundry.toml, remappings.txt; lib/ is a read-only
 #      directory junction / symlink to contracts/lib) under <work>/contracts and runs
 #      `forge script script/Deploy.s.sol --broadcast` THERE (never inside contracts/ itself), with anvil's dev key #0
-#      and RIPAR_WORKFLOW_OWNER = anvil account #9 (the CRE workflow owner the sentinel checks);
+#      and RIPAR_WORKFLOW_OWNER = anvil account #9 (the CRE workflow owner the sentinel checks); the fork keeps chain id
+#      10143, so the CREATE2 addresses are those of Monad testnet, which firmware v1.2 compiles in (registry, enforcer,
+#      relay, MockUSD): checked here, a mismatch is reported (the device would refuse to pair);
 #   3. writes the deployments JSON where the agent and the companion read it:
 #        <work>/deployments/10143.json          (the agent's DEPLOYMENTS)
 #        companion/public/devstack/10143.json    (served by the companion dev server at /devstack/10143.json)
@@ -45,7 +47,7 @@ CHAIN_ID=10143
 CMD=up
 case "${1:-}" in
   up | down | status | e2e) CMD=$1; shift ;;
-  -h | --help) sed -n '2,33p' "${BASH_SOURCE[0]}"; exit 0 ;;
+  -h | --help) sed -n '2,35p' "${BASH_SOURCE[0]}"; exit 0 ;;
 esac
 
 PORT=8545
@@ -230,12 +232,33 @@ cp "$CDIR/deployments/$CHAIN_ID.json" "$WORK/deployments/$CHAIN_ID.json"
 cp "$CDIR/deployments/$CHAIN_ID.json" "$PUBLIC_DIR/$CHAIN_ID.json"
 DEPLOYMENTS_N="$WORK_N/deployments/$CHAIN_ID.json"
 jget() { node -e "const j=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));process.stdout.write(String(j[process.argv[2]]))" "$DEPLOYMENTS_N" "$1"; }
+# firmware v1.2 has the CREATE2 addresses of these compiled in for chain 10143 (firmware/src/enforcers.cpp, tokens.cpp;
+# docs/PROTOCOL.md section 4): the device (and its emulator) refuses to pair with any other registry / enforcer / relay
+fw_pin() {
+  case "$1" in
+    RiparDeviceRegistry) echo 0xA08a47c9d645926615CF04D69b7a048133F68c9f ;;
+    PulseCosignEnforcer) echo 0x64d61fe5438981DC803ED61250FEf024617ae7eE ;;
+    RiparReputationRelay) echo 0xE433dCA75CA6cd730b1006F51A26208B000eA9E2 ;;
+    MockUSD) echo 0xB5b7eaffbF9bf68cbcC1Ce8B5850b2ea9d6f9a2a ;;
+    *) echo "" ;;
+  esac
+}
+PIN_MISMATCH=0
 for k in RiparDeviceRegistry PulseCosignEnforcer RiparSentinel RiparReputationRelay MockUSD; do
   a=$(jget "$k")
   code=$(cast code "$a" --rpc-url "$RPC_URL")
   [ ${#code} -gt 4 ] || die "$k $a has no code on the fork"
-  say "  $k $a"
+  pin=$(fw_pin "$k")
+  if [ -z "$pin" ]; then
+    say "  $k $a (not compiled into the firmware: pinned as the pairing names it)"
+  elif [ "$(printf '%s' "$a" | tr 'A-F' 'a-f')" = "$(printf '%s' "$pin" | tr 'A-F' 'a-f')" ]; then
+    say "  $k $a (= the firmware v1.2 pin)"
+  else
+    say "  WARNING: $k $a is NOT the address firmware v1.2 pins ($pin): the device will refuse to pair"
+    PIN_MISMATCH=1
+  fi
 done
+[ "$PIN_MISMATCH" = 0 ] || say "WARNING: the deployment differs from the firmware v1.2 pins (contracts changed since the frozen v1.2 bytecode?)"
 
 # 3. the agent: a fresh key, funded, registered in ERC-8004, then the service
 KEYOUT=$(cast wallet new) || die "cast wallet new failed"

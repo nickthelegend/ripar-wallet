@@ -135,7 +135,7 @@ def cmd_corpus(inp):
     keys = MR.demo_keys()
     p1xy, k1addr = keys["p1xy"], keys["k1addr"]
     out = []
-    for v in range(18):
+    for v in range(19):  # firmware v1.2: 19 variants (18 = MockUSD from the token table)
         out.append(_entry("cosign", MR._mk_cosign(rng, v), rng, keys, p1xy, k1addr, "cosign variant %d" % v))
     for v in range(6):
         f = MR._mk_mandate(rng, v, p1xy)
@@ -148,15 +148,33 @@ def cmd_corpus(inp):
         out.append(e)
     for v in range(3):
         out.append(_entry("deny", MR._mk_deny(rng, v), rng, keys, p1xy, k1addr, "deny variant %d" % v))
-    for v in range(3):
-        f = {"reqId": rb(rng, 16), "chainId": [10143, 1, 143][v], "registry": MR.raddr(rng), "uuidTag": v == 1}
+    # pair: make_request gen-vectors' variants (firmware v1.2: the compiled-in contracts, the derived vault), then the
+    # refusals of firmware_refusal (another registry / enforcer / relay / key-8 vault, a chain outside the table)
+    for v in range(4):
+        chain = [10143, 1, 143, 10143][v]
+        reg = MR.RIPAR_REGISTRY[chain] if chain in MR.RIPAR_REGISTRY else MR.raddr(rng)
+        f = {"reqId": rb(rng, 16), "chainId": chain, "registry": reg, "uuidTag": v == 1}
         if v == 0:
-            f.update(manager=MR.DELEGATION_MANAGER, enforcer=MR.raddr(rng), sentinel=MR.raddr(rng),
-                     relay=MR.raddr(rng), vault=MR.raddr(rng), now=1790500000, minEpoch=12, reopenNonce=3)
+            f.update(manager=MR.DELEGATION_MANAGER, enforcer=MR.PULSE_ENFORCER, sentinel=MR.raddr(rng),
+                     relay=MR.RIPAR_RELAY[10143], vault=keys["vault"], now=1790500000, minEpoch=12, reopenNonce=3)
         if v == 2:
-            f.update(manager=MR.DELEGATION_MANAGER, enforcer=MR.raddr(rng), now=(1 << 40) - 1,
+            f.update(manager=MR.DELEGATION_MANAGER, enforcer=MR.PULSE_ENFORCER, now=(1 << 40) - 1,
                      minEpoch=(1 << 63) - 1, reopenNonce=(1 << 63) - 1)
+        if v == 3:
+            f.update(now=1790500000)
         out.append(_entry("pair", f, rng, keys, p1xy, k1addr, "pair variant %d" % v))
+    for name, extra in (("another registry", {"registry": MR.raddr(rng)}), ("another enforcer", {"enforcer": MR.raddr(rng)}),
+                        ("another relay", {"relay": MR.raddr(rng)}), ("another key-8 vault", {"vault": MR.raddr(rng)}),
+                        ("another manager", {"manager": MR.raddr(rng)})):
+        f = dict({"reqId": rb(rng, 16), "chainId": 10143, "registry": MR.RIPAR_REGISTRY[10143], "now": 1790500000}, **extra)
+        out.append(_entry("pair", f, rng, keys, p1xy, k1addr, "pair refused: " + name))
+    for name, kind, f in (
+            ("cosign for another vault", "cosign", dict(MR._mk_cosign(rng, 1), delegator=MR.raddr(rng))),
+            ("cosign for another enforcer", "cosign", dict(MR._mk_cosign(rng, 1), enforcer=MR.raddr(rng))),
+            ("mandate for another vault", "mandate", dict(MR._mk_mandate(rng, 1), delegator=MR.raddr(rng))),
+            ("mandate for another manager", "mandate", dict(MR._mk_mandate(rng, 1), manager=MR.raddr(rng))),
+            ("deny to another relay", "deny", dict(MR._mk_deny(rng, 0), relay=MR.raddr(rng)))):
+        out.append(_entry(kind, f, rng, keys, p1xy, k1addr, "refused: " + name))
     for name, jsb in MR.privy_valid():
         e = _entry("privy", {"reqId": rb(rng, 16), "json": jsb}, rng, keys, p1xy, k1addr, "privy " + name)
         out.append(e)

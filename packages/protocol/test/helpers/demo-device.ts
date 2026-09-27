@@ -14,6 +14,7 @@ import {
   decodeRequest,
   denyDigest,
   derEncode,
+  firmwareRefusal,
   mandateDigest,
   pairDigest,
   panicDigest,
@@ -32,7 +33,7 @@ export const DEMO_P1_PRIV = 'e00be7b300b675b89142035e110bc529936715a1ffa43355fb8
 export const DEMO_K1 = '0x753454832754c071704be47915d4DeC6339624Eb';
 export const DEMO_P1 =
   '0x5cbcd94e72c801fc1b1167ef6f648a5b998d41819020703610637bca5d182765b8f1fb687dc1ceb07f52f98cf80292b23d7583879c75689c4cf35393b67bd954';
-/** the canonical vault of the demo K1 (contracts/.work/vault-derivation.md) */
+/** the vault the demo K1 derives (firmware v1.2, docs/PROTOCOL.md 2.1; checked on Monad testnet) */
 export const DEMO_VAULT = '0xc36F625D426eBa8f1e0129276B284a939CD3A57D';
 
 const be32 = (x: bigint): Uint8Array => hexToBytes(x.toString(16).padStart(64, '0'));
@@ -61,7 +62,11 @@ export function demoEvidence(bpm = 72): Uint8Array {
 
 const m = (entries: [number, CborValue][]): Map<number, CborValue> => new Map(entries);
 
-/** make_request simulate(): the response CBOR the demo device builds for a request */
+/**
+ * make_request simulate(): the response CBOR the demo device builds for a request. Like simulate(), it refuses what
+ * firmware v1.2 refuses whatever it pinned (the compiled-in contracts, the vault derived from K1: firmwareRefusal), the
+ * token table and the Privy allow-list; the pulse gate and the rest of the pinned-context policy are not simulated.
+ */
 export function simulate(
   kind: RequestKind,
   cbor: Uint8Array,
@@ -70,6 +75,8 @@ export function simulate(
   const ev = opt.ev12 ?? demoEvidence();
   const salt = opt.salt16 ?? new Uint8Array(16);
   const q = decodeRequest(kind, cbor);
+  const why = firmwareRefusal(q, DEMO_K1);
+  if (why) throw new Error('device refuses: ' + why);
   const k1 = hexToBytes(DEMO_K1);
   const p1 = hexToBytes(DEMO_P1);
   switch (q.kind) {

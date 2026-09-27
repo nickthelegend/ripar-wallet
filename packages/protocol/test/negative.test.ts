@@ -247,7 +247,9 @@ describe('pinned context option', () => {
     }
     expect(parseResponse(V.revoke.response.ur, { pinned: { ...pinned, chainId: 143 }, p1Key: P1 }).result).toBe('FAIL');
     expect(parseResponse(V.revoke.response.ur, { pinned: other, contract: A.enforcer, p1Key: P1 }).result).toBe('VERIFIED');
-    expect(parseResponse(V.revoke.response.ur, { pinned: { chainId: CHAIN }, p1Key: P1 }).result).toBe('UNVERIFIED');
+    // firmware v1.2: a pinned set without the enforcer means the one compiled in for the chain; none on chain 1
+    expect(parseResponse(V.revoke.response.ur, { pinned: { chainId: CHAIN }, p1Key: P1 }).result).toBe('VERIFIED');
+    expect(parseResponse(V.revoke.response.ur, { pinned: { chainId: 1 }, p1Key: P1 }).result).toBe('UNVERIFIED');
   });
 });
 
@@ -260,7 +262,10 @@ describe('wrong keys and missing context', () => {
   it('a mandate signed by K1 but checked against another K1 fails', () => {
     const rep = parseResponse(V.mandate.response.ur, { request: mandateReq, k1Address: A.agent });
     expect(rep.result).toBe('FAIL');
-    expect(rep.checks.at(-1)).toEqual({ name: 'mandate signed by the paired K1', ok: false });
+    expect(rep.checks.slice(-2)).toEqual([
+      { name: 'mandate signed by the paired K1', ok: false },
+      { name: 'mandate delegator is the vault derived from the paired K1', ok: false },
+    ]);
   });
   it('missing key / request / contract -> UNVERIFIED, and expectVerified throws', () => {
     const cases = [
@@ -268,7 +273,7 @@ describe('wrong keys and missing context', () => {
       parseResponse(V.cosignErc20.response.ur, { p1Key: P1 }),
       parseResponse(V.mandate.response.ur, { request: mandateReq }),
       parseResponse(V.revoke.response.ur, { p1Key: P1 }),
-      parseResponse(V.deny.response.ur, { request: cosignReq, p1Key: P1 }),
+      parseResponse(V.deny.response.ur, { request: cosignReq, chainId: 1, p1Key: P1 }), // no relay compiled in on 1
       parseResponse(V.pair.response.ur, {}),
     ];
     for (const rep of cases) {
@@ -276,6 +281,29 @@ describe('wrong keys and missing context', () => {
       expect(rep.unverified.length).toBeGreaterThan(0);
       expect(() => expectVerified(rep)).toThrow(ProtoError);
     }
+  });
+  it('firmware v1.2 defaults: a device deny verifies against the relay compiled in for the chain', () => {
+    expect(parseResponse(V.deny.response.ur, { request: cosignReq, p1Key: P1 }).result).toBe('VERIFIED');
+    expect(parseResponse(V.deny.response.ur, { chainId: CHAIN, p1Key: P1 }).result).toBe('VERIFIED');
+  });
+  it('another vault / other contracts: the v1.2 derivation checks fail', () => {
+    // a co-sign / reopen checked against another K1: the delegator / vault is not that K1's vault
+    const c = parseResponse(V.cosignErc20.response.ur, { request: cosignReq, p1Key: P1, k1Address: A.agent });
+    expect(c.result).toBe('FAIL');
+    expect(c.checks.at(-1)).toEqual({ name: 'delegator is the vault derived from the paired K1', ok: false });
+    const r = parseResponse(V.reopen.response.ur, { chainId: CHAIN, contract: A.sentinel, p1Key: P1, k1Address: A.agent });
+    expect(r.result).toBe('FAIL');
+    expect(r.checks[0]).toEqual({ name: 'reopen vault is the vault derived from the paired K1', ok: false });
+    // a pair request naming another vault (key 8) or another registry: the response still verifies its signatures,
+    // but the pinned-contract checks fail (the real device would have refused to sign it)
+    const req = buildRequest('pair', { chainId: CHAIN, registry: A.registry, manager: A.delegationManager, enforcer: A.enforcer, sentinel: A.sentinel, relay: A.relay, now: V.now, reqId: V.pair.reqId, vault: A.agent });
+    const p = parseResponse(V.pair.response.ur, { request: req });
+    expect(p.result).toBe('FAIL');
+    expect(p.checks.filter((x) => !x.ok).map((x) => x.name)).toEqual([
+      'key 8 vault is the vault derived from K1',
+      "pair request names only the firmware's pinned contracts",
+    ]);
+    expect(() => verifyPairing(V.pair.response.ur, req)).toThrow(/key 8 vault/);
   });
   it('verifyPairing refuses a response to another pair request', () => {
     const other = buildRequest('pair', { chainId: CHAIN, registry: A.registry, now: V.now, reqId: '00'.repeat(16) });

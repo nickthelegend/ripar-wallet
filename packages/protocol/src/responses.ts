@@ -12,6 +12,7 @@ import {
   toBytes,
   toHex,
   toInt,
+  unhex,
   word,
 } from './bytes.js';
 import { type CborMap, type CborValue, cborDecode, mget, mhas } from './cbor.js';
@@ -28,7 +29,9 @@ import {
   reopenDigest,
   revokeDigest,
 } from './eip712.js';
+import { FIRMWARE_PULSE_ENFORCER, FIRMWARE_RELAY, type FirmwareTable, firmwareAddress } from './constants.js';
 import { ProtoError } from './errors.js';
+import { firmwareRefusal } from './firmware.js';
 import { keccak256, sha256, toChecksumAddress } from './hash.js';
 import { base64Encode } from './privy.js';
 import {
@@ -40,6 +43,7 @@ import {
   readRequest,
 } from './requests.js';
 import { type UrContent, urRead } from './ur.js';
+import { computeVaultAddress } from './vault.js';
 
 export const RESPONSE_TYPES = [
   'ripar-pair',
@@ -89,6 +93,8 @@ export interface PairResponseFields {
   /** absent in the keys-only pairing QR */
   reqId?: Hex;
   k1Address: Address;
+  /** the vault derived from K1 (firmware v1.2 pins exactly this one, docs/PROTOCOL.md 2.1): deploy and fund it */
+  vault: Address;
   /** px‖py */
   p1Key: Hex;
   px: Hex;
@@ -298,6 +304,12 @@ export function parseResponse(ur: string | UrContent, opts: ParseOptions = {}): 
   const chain = opts.chainId != null ? toInt(opts.chainId) : opts.pinned ? toInt(opts.pinned.chainId) : null;
   const contract = opts.contract != null ? toAddr(opts.contract, 'contract') : pc != null ? toAddr(pc, 'pinned contract') : null;
   const rep = new Rep();
+  /** the contract given (or pinned), else the one compiled into the firmware for chain `ch` (make_request pinned_or) */
+  const pinnedOr = (table: FirmwareTable, ch: bigint | null): Uint8Array | null => {
+    if (contract !== null) return contract;
+    const a = ch === null ? undefined : firmwareAddress(table, ch);
+    return a === undefined ? null : unhex(a);
+  };
 
   const needBytes = (k: number, n: number | null): Uint8Array => {
     const v = mget(m, k);
@@ -334,8 +346,10 @@ export function parseResponse(ur: string | UrContent, opts: ParseOptions = {}): 
       const k1 = needBytes(2, 20);
       const xy = needBytes(3, 64);
       const fwid = needBytes(6, 8);
+      const vault = computeVaultAddress(k1);
       const f: PairResponseFields = {
         k1Address: toChecksumAddress(k1),
+        vault,
         p1Key: toHex(xy),
         px: toHex(xy.subarray(0, 32)),
         py: toHex(xy.subarray(32)),
@@ -344,6 +358,11 @@ export function parseResponse(ur: string | UrContent, opts: ParseOptions = {}): 
         emulator: toHex(fwid) === EMULATOR_FIRMWARE_ID,
       };
       if (mhas(m, 1)) f.reqId = checkReqId();
+      if (q && q.kind === 'pair') {
+        // firmware v1.2: the device pins the vault it derives from K1 and only the compiled-in contracts
+        if (q.vault !== null) rep.check('key 8 vault is the vault derived from K1', bytesEqual(q.vault, unhex(vault)));
+        rep.check("pair request names only the firmware's pinned contracts", firmwareRefusal(q, k1) === null);
+      }
       if (mhas(m, 4) || mhas(m, 5)) {
         if (!q || q.kind !== 'pair') {
           rep.unverified.push('BindDevice signatures (give the pair request)');
@@ -385,6 +404,9 @@ export function parseResponse(ur: string | UrContent, opts: ParseOptions = {}): 
         f.digest = toHex(d);
         p256Check(rep, 'cosign', p1xy, d, rs);
       }
+      if (q && q.kind === 'cosign' && k1addr !== null) {
+        rep.check('delegator is the vault derived from the paired K1', bytesEqual(q.delegator, unhex(computeVaultAddress(k1addr))));
+      }
       if (q && q.kind === 'cosign') f.caveatArgs = cosignCaveatArgs(q.nonce, q.expiry, ph, rs);
       parsed = { type: utype, fields: f };
       break;
@@ -415,10 +437,12 @@ export function parseResponse(ur: string | UrContent, opts: ParseOptions = {}): 
         dq = { chainId: q.chainId, relay: q.relay };
       } else if (q && q.kind === 'cosign') {
         rep.check('requestHash = hashStruct(HumanApproval) of the co-sign request', bytesEqual(rh, cosignRequestHash(q)));
-        if (contract === null) rep.unverified.push("deny signature (give the relay as contract; chain = chainId or the request's)");
-        else dq = { chainId: chain ?? q.chainId, relay: contract };
-      } else if (chain !== null && contract !== null) {
-        dq = { chainId: chain, relay: contract };
+        const dchain = chain ?? q.chainId;
+        const relay = pinnedOr(FIRMWARE_RELAY, dchain);
+        if (relay === null) rep.unverified.push("deny signature (give the relay as contract; chain = chainId or the request's)");
+        else dq = { chainId: dchain, relay };
+      } else if (chain !== null && pinnedOr(FIRMWARE_RELAY, chain) !== null) {
+        dq = { chainId: chain, relay: pinnedOr(FIRMWARE_RELAY, chain)! };
       } else {
         rep.unverified.push('deny signature (give the request, or chainId and the relay as contract)');
       }
@@ -446,7 +470,13 @@ export function parseResponse(ur: string | UrContent, opts: ParseOptions = {}): 
         const who = k1Recover(rep, 'mandate K1', d, rsv);
         if (who) f.signer = toChecksumAddress(who);
         if (k1addr === null) rep.unverified.push('mandate signer identity (give the K1 address or the pairing)');
-        else rep.check('mandate signed by the paired K1', who !== null && bytesEqual(who, k1addr));
+        else {
+          rep.check('mandate signed by the paired K1', who !== null && bytesEqual(who, k1addr));
+          rep.check(
+            'mandate delegator is the vault derived from the paired K1',
+            bytesEqual(q.delegator, unhex(computeVaultAddress(k1addr))),
+          );
+        }
       }
       parsed = { type: utype, fields: f };
       break;
@@ -470,17 +500,20 @@ export function parseResponse(ur: string | UrContent, opts: ParseOptions = {}): 
     case 'ripar-reopen': {
       let rs: Uint8Array;
       let dig: (c: bigint, a: Uint8Array) => Uint8Array;
+      let domain = contract;
       if (utype === 'ripar-revoke') {
         keysOnly(1, 2);
         const dh = needBytes(1, 32);
         rs = needBytes(2, 64);
         parsed = { type: utype, fields: { delegationHash: toHex(dh), ...sigHex(rs) } };
+        domain = pinnedOr(FIRMWARE_PULSE_ENFORCER, chain);
         dig = (c, a) => revokeDigest(c, a, dh);
       } else if (utype === 'ripar-panic') {
         keysOnly(1, 2);
         const me = uintKey(1, 'key 1');
         rs = needBytes(2, 64);
         parsed = { type: utype, fields: { minEpoch: me, ...sigHex(rs) } };
+        domain = pinnedOr(FIRMWARE_PULSE_ENFORCER, chain);
         dig = (c, a) => panicDigest(c, a, me);
       } else {
         keysOnly(1, 2, 3);
@@ -490,12 +523,15 @@ export function parseResponse(ur: string | UrContent, opts: ParseOptions = {}): 
         if (nb.length > 32) throw new ProtoError('nonce longer than 32 bytes');
         const nonce = bytesToBigInt(nb);
         parsed = { type: utype, fields: { vault: toChecksumAddress(vault), nonce, ...sigHex(rs) } };
+        if (k1addr !== null) {
+          rep.check('reopen vault is the vault derived from the paired K1', bytesEqual(vault, unhex(computeVaultAddress(k1addr))));
+        }
         dig = (c, a) => reopenDigest(c, a, vault, nonce);
       }
-      if (chain === null || contract === null) rep.unverified.push(`${utype} signature (give chainId and contract)`);
+      if (chain === null || domain === null) rep.unverified.push(`${utype} signature (give chainId and contract)`);
       else if (p1xy === null) rep.unverified.push(`${utype} signature (give the P1 key or the pairing)`);
       else {
-        const d = dig(chain, contract);
+        const d = dig(chain, domain);
         (parsed.fields as { digest?: Hex }).digest = toHex(d);
         p256Check(rep, utype, p1xy, d, rs);
       }

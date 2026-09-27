@@ -11,7 +11,10 @@ import {
   AUSD_10143,
   DELEGATION_MANAGER,
   EMULATOR_FIRMWARE_ID,
+  FIRMWARE_REGISTRY,
+  FIRMWARE_RELAY,
   MM_ENFORCERS,
+  PULSE_COSIGN_ENFORCER,
   computeVaultAddress,
   cosignCaveatArgs,
   decodePermissionContext,
@@ -20,6 +23,7 @@ import {
   encodePermissionContext,
   encodeRedeemDelegations,
   expectVerified,
+  firmwareRefusal,
   hashDelegation,
   parseResponse,
   privyParse,
@@ -40,10 +44,13 @@ type EmuState = EmuModule.EmuState;
 const CHAIN = 10143;
 const NOW = 1790500000; // 2026-09-27 09:06:40 UTC (> the firmware time floor)
 const EXP = NOW + 3600;
-const REGISTRY = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
-const ENFORCER = '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512';
+// firmware v1.2: the Ripar contracts compiled into the firmware (a pairing may only name these); the sentinel is not
+// compiled in (pinned as given)
+const REGISTRY = FIRMWARE_REGISTRY['10143']!;
+const ENFORCER = PULSE_COSIGN_ENFORCER;
+const RELAY = FIRMWARE_RELAY['10143']!;
 const SENTINEL = '0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0';
-const RELAY = '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9';
+const OTHER = '0x5FbDB2315678afecb367f032d93F642f64180aa3'; // an address the firmware does not pin
 const AGENT = '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707';
 const PAYEE = '0x0165878A594ca255338adfa4d48449f69242Eb8F';
 const AGENT_ID = 42;
@@ -54,6 +61,7 @@ let identity: DeviceIdentity;
 let mandate: BuiltRequest;
 let mandateSig: string;
 let mandateDh: string;
+let lastRefusal = '';
 
 // ------------------------------------------------------------------------------------------------ driving helpers
 function toScan(): EmuState {
@@ -112,6 +120,7 @@ function expectRefused(req: BuiltRequest, prefix: string): void {
   const s = reviewOf(req, false);
   expect(s.review!.ok).toBe(false);
   expect(s.review!.refusal.startsWith(prefix), s.review!.refusal).toBe(true);
+  lastRefusal = s.review!.refusal;
   pageToEnd();
   const sigs = emu.state().signatures;
   const h = emu.key('press');
@@ -168,7 +177,25 @@ describe('emulator round trips (test mode, demo seed)', () => {
     expectRefused(buildRequest('cosign', cosignFields({ transfer: { to: PAYEE, amount: 1 } })), 'NOT PAIRED');
   });
 
-  it('pair (multipart, 70-byte fragments) -> ripar-pair verified with both BindDevice signatures', () => {
+  it('refusals: a pairing that names other contracts than the compiled-in ones, or another vault (key 8)', () => {
+    for (const [over, prefix] of [
+      [{ registry: OTHER }, 'WRONG REGISTRY'],
+      [{ enforcer: OTHER }, 'WRONG PULSE CO-SIGN ENFORCER'],
+      [{ relay: OTHER }, 'WRONG REPUTATION RELAY'],
+      [{ manager: OTHER }, 'WRONG DELEGATION MANAGER'],
+      [{ vault: OTHER }, "VAULT IS NOT THIS DEVICE'S VAULT"],
+    ] as const) {
+      const req = buildRequest('pair', { chainId: CHAIN, sentinel: SENTINEL, now: NOW, ...over });
+      // the library refuses early with the same headline (make_request firmware_refusal)
+      expect(firmwareRefusal(decodeRequest('pair', req.cbor), DEMO_K1)?.startsWith(prefix)).toBe(true);
+      expectRefused(req, prefix);
+      if (prefix.startsWith('VAULT')) expect(lastRefusal).toContain(DEMO_VAULT);
+      else expect(lastRefusal).toContain('Monad testnet (10143)');
+    }
+    expect(emu.state().paired).toBe(false);
+  });
+
+  it('pair (multipart, 70-byte fragments, no key 8) -> ripar-pair verified with both BindDevice signatures', () => {
     const req = buildRequest('pair', {
       chainId: CHAIN,
       registry: REGISTRY,
@@ -176,9 +203,9 @@ describe('emulator round trips (test mode, demo seed)', () => {
       enforcer: ENFORCER,
       sentinel: SENTINEL,
       relay: RELAY,
-      vault: computeVaultAddress(DEMO_K1),
       now: NOW,
     });
+    expect(req.map.has(8)).toBe(false);
     expect(req.parts.length).toBeGreaterThan(1);
     const s0 = reviewOf(req);
     expect(s0.review!.title).toBe('PAIR DEVICE');
@@ -191,8 +218,15 @@ describe('emulator round trips (test mode, demo seed)', () => {
     expect(identity.firmwareId).toBe(EMULATOR_FIRMWARE_ID);
     expect(identity.k1Address).toBe(DEMO_K1);
     expect(identity.p1Key).toBe(DEMO_P1);
+    const rep = expectVerified(parseResponse(s.qr!.text, { request: req }));
+    if (rep.type !== 'ripar-pair') throw new Error(rep.type);
+    expect(rep.fields.vault).toBe(DEMO_VAULT); // the vault the device pinned: derived from K1
+    expect(rep.checks.map((c) => c.name)).toContain("pair request names only the firmware's pinned contracts");
     expect(s.context.vault).toBe(DEMO_VAULT);
+    expect(s.vault).toBe(DEMO_VAULT);
     expect(s.context.pulseCosignEnforcer).toBe(ENFORCER);
+    expect(s.context.registry).toBe(REGISTRY);
+    expect(s.context.relay).toBe(RELAY);
     home();
   });
 
@@ -205,7 +239,8 @@ describe('emulator round trips (test mode, demo seed)', () => {
     expect(rep.fields.k1Address).toBe(DEMO_K1);
     expect(rep.fields.emulator).toBe(true);
     expect(rep.fields.reqId).toBeUndefined();
-    expect(() => verifyPairing(s.qr!.text, buildRequest('pair', { chainId: CHAIN, registry: REGISTRY, now: NOW }))).toThrow();
+    expect(rep.fields.vault).toBe(DEMO_VAULT); // the companion derives the vault from key 2 (docs/PROTOCOL.md 4)
+    expect(() => verifyPairing(s.qr!.text, buildRequest('pair', { chainId: CHAIN, now: NOW }))).toThrow();
     emu.key('hold2'); // menu
     emu.key('press');
     emu.key('press');
@@ -274,6 +309,22 @@ describe('emulator round trips (test mode, demo seed)', () => {
     home();
   });
 
+  it("refusals: another vault as delegator (mandate, co-sign): NOT THIS DEVICE'S VAULT", () => {
+    const m = buildRequest('mandate', {
+      chainId: CHAIN,
+      manager: DELEGATION_MANAGER,
+      delegate: AGENT,
+      delegator: OTHER,
+      salt: 4,
+      caveats: [{ kind: 'pulse', p1Key: identity.p1Key, token: AUSD_10143, perTxAutoCap: 1, periodAutoCap: 1, period: 0, sentinel: SENTINEL }],
+    });
+    expect(firmwareRefusal(decodeRequest('mandate', m.cbor), identity.k1Address)).toMatch(/^NOT THIS DEVICE'S VAULT/);
+    expectRefused(m, "NOT THIS DEVICE'S VAULT");
+    const c = buildRequest('cosign', cosignFields({ delegator: OTHER, transfer: { to: PAYEE, amount: 1 } }));
+    expect(firmwareRefusal(decodeRequest('cosign', c.cbor), identity.k1Address)).toMatch(/^NOT THIS DEVICE'S VAULT/);
+    expectRefused(c, "NOT THIS DEVICE'S VAULT");
+  });
+
   it('refusals: wrong chain, unknown calldata, lying token claims', () => {
     expectRefused(buildRequest('cosign', cosignFields({ chainId: 143, transfer: { to: PAYEE, amount: 1 } })), 'WRONG CHAIN');
     expectRefused(buildRequest('cosign', cosignFields({ calldata: '0xdeadbeef00' })), 'UNKNOWN CALLDATA');
@@ -306,9 +357,14 @@ describe('emulator round trips (test mode, demo seed)', () => {
     expect(s0.review!.title).toBe('CO-SIGN PAYMENT');
     expect(s0.review!.ok, s0.review!.refusal).toBe(true);
     pageToEnd();
+    // the remembered mandate sets newPayeeNeedsHuman: the review says the payee becomes an AUTO payee (firmware v1.2)
+    expect(s0.review!.lines.some((l) => /becomes an AUTO payee of this mandate/.test(JSON.stringify(l)))).toBe(true);
     const s = pulseAndSign(salt(0xa1));
     expect(s.qr!.title).toBe('CO-SIGNED');
-    const rep = expectVerified(parseResponse(s.qr!.text, { request: cosignErc20, p1Key: identity.p1Key }));
+    const rep = expectVerified(
+      parseResponse(s.qr!.text, { request: cosignErc20, p1Key: identity.p1Key, k1Address: identity.k1Address }),
+    );
+    expect(rep.checks.map((c) => c.name)).toContain('delegator is the vault derived from the paired K1');
     if (rep.type !== 'ripar-cosign') throw new Error(rep.type);
     expect(rep.fields.salt16).toBe('0x' + salt(0xa1));
     expect(rep.fields.evidence.version).toBe(1);
@@ -432,9 +488,19 @@ describe('emulator round trips (test mode, demo seed)', () => {
     const rep = expectVerified(parseResponse(s.qr!.text, { chainId: CHAIN, contract: ENFORCER, p1Key: identity.p1Key }));
     if (rep.type !== 'ripar-revoke') throw new Error(rep.type);
     expect(rep.fields.delegationHash).toBe(mandateDh);
+    // without a contract: the PulseCosignEnforcer compiled in for the chain
+    expectVerified(parseResponse(s.qr!.text, { chainId: CHAIN, p1Key: identity.p1Key }));
     expect(parseResponse(s.qr!.text, { chainId: CHAIN, contract: SENTINEL, p1Key: identity.p1Key }).result).toBe('FAIL');
     expect(parseResponse(s.qr!.text, { chainId: 143, contract: ENFORCER, p1Key: identity.p1Key }).result).toBe('FAIL');
     home();
+  });
+
+  it('refusal: re-pairing to Monad (143) while a mandate is live and not covered by a panic: PANIC FIRST', () => {
+    expect(emu.state().context.unpanickedMandates).toBe(true); // a revoke does not clear it
+    const req = buildRequest('pair', { chainId: 143, sentinel: SENTINEL, now: NOW });
+    expect(firmwareRefusal(decodeRequest('pair', req.cbor), DEMO_K1)).toBeNull(); // only the device knows its context
+    expectRefused(req, 'PANIC FIRST');
+    expect(emu.state().context.chainId).toBe(String(CHAIN));
   });
 
   it('PANIC (hold 5 s on HOME) -> ripar-panic verified, minEpoch 1', () => {
@@ -443,6 +509,8 @@ describe('emulator round trips (test mode, demo seed)', () => {
     const rep = expectVerified(parseResponse(s.qr!.text, { chainId: CHAIN, contract: ENFORCER, p1Key: identity.p1Key }));
     if (rep.type !== 'ripar-panic') throw new Error(rep.type);
     expect(rep.fields.minEpoch).toBe(1n);
+    expectVerified(parseResponse(s.qr!.text, { chainId: CHAIN, p1Key: identity.p1Key })); // compiled-in enforcer
+    expect(emu.state().context.unpanickedMandates).toBe(false);
     home();
   });
 
@@ -454,9 +522,12 @@ describe('emulator round trips (test mode, demo seed)', () => {
     expect(s.job).toBe('reopen');
     pageToEnd();
     s = pulseAndSign();
-    const rep = expectVerified(parseResponse(s.qr!.text, { chainId: CHAIN, contract: SENTINEL, p1Key: identity.p1Key }));
+    const rep = expectVerified(
+      parseResponse(s.qr!.text, { chainId: CHAIN, contract: SENTINEL, p1Key: identity.p1Key, k1Address: identity.k1Address }),
+    );
     if (rep.type !== 'ripar-reopen') throw new Error(rep.type);
     expect(rep.fields.vault).toBe(DEMO_VAULT);
+    expect(rep.checks[0]!.name).toBe('reopen vault is the vault derived from the paired K1');
     expect(rep.fields.nonce).toBe(1n);
     expect(parseResponse(s.qr!.text, { chainId: CHAIN, contract: ENFORCER, p1Key: identity.p1Key }).result).toBe('FAIL');
     home();
