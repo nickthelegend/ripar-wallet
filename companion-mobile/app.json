@@ -1,0 +1,65 @@
+{
+  "expo": {
+    "name": "Ripar",
+    "slug": "ripar-companion",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "ripar",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0D0E10",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0D0E10"
+    },
+    "android": {
+      "package": "xyz.ripar.companion",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundColor": "#0D0E10"
+      },
+      "permissions": [
+        "android.permission.CAMERA"
+      ],
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0D0E10",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 160
+        }
+      ],
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Ripar reads the QR codes your air-gapped Ripar device shows.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": true
+        }
+      ],
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "modes": [],
+          "neverForLocation": true,
+          "bluetoothAlwaysPermission": "Bluetooth is Ripar's fallback link to your device when the camera cannot read its QR."
+        }
+      ],
+      "./plugins/with-ripar-android.js"
+    ],
+    "experiments": {
+      "typedRoutes": false
+    }
+  }
+}
