@@ -27,6 +27,8 @@ A camera-shaped, air-gapped signer for the **Monad Metropolis** hackathon. The s
 | `packages/protocol/` | `@ripar/protocol`: TypeScript protocol library, byte-exact with the firmware |
 | `agent/` | The untrusted AI treasury agent (Qwen tool loop, AUTO payments, escalation to the device) |
 | `companion/` | The companion web app (camera QR or the in-page EMULATOR) |
+| `companion-mobile/` | The **Android app** (Expo): Polaris-style wallet UI, QR link (default) + Bluetooth fallback + emulator |
+| `docs/BLE_LINK.md` | The optional Bluetooth LE fallback link: protocol and security model |
 | `scripts/dev-stack.sh` | One command: local fork of Monad testnet + contracts + agent + companion |
 | `model/RiparWallet.SLDASM` | SolidWorks 2026 assembly: native parts plus component stand-ins |
 | `model/parts/*.SLDPRT` | Native SolidWorks parts (feature trees built by script) |
@@ -48,6 +50,40 @@ bash scripts/dev-stack.sh          # anvil fork of Monad testnet, contracts, age
 Open the printed `http://127.0.0.1:5173/?devstack`, choose **Device: EMULATOR**, then follow the app:
 pair, deploy and fund the vault, sign a mandate, "Ask the agent to run now", and answer its escalations on the
 emulated device (thumb on, SIGN). `bash scripts/dev-stack.sh e2e` runs the whole 25-step story headlessly.
+
+## The Android app (`companion-mobile/`)
+
+A phone wallet for your Ripar, in signal orange on graphite.
+
+- **Onboarding:** leads with the air gap ("Keys that never touch the internet", "It signs only what it shows", "A real heartbeat, then SIGN"), then *Pair your Ripar*.
+- **Tabs:**
+  - **Home:** vault balance card with Send / Receive / Scan / Device, spending insights and recent activity.
+  - **Activity.**
+  - **Device:** link choice, pairing, kill switch and the SIGN-key table.
+  - **Agents:** optional; AI mandates and the co-sign inbox.
+  - **Settings.**
+- **Send:** a Polaris-style keypad sheet, then confirm, then the device (review, thumb, SIGN), then *Done.* Every payment from the vault needs the device. The phone's key only submits what the device co-signed: a "personal mandate" with AUTO caps 0.
+- **Device link helpers** (`src/device/link.ts`): `sendToDevice()`, `awaitDeviceResponse()` and `requestAndVerify()` work the same over three links:
+  - **QR** (default, air-gapped): animated QR on the phone, camera reads the device's answer.
+  - **Bluetooth fallback** (`docs/BLE_LINK.md`): for when the device camera cannot read. The device's radio stays **off** until you wake it on the device (menu → BLE LINK → pulse + SIGN). A **RADIO ON** badge shows while it is on, and it turns off after 5 min idle, on PANIC and at power-off. Pairing uses a 6-digit code confirmed with SIGN.
+  - **Emulator:** the real firmware in a WebView, demo keys only.
+
+```bash
+cd companion-mobile && npm install
+npx expo start --web                                   # preview the screens in a browser
+npx expo prebuild --platform android && (cd android && ./gradlew assembleDebug)   # debug APK
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+## Flashing and testing the hardware
+
+| Build (`firmware/`) | What it is |
+|---|---|
+| `pio run -e chk_device -t upload` | **Hardware check first:** display, SIGN key, buzzer, pulse sensor, camera and key self-test, radio-free. Serial log at 115200. SIGN press = next screen (home, scan, pulse, QR, review, message); hold 2 s = action (scan: restart camera; pulse: LED challenge); hold 5 s = error buzz. |
+| `pio run -e ripar -t upload` | The wallet: QR + optional Bluetooth fallback (radio off until woken on the device). |
+| `pio run -e ripar-airgap -t upload` | The wallet with no radio code at all: the build that proves the air-gapped claim. |
+
+Plug in the **board's own USB-C** with a **data** cable, never the TP4056's port and never both. If Windows shows *Unknown USB device* or no COM port appears, enter download mode: hold **BOOT**, tap **RST**, release BOOT, then upload again and tap RST to start. `pio device monitor -b 115200` shows the log.
 
 ## The enclosure
 
