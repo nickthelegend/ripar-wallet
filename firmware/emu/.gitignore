@@ -1,0 +1,2 @@
+# compiler temporaries, generated include, wasm host-test binaries (emu/dist/ IS committed)
+build/
