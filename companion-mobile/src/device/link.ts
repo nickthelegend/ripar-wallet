@@ -5,6 +5,8 @@
 //   BleLink       (fallback) the same UR parts as UTF-8 lines over Bluetooth LE, answers come back as notifications.
 //                 Turns the device's radio on: only when the camera cannot read.
 //   EmulatorLink  (demo) the firmware emulator (WASM) running in a WebView, fed the same parts.
+//   WifiLink      (TEMPORARY, testing) the same UR parts POSTed to the device's HTTP endpoint on the LAN, the answer
+//                 polled back. Turns the device's Wi-Fi on: not air-gapped while it runs.
 //
 // The link is a dumb courier. Everything it returns is checked by the caller's verifier (@ripar/protocol parseResponse
 // with the request, the pinned context and the device keys) before the app acts on it. Pure module: no React Native
@@ -57,7 +59,10 @@ export class ResponseBus {
 /** the screens the device reports over BLE STATUS (firmware BLE LINK) */
 export type DeviceScreen = 'HOME' | 'SCAN' | 'REVIEW' | 'PULSE' | 'ARMED' | 'QR' | 'MESSAGE' | 'MENU' | 'BLE_PAIR';
 
-/** BLE STATUS characteristic (docs/BLE_LINK.md §4.5): JSON {"v":1,"screen","paired","k1","scan":{"got","of"},"radio","fw","note"?} */
+/**
+ * BLE STATUS characteristic (docs/BLE_LINK.md §4.5) and the Wi-Fi link's GET /status: JSON
+ * {"v":1,"screen","paired","k1","scan":{"got","of"},"radio","fw","note"?,"wifi"?,"ip"?}
+ */
 export interface DeviceStatus {
   v: 1;
   /** a known DeviceScreen, or whatever newer firmware reports (shown as is) */
@@ -71,11 +76,17 @@ export interface DeviceStatus {
   fw: string | null;
   /** optional short note from the device: why the last line was not used (e.g. "ignored: not on SCAN ...") */
   note: string | null;
+  /** the device's Wi-Fi state (firmware with the TEMPORARY Wi-Fi link): "off" | "connecting" | "on" (absent: no Wi-Fi) */
+  wifi?: WifiState | string;
+  /** the device's IPv4 address on the Wi-Fi network, when it has one */
+  ip?: string;
   /** when this status was received (ms) */
   at: number;
 }
 
-export type LinkKind = 'qr' | 'ble' | 'emulator';
+export type WifiState = 'off' | 'connecting' | 'on';
+
+export type LinkKind = 'qr' | 'ble' | 'emulator' | 'wifi';
 
 /** a request as the links take it: the CBOR payload and its UR type, or ready-made (upper-case) UR parts */
 export type DeviceRequest = { urType: string; cbor: Uint8Array } | readonly string[];

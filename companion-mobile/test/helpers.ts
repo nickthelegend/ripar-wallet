@@ -1,7 +1,10 @@
 // Test fixtures: the WASM firmware emulator in Node (test mode = the public demo seed), a fixture deployment at the
-// addresses firmware v1.2 compiles in, and FakeRipar: a BleTransport whose far end is the emulated device, framed
+// addresses firmware v1.2 compiles in, FakeRipar: a BleTransport whose far end is the emulated device, framed
 // exactly as docs/BLE_LINK.md describes (RX lines only on SCAN, TX = QR text + LF in MTU-3 notifications, STATUS JSON
-// notified on change and truncated to MTU-3 when it does not fit).
+// notified on change and truncated to MTU-3 when it does not fit), and FakeWifiRipar: a local HTTP server that serves
+// the Wi-Fi link contract (GET /status, POST /rx only on SCAN else 409, GET /tx, X-Ripar-Code) for the emulated device.
+import { type IncomingMessage, type Server, type ServerResponse, createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { type RiparDeployment, DELEGATION_MANAGER, parseDeployment } from '@ripar/protocol';
@@ -78,8 +81,33 @@ const SCREEN: Record<string, string> = {
   menu: 'MENU',
 };
 
+/** the STATUS JSON the device would report for the emulator's state (unknown keys included: clients must ignore them) */
+export function statusJsonOf(emu: Emu, extra: Record<string, unknown> = {}): string {
+  const s = emu.state();
+  const screen = SCREEN[s.screen] ?? s.screen.toUpperCase();
+  return JSON.stringify({
+    v: 1,
+    screen,
+    paired: s.paired,
+    k1: `${s.k1.slice(0, 6)}...${s.k1.slice(-4)}`,
+    ...(screen === 'SCAN' ? { scan: { got: s.scan.received, of: s.scan.seqLen } } : {}),
+    radio: 'on',
+    fw: '7bc44601d30720f1',
+    ...extra,
+    future: 'ignored by clients',
+  });
+}
+
+/** what approveOnDevice needs: the emulator plus key / tick helpers that publish the new state */
+export interface DrivenRipar {
+  readonly emu: Emu;
+  key(kind?: 'press' | 'hold2' | 'hold5'): EmuState;
+  tick(ms: number): void;
+  sync(): void;
+}
+
 /** the emulated Ripar behind a Bluetooth link, framed per docs/BLE_LINK.md §4 */
-export class FakeRipar implements BleTransport {
+export class FakeRipar implements BleTransport, DrivenRipar {
   private dataL = new Set<(c: Uint8Array) => void>();
   private statusL = new Set<(c: Uint8Array) => void>();
   private rx = new LineAssembler(4096);
@@ -89,6 +117,8 @@ export class FakeRipar implements BleTransport {
   writes: Uint8Array[] = [];
   linesFed: string[] = [];
   statusReads = 0;
+  /** writes to PROV (Wi-Fi provisioning), in order: each one a whole value (single or long write) */
+  provWrites: Uint8Array[] = [];
 
   constructor(
     readonly emu: Emu,
@@ -96,20 +126,7 @@ export class FakeRipar implements BleTransport {
   ) {}
 
   statusJson(): string {
-    const s = this.emu.state();
-    const screen = SCREEN[s.screen] ?? s.screen.toUpperCase();
-    const o: Record<string, unknown> = {
-      v: 1,
-      screen,
-      paired: s.paired,
-      k1: `${s.k1.slice(0, 6)}...${s.k1.slice(-4)}`,
-      ...(screen === 'SCAN' ? { scan: { got: s.scan.received, of: s.scan.seqLen } } : {}),
-      radio: 'on',
-      fw: '7bc44601d30720f1',
-      ...(this.note ? { note: this.note } : {}),
-      future: 'ignored by clients',
-    };
-    return JSON.stringify(o);
+    return statusJsonOf(this.emu, this.note ? { note: this.note } : {});
   }
 
   /** push STATUS / TX notifications for whatever changed on the device */
@@ -160,6 +177,12 @@ export class FakeRipar implements BleTransport {
     this.tick(5);
   }
 
+  /** as firmware/src/ble_link.cpp: one write (or one long write, when longer than MTU-3) = one whole value, <= 512 B */
+  async writeProvisioning(value: Uint8Array): Promise<void> {
+    if (value.length === 0 || value.length > 512) throw new Error(`PROV value of ${value.length} bytes: invalid attribute length`);
+    this.provWrites.push(value);
+  }
+
   onData(cb: (c: Uint8Array) => void): Unsubscribe {
     this.dataL.add(cb);
     return () => this.dataL.delete(cb);
@@ -183,7 +206,7 @@ export class FakeRipar implements BleTransport {
 }
 
 /** pages through a review, puts the synthetic thumb on, waits for ARMED and presses SIGN */
-export function approveOnDevice(dev: FakeRipar): EmuState {
+export function approveOnDevice(dev: DrivenRipar): EmuState {
   let s = dev.emu.state();
   for (let i = 0; i < 80 && s.screen === 'review' && !s.review!.allSeen; i++) s = dev.key('press');
   if (s.screen !== 'review') throw new Error(`expected the review, device on ${s.screen}`);
@@ -200,3 +223,121 @@ export function approveOnDevice(dev: FakeRipar): EmuState {
 }
 
 export const flush = () => new Promise((r) => setTimeout(r, 0));
+
+/**
+ * The emulated Ripar behind its Wi-Fi link (TEMPORARY testing link), answering as firmware/src/wifi_proto.cpp does:
+ * a real HTTP server on 127.0.0.1 serving
+ *   GET /status  STATUS JSON (+ "wifi":"on", "ip")
+ *   POST /rx     UR lines, only on SCAN: 200 + STATUS; else 409 + STATUS with the note
+ *   GET /tx      the QR on screen + LF (204: none)
+ * Every request needs X-Ripar-Code (401); after 3 free wrong codes each further one locks the link (429 +
+ * Retry-After) for 1 s, 2 s, 4 s, ...
+ */
+export class FakeWifiRipar implements DrivenRipar {
+  code = '48151623';
+  readonly ip = '127.0.0.1';
+  linesFed: string[] = [];
+  /** every POST /rx body the device got (accepted or not) */
+  posts: string[] = [];
+  /** method, path and the code header of every request */
+  requests: { method: string; path: string; code: string | undefined }[] = [];
+  /** answer the next N POST /rx with 409 even on SCAN (the device left SCAN between a poll and the POST) */
+  refuseNextPosts = 0;
+  /** leave "ip" out of STATUS (the firmware does when a note needs the room) */
+  omitIp = false;
+  private note: string | undefined;
+  private server: Server | null = null;
+  private fails = 0;
+  private lockedUntil = 0;
+  port = 0;
+
+  constructor(readonly emu: Emu) {}
+
+  get host(): string {
+    return `${this.ip}:${this.port}`;
+  }
+
+  async start(): Promise<this> {
+    this.server = createServer((req, res) => void this.handle(req, res));
+    await new Promise<void>((r) => this.server!.listen(0, this.ip, r));
+    this.port = (this.server.address() as AddressInfo).port;
+    return this;
+  }
+
+  async stop(): Promise<void> {
+    const s = this.server;
+    this.server = null;
+    if (!s) return;
+    s.closeAllConnections();
+    await new Promise<void>((r) => s.close(() => r()));
+  }
+
+  /** lock the link as after repeated wrong codes (a correct code resets the count, so a polling phone rarely sees it) */
+  lock(ms: number): void {
+    this.lockedUntil = Date.now() + ms;
+  }
+
+  /** the device state is read at request time: nothing to push */
+  sync(): void {}
+
+  tick(ms: number): void {
+    this.emu.tick(ms);
+  }
+
+  key(kind: 'press' | 'hold2' | 'hold5' = 'press'): EmuState {
+    return this.emu.key(kind);
+  }
+
+  /** as read over HTTP with Bluetooth off: "radio" is the Bluetooth link, so "off" here is normal */
+  private statusBody(): string {
+    return statusJsonOf(this.emu, { radio: 'off', wifi: 'on', ...(this.omitIp ? {} : { ip: this.ip }), ...(this.note ? { note: this.note } : {}) });
+  }
+
+  private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = Buffer.concat(chunks).toString('utf8');
+    const path = (req.url ?? '/').split('?')[0]!;
+    const code = req.headers['x-ripar-code'];
+    this.requests.push({ method: req.method ?? '', path, code: typeof code === 'string' ? code : undefined });
+    const send = (status: number, text = '', type = 'application/json', extra: Record<string, string> = {}) => {
+      res.writeHead(status, { ...(text ? { 'content-type': type } : {}), 'cache-control': 'no-store', connection: 'close', ...extra });
+      res.end(text);
+    };
+    const now = Date.now();
+    if (now < this.lockedUntil) {
+      return send(429, '{"error":"too many wrong codes: wait"}', 'application/json', { 'retry-after': String(Math.ceil((this.lockedUntil - now) / 1000)) });
+    }
+    if (code !== this.code) {
+      if (++this.fails > 3) this.lockedUntil = now + 1000 * 2 ** (this.fails - 4);
+      return send(401, '{"error":"X-Ripar-Code missing or wrong: use the 8-digit link code on the device\'s Home screen"}');
+    }
+    this.fails = 0;
+    if (req.method === 'GET' && path === '/status') return send(200, this.statusBody());
+    if (req.method === 'POST' && path === '/rx') {
+      this.posts.push(body);
+      if (this.refuseNextPosts > 0 || this.emu.state().screen !== 'scan') {
+        if (this.refuseNextPosts > 0) this.refuseNextPosts--;
+        this.note = 'ignored: not on SCAN (press SIGN on the device first)';
+        return send(409, this.statusBody());
+      }
+      this.note = undefined;
+      let n = 0;
+      for (const line of body.split('\n').map((l) => l.replace(/\r$/, '').trim())) {
+        if (!line || this.emu.state().screen !== 'scan') continue;
+        this.linesFed.push(line);
+        this.emu.scan(line);
+        n++;
+      }
+      if (!n) return send(400, '{"error":"no UR line in the body"}');
+      this.tick(5);
+      return send(200, this.statusBody());
+    }
+    if (req.method === 'GET' && path === '/tx') {
+      const st = this.emu.state();
+      const qr = (st.screen === 'qr' || st.screen === 'pairQr') && st.qr ? st.qr.text : null;
+      return qr ? send(200, `${qr}\n`, 'text/plain') : send(204);
+    }
+    return send(404, '{"error":"routes: GET /status, POST /rx, GET /tx"}');
+  }
+}

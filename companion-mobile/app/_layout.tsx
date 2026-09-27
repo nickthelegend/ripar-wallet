@@ -95,6 +95,7 @@ export default function RootLayout() {
                 <Stack.Screen name="pair" options={{ animation: 'slide_from_right' }} />
                 <Stack.Screen name="personal" options={{ animation: 'slide_from_right' }} />
                 <Stack.Screen name="link" options={{ animation: 'slide_from_right' }} />
+                <Stack.Screen name="wifi" options={{ animation: 'slide_from_right' }} />
                 <Stack.Screen name="scan" options={{ animation: 'slide_from_bottom' }} />
                 <Stack.Screen name="network" options={{ animation: 'slide_from_right' }} />
                 <Stack.Screen name="mandate" options={{ animation: 'slide_from_right' }} />

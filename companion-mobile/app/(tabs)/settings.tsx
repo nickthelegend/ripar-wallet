@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { Alert, View } from 'react-native';
 import { formatEther, numberToHex, parseEther } from 'viem';
 import { Address, Button, Label, ListRow, Note, Pill, QrCode, Screen, SectionHead, Surface, Text } from '../../src/components';
+import { linkMeta } from '../../src/device/guide';
 import { refreshChain, useChain } from '../../src/lib/chainState';
 import { publicClientFor } from '../../src/lib/clients';
 import { errorText } from '../../src/lib/format';
@@ -93,10 +94,18 @@ export default function Settings() {
         <View style={{ paddingHorizontal: 10 }}>
           <ListRow icon="link" iconTone="signal" title="Network and deployment" subtitle={`${NETWORKS[settings.network].label} · ${settings.deploymentsJson ? 'deployment loaded' : 'no deployment'}`} onPress={() => router.push('/network')} />
           <ListRow
-            icon={settings.link === 'ble' ? 'bluetooth' : settings.link === 'qr' ? 'qr' : 'device'}
-            iconTone={settings.link === 'ble' ? 'warn' : 'signal'}
+            icon={linkMeta(settings.link).icon}
+            iconTone={linkMeta(settings.link).radio ? 'warn' : 'signal'}
             title="Device link"
-            subtitle={settings.link === 'qr' ? 'QR codes (air-gapped)' : settings.link === 'ble' ? 'Bluetooth fallback: not air-gapped' : 'Emulator (demo keys)'}
+            subtitle={
+              settings.link === 'qr'
+                ? 'QR codes (air-gapped)'
+                : settings.link === 'ble'
+                  ? 'Bluetooth fallback: not air-gapped'
+                  : settings.link === 'wifi'
+                    ? 'Wi-Fi (testing): not air-gapped'
+                    : 'Emulator (demo keys)'
+            }
             onPress={() => router.push('/link')}
           />
           <ListRow icon="agents" iconTone="info" title="Agent service" subtitle={settings.agentUrl || 'not set'} onPress={() => router.push('/network')} />

@@ -6,6 +6,10 @@
 //   TX       ...0003  notify    device -> phone: the QR's UR text + LF, in notifications of at most MTU-3 bytes
 //   STATUS   ...0004  read+notify  JSON <= 180 B {"v":1,"screen","paired","k1","scan":{"got","of"},"radio","fw","note"?};
 //                               a notification that does not fit MTU-3 is truncated: then READ the characteristic
+//                               (firmware with the TEMPORARY Wi-Fi link adds "wifi":"off|connecting|on" and "ip")
+//   PROV     ...0005  write     phone -> device (TEMPORARY, testing): Wi-Fi credentials as UTF-8 JSON
+//                               {"v":1,"ssid","pass"}, the device asks JOIN WI-FI <ssid>? and the user confirms with SIGN
+//                               (wifi-prov.ts)
 //
 // Pure functions and classes (no BLE library here): unit-tested in test/link.test.ts.
 import { utf8Decode, utf8Encode } from '../lib/utf8';
@@ -16,6 +20,8 @@ export const RIPAR_BLE = {
   rx: '52495041-5200-4c49-4e4b-000000000002',
   tx: '52495041-5200-4c49-4e4b-000000000003',
   status: '52495041-5200-4c49-4e4b-000000000004',
+  /** Wi-Fi provisioning (TEMPORARY, testing): write-only, needs the bonded, authenticated link */
+  prov: '52495041-5200-4c49-4e4b-000000000005',
   namePrefix: 'RIPAR-',
   /** the ATT MTU the app asks for (Android caps at 517; the device's stack decides) */
   requestMtu: 247,
@@ -130,6 +136,8 @@ export function parseDeviceStatus(text: string, now = Date.now()): DeviceStatus 
     if (Number.isInteger(got) && Number.isInteger(of) && got >= 0 && of >= 0 && of <= 10_000) scan = { got: Math.min(got, of || got), of };
   }
   const str = (v: unknown, max: number) => (typeof v === 'string' && v.length <= max && /^[\x20-\x7e]*$/.test(v) ? v : null);
+  const wifi = str(r.wifi, 16);
+  const ip = typeof r.ip === 'string' && isIpv4(r.ip) && r.ip !== '0.0.0.0' ? r.ip : null;
   return {
     v: 1,
     screen: SCREENS.has(screen) ? (screen as DeviceStatus['screen']) : screen,
@@ -139,8 +147,26 @@ export function parseDeviceStatus(text: string, now = Date.now()): DeviceStatus 
     radio: str(r.radio, 16) ?? 'on',
     fw: str(r.fw, 64),
     note: str(r.note, 180),
+    // only firmware with the TEMPORARY Wi-Fi link reports these (absent keys stay absent)
+    ...(wifi ? { wifi: wifi.toLowerCase() } : {}),
+    ...(ip ? { ip } : {}),
     at: now,
   };
+}
+
+/**
+ * `next`, with the previous status's "ip" when `next` has none but Wi-Fi is still on: the device leaves "ip" out of a
+ * STATUS whose note needs the room (docs/WIFI_LINK.md §5.4), so the last known address is kept.
+ */
+export function withKnownIp(prev: DeviceStatus | null, next: DeviceStatus): DeviceStatus {
+  if (next.ip || !prev?.ip || next.wifi !== 'on') return next;
+  return { ...next, ip: prev.ip };
+}
+
+/** a dotted-quad IPv4 address (each octet 0-255, no leading zeros) */
+export function isIpv4(s: string): boolean {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
+  return !!m && m.slice(1).every((o) => (o === '0' || !o.startsWith('0')) && Number(o) <= 255);
 }
 
 // ------------------------------------------------------------------------------------------------ base64

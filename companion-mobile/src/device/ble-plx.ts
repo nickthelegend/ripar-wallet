@@ -139,6 +139,25 @@ class PlxTransport implements BleTransport {
     await this.d.writeCharacteristicWithResponseForService(RIPAR_BLE.service, RIPAR_BLE.rx, toBase64(chunk));
   }
 
+  /**
+   * Wi-Fi provisioning (TEMPORARY, testing): the whole value in one write with response to PROV (Android sends a value
+   * longer than MTU-3 as a GATT long write); clear errors for firmware without PROV and for an unpaired link
+   */
+  async writeProvisioning(value: Uint8Array): Promise<void> {
+    try {
+      await this.d.writeCharacteristicWithResponseForService(RIPAR_BLE.service, RIPAR_BLE.prov, toBase64(value));
+    } catch (e) {
+      const msg = (e as Error).message ?? '';
+      if (/not found|unknown characteristic|characteristic.*(null|missing)/i.test(msg)) {
+        throw new Error('This Ripar firmware has no Wi-Fi provisioning (PROV characteristic): flash a firmware with the Wi-Fi link.');
+      }
+      if (/authenticat|encrypt|bond|insufficient/i.test(msg)) {
+        throw new Error('The Bluetooth link is not paired: reconnect while the Ripar shows BLE PAIRING and confirm the code on both.');
+      }
+      throw e;
+    }
+  }
+
   onData(cb: (chunk: Uint8Array) => void): Unsubscribe {
     this.dataL.add(cb);
     return () => this.dataL.delete(cb);

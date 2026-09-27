@@ -10,7 +10,8 @@
 // BleLink is written against the small BleTransport interface below; ble-plx.ts adapts react-native-ble-plx to it and
 // the unit tests use a fake. No React Native imports here.
 import { DEFAULT_FRAGMENT_LEN } from '@ripar/protocol';
-import { LineAssembler, parseDeviceStatus, rxChunks } from './ble-framing';
+import { LineAssembler, parseDeviceStatus, rxChunks, withKnownIp } from './ble-framing';
+import { type WifiCredentials, encodeProvisioning } from './wifi-prov';
 import {
   type DeviceLink,
   type DeviceRequest,
@@ -40,6 +41,11 @@ export interface BleTransport {
   onDisconnect(cb: (why: string) => void): Unsubscribe;
   /** re-enable TX / STATUS notifications that failed before the link was authenticated (bonding) */
   ensureSubscribed?(): void;
+  /**
+   * one write of the whole PROV value (Wi-Fi provisioning, TEMPORARY for testing, wifi-prov.ts): the firmware takes one
+   * write as one value, so it is never split; beyond MTU-3 the BLE stack sends it as a long write (prepare + execute)
+   */
+  writeProvisioning?(value: Uint8Array): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -122,7 +128,8 @@ export class BleLink implements DeviceLink {
     } catch {
       return null;
     }
-    const s = parseDeviceStatus(text, this.opts.now());
+    const parsed = parseDeviceStatus(text, this.opts.now());
+    const s = parsed ? withKnownIp(this.status.get(), parsed) : null;
     if (s) this.status.set(s);
     // a notification cut at the MTU is not valid JSON: read the whole value instead
     else if (notified) void this.transport.readStatus().then((v) => this.takeStatus(v, false), () => {});
@@ -192,6 +199,20 @@ export class BleLink implements DeviceLink {
       }
     }
     this.phase.set({ kind: 'sent', at: this.opts.now() });
+  }
+
+  /**
+   * TEMPORARY, for testing the Wi-Fi link: writes the Wi-Fi credentials to PROV as one JSON value (wifi-prov.ts). The
+   * device (on HOME) then opens JOIN WI-FI <ssid>? and stores the network only after SIGN; a refusal comes back as the
+   * STATUS note. Throws before writing anything when the credentials break a rule. The password is never logged or kept.
+   */
+  async provisionWifi(c: WifiCredentials): Promise<{ bytes: number }> {
+    if (this.closed) throw new DeviceLinkError('the Bluetooth link is closed');
+    const write = this.transport.writeProvisioning?.bind(this.transport);
+    if (!write) throw new DeviceLinkError('this Bluetooth connection cannot send Wi-Fi settings');
+    const value = encodeProvisioning(c);
+    await write(value);
+    return { bytes: value.length };
   }
 
   close(): void {

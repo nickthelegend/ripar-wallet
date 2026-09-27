@@ -11,7 +11,8 @@ import { useDeviceLink, useObservable } from '../device/DeviceLinkProvider';
 import type { BleLink } from '../device/ble-link';
 import { EmulatorPanel } from '../device/emulator/EmulatorPanel';
 import { type RoundKind, liveGuide, refusalHelp, roundSteps, stepOfScreen } from '../device/guide';
-import { DeviceCancelledError, type DeviceLink, type DeviceStatus, type Verifier, requestAndVerify } from '../device/link';
+import { DeviceCancelledError, DeviceLinkError, type DeviceLink, type DeviceStatus, type Verifier, requestAndVerify } from '../device/link';
+import type { WifiLink } from '../device/wifi-link';
 import { errorText } from '../lib/format';
 import { failed, succeeded } from '../lib/haptics';
 import { store, useStore } from '../lib/store';
@@ -24,7 +25,8 @@ import { Note, Pill, Steps } from './Rows';
 import { Surface } from './Surface';
 import { Label, Mono, Text } from './Text';
 
-type Phase = { kind: 'waiting' } | { kind: 'verified' } | { kind: 'error'; message: string };
+/** linkError: the request or the answer did not get through (link, timeout); otherwise the answer was refused */
+type Phase = { kind: 'waiting' } | { kind: 'verified' } | { kind: 'error'; message: string; linkError: boolean };
 
 export function DeviceRound<T>({
   request,
@@ -42,8 +44,9 @@ export function DeviceRound<T>({
   runKey: string;
   title?: string;
 }) {
-  const { link, qr, bleConn } = useDeviceLink();
+  const { link, qr, bleConn, wifiConn, reconnectWifi } = useDeviceLink();
   const linkChoice = useStore((s) => s.settings.link);
+  const wifiSaved = useStore((s) => s.settings.wifiHost);
   const router = useRouter();
   const { width } = useWindowDimensions();
   const [phase, setPhase] = useState<Phase>({ kind: 'waiting' });
@@ -57,14 +60,18 @@ export function DeviceRound<T>({
 
   const status = useObservable(link?.status ?? null);
   const frames = useObservable(link?.kind === 'qr' ? qr.frames : null);
-  const blePhase = useObservable(link?.kind === 'ble' ? (link as BleLink).phase : null);
+  // Bluetooth and Wi-Fi share the phases: waiting for SCAN, sending part i of n, sent
+  const blePhase = useObservable(link?.kind === 'ble' ? (link as BleLink).phase : link?.kind === 'wifi' ? (link as WifiLink).phase : null);
+  const wifiHealth = useObservable(link?.kind === 'wifi' ? (link as WifiLink).conn : null);
+  const [reconnecting, setReconnecting] = useState(false);
 
   useEffect(() => {
     if (!link) return;
     const ctl = new AbortController();
     setPhase({ kind: 'waiting' });
     setIgnored(null);
-    if (link.kind === 'qr') qr.resetReads();
+    // an answer still on the device's screen counts again for a new round (QR camera, Wi-Fi /tx)
+    (link as DeviceLink & { resetReads?: () => void }).resetReads?.();
     const v = verifierRef.current;
     requestAndVerify(link, request, v, {
       signal: ctl.signal,
@@ -80,7 +87,7 @@ export function DeviceRound<T>({
       (e) => {
         if (e instanceof DeviceCancelledError || ctl.signal.aborted) return;
         failed();
-        setPhase({ kind: 'error', message: errorText(e) });
+        setPhase({ kind: 'error', message: errorText(e), linkError: e instanceof DeviceLinkError });
       },
     );
     return () => {
@@ -106,6 +113,31 @@ export function DeviceRound<T>({
                 : 'Connect to your Ripar over Bluetooth first, or switch back to QR (the air-gapped default).'}
             </Note>
             <Button label="Connect over Bluetooth" icon={<Icon name="bluetooth" size={18} color={palette.primaryForeground} />} onPress={() => router.push('/link')} />
+            <Button label="Use QR instead" variant="secondary" onPress={() => store.setSettings({ link: 'qr' })} />
+          </>
+        ) : linkChoice === 'wifi' ? (
+          <>
+            <Note tone="warn" icon="wifi" title="Wi-Fi link is not connected">
+              {wifiConn.state === 'error'
+                ? `The last attempt failed: ${wifiConn.message}`
+                : wifiConn.state === 'connecting'
+                  ? `Connecting to ${wifiConn.host}...`
+                  : 'Connect to your Ripar over Wi-Fi first (testing only), or switch back to QR (the air-gapped default).'}
+            </Note>
+            {!!wifiSaved && (
+              <Button
+                label={`Reconnect ${wifiSaved}`}
+                loading={reconnecting || wifiConn.state === 'connecting'}
+                icon={<Icon name="wifi" size={18} color={palette.primaryForeground} />}
+                onPress={() => {
+                  setReconnecting(true);
+                  reconnectWifi()
+                    .catch(() => {})
+                    .finally(() => setReconnecting(false));
+                }}
+              />
+            )}
+            <Button label="Wi-Fi setup" variant="secondary" onPress={() => router.push('/wifi')} />
             <Button label="Use QR instead" variant="secondary" onPress={() => store.setSettings({ link: 'qr' })} />
           </>
         ) : (
@@ -141,12 +173,14 @@ export function DeviceRound<T>({
         </View>
       )}
 
-      {link.kind === 'ble' && (
+      {(link.kind === 'ble' || link.kind === 'wifi') && (
         <Surface padded={18} style={{ gap: space.md }}>
           <View style={styles.rowBetween}>
-            <Pill label="Bluetooth fallback" icon="bluetooth" tone="info" />
+            {link.kind === 'ble' ? <Pill label="Bluetooth fallback" icon="bluetooth" tone="info" /> : <Pill label="Wi-Fi · testing" icon="wifi" tone="info" />}
             <Pill label="Not air-gapped" icon="radio" tone="warn" />
           </View>
+          {wifiHealth?.state === 'offline' && <Note tone="bad" title="The Ripar does not answer over Wi-Fi">{wifiHealth.message}</Note>}
+          {wifiHealth?.state === 'locked' && <Note tone="bad" title="Wi-Fi link locked">{wifiHealth.message}</Note>}
           <DeviceStatusLine status={status} />
           {status?.note ? (
             <Text variant="bodySmall" tone="warn">
@@ -188,7 +222,7 @@ export function DeviceRound<T>({
 
       {phase.kind === 'error' && (
         <View style={{ gap: space.md }}>
-          <Note tone="bad" title="The answer was not accepted">
+          <Note tone="bad" title={phase.linkError ? 'The round did not get through' : 'The answer was not accepted'}>
             {`${phase.message}${refusalHelp(phase.message) ? `\n${refusalHelp(phase.message)}` : ''}`}
           </Note>
           <Button label="Try again" variant="secondary" onPress={() => setAttempt((a) => a + 1)} />
@@ -222,6 +256,7 @@ export function DeviceStatusLine({ status }: { status: DeviceStatus | null }) {
       <Pill label={status.screen} tone="signal" icon="device" />
       <Pill label={status.paired ? 'paired' : 'not paired'} tone={status.paired ? 'good' : 'plain'} />
       {status.scan && status.scan.of > 0 ? <Pill label={`${status.scan.got}/${status.scan.of} parts`} tone="info" /> : null}
+      {status.wifi ? <Pill label={`Wi-Fi ${status.wifi}${status.ip ? ` · ${status.ip}` : ''}`} tone={status.wifi === 'off' ? 'plain' : 'warn'} icon="wifi" /> : null}
       {status.fw ? <Mono small>{status.fw}</Mono> : null}
     </View>
   );

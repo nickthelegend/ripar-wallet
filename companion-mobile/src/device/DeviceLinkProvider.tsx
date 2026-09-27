@@ -1,10 +1,14 @@
 // The app-wide device link: the QR link (always there: the air-gapped default), the Bluetooth link once connected,
-// and the emulator link once its WebView booted. Settings.link picks the active one.
+// the emulator link once its WebView booted, and (TEMPORARY, testing) the Wi-Fi link once it answered. Settings.link
+// picks the active one.
 import { type ReactNode, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { errorText } from '../lib/format';
 import { store, useStore } from '../lib/store';
+import { clearWifiCode, loadWifiCode, saveWifiCode } from '../lib/wifi-secret';
 import { BleLink } from './ble-link';
-import type { DeviceLink, Observable } from './link';
+import type { DeviceLink, DeviceStatus, Observable } from './link';
 import { QrLink } from './qr-link';
+import { WifiLink, WifiLinkError, normalizeWifiCode } from './wifi-link';
 
 export type BleConn =
   | { state: 'idle' }
@@ -13,6 +17,13 @@ export type BleConn =
   | { state: 'pairing'; name: string }
   | { state: 'connected'; name: string; id: string }
   | { state: 'error'; message: string };
+
+/** the Wi-Fi link (TEMPORARY, testing); its health while connected is WifiLink.conn */
+export type WifiConnState =
+  | { state: 'idle' }
+  | { state: 'connecting'; host: string }
+  | { state: 'connected'; host: string }
+  | { state: 'error'; message: string; host?: string };
 
 const AUTH = /authenticat|encrypt|bond|insufficient/i;
 
@@ -24,6 +35,14 @@ interface Ctx {
   disconnectBle(): void;
   emulator: DeviceLink | null;
   setEmulator(l: DeviceLink | null): void;
+  wifi: WifiLink | null;
+  wifiConn: WifiConnState;
+  /** checks the address and the code (GET /status) and starts polling; saves the address and (secure store) the code */
+  connectWifi(host: string, code: string): Promise<DeviceStatus>;
+  /** reconnects to the saved address with the saved code (throws when there is none) */
+  reconnectWifi(): Promise<DeviceStatus>;
+  /** stops the Wi-Fi link and forgets its code */
+  disconnectWifi(): void;
   /** the link the settings pick (null: Bluetooth not connected / emulator not booted yet) */
   link: DeviceLink | null;
 }
@@ -37,6 +56,9 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
   const [bleConn, setBleConn] = useState<BleConn>({ state: 'idle' });
   const [emulator, setEmulator] = useState<DeviceLink | null>(null);
   const bleRef = useRef<BleLink | null>(null);
+  const [wifi, setWifi] = useState<WifiLink | null>(null);
+  const [wifiConn, setWifiConn] = useState<WifiConnState>({ state: 'idle' });
+  const wifiRef = useRef<WifiLink | null>(null);
 
   useEffect(() => qr.configure({ frameMs: settings.frameMs, fragLen: settings.fragLen }), [qr, settings.frameMs, settings.fragLen]);
 
@@ -98,8 +120,75 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => () => bleRef.current?.close(), []);
 
-  const link: DeviceLink | null = settings.link === 'qr' ? qr : settings.link === 'ble' ? ble : emulator;
-  const value: Ctx = { qr, ble, bleConn, connectBle, disconnectBle, emulator, setEmulator, link };
+  // ------------------------------------------------------------------ Wi-Fi (TEMPORARY, testing)
+  const dropWifi = useCallback(() => {
+    wifiRef.current?.close();
+    wifiRef.current = null;
+    setWifi(null);
+  }, []);
+
+  const disconnectWifi = useCallback(() => {
+    dropWifi();
+    setWifiConn({ state: 'idle' });
+    void clearWifiCode();
+  }, [dropWifi]);
+
+  const connectWifi = useCallback(
+    async (host: string, code: string): Promise<DeviceStatus> => {
+      dropWifi();
+      setWifiConn({ state: 'connecting', host });
+      let link: WifiLink | null = null;
+      try {
+        link = new WifiLink({ host, code, fragLen: store.get().settings.fragLen });
+        wifiRef.current = link;
+        const s = await link.open();
+        if (wifiRef.current !== link) throw new Error('cancelled');
+        const l = link;
+        l.conn.subscribe((c) => {
+          // a wrong code mid-session: the device turned Wi-Fi off and on (new code); polling has stopped
+          if (c.state === 'unauthorized' && wifiRef.current === l) {
+            dropWifi();
+            setWifiConn({ state: 'error', message: c.message, host: l.host });
+            void clearWifiCode();
+          }
+        });
+        setWifi(l);
+        setWifiConn({ state: 'connected', host: l.host });
+        store.setSettings({ wifiHost: l.host });
+        await saveWifiCode(normalizeWifiCode(code)!);
+        return s;
+      } catch (e) {
+        // a newer connectWifi() superseded this one, or disconnectWifi() closed it: leave the state alone
+        const superseded = (!!wifiRef.current && wifiRef.current !== link) || (e instanceof WifiLinkError && e.kind === 'closed');
+        if (link && wifiRef.current === link) dropWifi();
+        else link?.close();
+        if (!superseded) {
+          setWifiConn({ state: 'error', message: errorText(e), host });
+          if (e instanceof WifiLinkError && e.kind === 'unauthorized') void clearWifiCode();
+        }
+        throw e;
+      }
+    },
+    [dropWifi],
+  );
+
+  const reconnectWifi = useCallback(async (): Promise<DeviceStatus> => {
+    const host = store.get().settings.wifiHost;
+    const code = await loadWifiCode();
+    if (!host || !code) throw new Error('No saved Wi-Fi code: set up the Wi-Fi link again (Device > Wi-Fi link setup).');
+    return connectWifi(host, code);
+  }, [connectWifi]);
+
+  // the Wi-Fi link was the chosen link when the app last ran: try the saved address and code once
+  useEffect(() => {
+    const s = store.get().settings;
+    if (s.link === 'wifi' && s.wifiHost) void reconnectWifi().catch(() => {});
+    return () => wifiRef.current?.close();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const link: DeviceLink | null = settings.link === 'qr' ? qr : settings.link === 'ble' ? ble : settings.link === 'wifi' ? wifi : emulator;
+  const value: Ctx = { qr, ble, bleConn, connectBle, disconnectBle, emulator, setEmulator, wifi, wifiConn, connectWifi, reconnectWifi, disconnectWifi, link };
   return <LinkCtx.Provider value={value}>{children}</LinkCtx.Provider>;
 }
 

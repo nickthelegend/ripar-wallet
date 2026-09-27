@@ -1,5 +1,6 @@
 export { Address } from './Address';
 export { AmbientBackground } from './AmbientBackground';
+export { BleConnect, WebPreviewNote } from './BleConnect';
 export { Button } from './Button';
 export { CameraScanner } from './CameraScanner';
 export { DeviceRound, DeviceStatusLine } from './DeviceRound';

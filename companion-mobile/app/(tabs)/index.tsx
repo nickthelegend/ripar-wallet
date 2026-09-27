@@ -18,7 +18,7 @@ import {
 } from '../../src/components';
 import { iconOf } from '../../src/components/feedIcon';
 import { useDeviceLink, useObservable } from '../../src/device/DeviceLinkProvider';
-import { RADIO_ON_TEXT } from '../../src/device/guide';
+import { RADIO_ON_TEXT, WIFI_ON_TEXT, linkMeta } from '../../src/device/guide';
 import { refreshChain, useChain } from '../../src/lib/chainState';
 import { amountLabel, insightsOf, refreshFeed, useFeed } from '../../src/lib/feed';
 import { amountText } from '../../src/lib/format';
@@ -49,7 +49,7 @@ export default function Home() {
   const deploymentsJson = useStore((s) => s.settings.deploymentsJson);
   const chain = useChain();
   const feed = useFeed();
-  const { link, bleConn } = useDeviceLink();
+  const { link, bleConn, wifiConn } = useDeviceLink();
   const status = useObservable(link?.status ?? null);
 
   useEffect(() => {
@@ -70,7 +70,9 @@ export default function Home() {
   ];
   const pending = setup.filter((x) => !x.done);
 
-  const linkLabel = linkChoice === 'qr' ? 'QR · air-gapped' : linkChoice === 'ble' ? (bleConn.state === 'connected' ? 'Bluetooth' : 'Bluetooth · offline') : 'Emulator';
+  const meta = linkMeta(linkChoice);
+  const linkLabel =
+    linkChoice === 'ble' ? (bleConn.state === 'connected' ? 'Bluetooth' : 'Bluetooth · offline') : linkChoice === 'wifi' ? (wifiConn.state === 'connected' ? 'Wi-Fi · testing' : 'Wi-Fi · offline') : meta.short;
 
   const onSend = () => {
     if (!device || !personal) router.push(device ? '/personal' : '/pair');
@@ -83,9 +85,9 @@ export default function Home() {
       title="Your vault"
       action={
         <Pill
-          label={device ? (linkChoice === 'ble' ? 'Not air-gapped' : 'Air-gapped') : 'No device'}
-          tone={!device ? 'plain' : linkChoice === 'ble' ? 'warn' : 'good'}
-          icon={linkChoice === 'ble' ? 'radio' : 'shield'}
+          label={device ? (meta.radio ? 'Not air-gapped' : 'Air-gapped') : 'No device'}
+          tone={!device ? 'plain' : meta.radio ? 'warn' : 'good'}
+          icon={meta.radio ? 'radio' : 'shield'}
           onPress={() => router.push('/(tabs)/device')}
         />
       }
@@ -104,7 +106,7 @@ export default function Home() {
               mono={!!device}
               onPress={device ? () => router.push('/receive') : undefined}
             />
-            <Pill label={linkLabel} icon={linkChoice === 'ble' ? 'bluetooth' : linkChoice === 'qr' ? 'qr' : 'device'} onDark />
+            <Pill label={linkLabel} icon={meta.icon} onDark />
           </View>
           <Label tone="onSignal" style={{ marginTop: space.xl, opacity: 0.8 }}>
             Vault balance
@@ -145,6 +147,19 @@ export default function Home() {
             </Text>
             <Text variant="bodySmall" tone="soft">
               Bluetooth fallback is selected: the Ripar's radio is on while BLE LINK runs. Switch back to QR as soon as the camera reads again.
+            </Text>
+          </View>
+        </Pressable>
+      )}
+      {linkChoice === 'wifi' && (
+        <Pressable onPress={() => router.push('/link')} style={[styles.radioWarn]} accessibilityRole="button" accessibilityLabel={`Not air-gapped. ${WIFI_ON_TEXT}`}>
+          <Icon name="wifi" size={18} color={palette.warn} />
+          <View style={{ flex: 1, gap: 2 }}>
+            <Text variant="label" tone="warn">
+              Not air-gapped · Wi-Fi on · testing
+            </Text>
+            <Text variant="bodySmall" tone="soft">
+              The Wi-Fi link is selected: the Ripar's Wi-Fi is on. For testing only: turn it off on the device and switch back to QR when you are done.
             </Text>
           </View>
         </Pressable>

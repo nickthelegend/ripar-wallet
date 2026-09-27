@@ -7,7 +7,8 @@ import { useSyncExternalStore } from 'react';
 import { type RiparDeployment, parseDeployment } from '@ripar/protocol';
 import { type NetworkId, NETWORKS } from './networks';
 
-export type LinkChoice = 'qr' | 'ble' | 'emulator';
+/** 'wifi' is TEMPORARY, for testing: the device's Wi-Fi is on (not air-gapped) while it is used */
+export type LinkChoice = 'qr' | 'ble' | 'emulator' | 'wifi';
 
 export interface Settings {
   network: NetworkId;
@@ -29,6 +30,13 @@ export interface Settings {
   link: LinkChoice;
   /** the Ripar the app connected to over Bluetooth last (id = MAC on Android) */
   bleDevice: { id: string; name: string } | null;
+  /**
+   * the Wi-Fi link's last working address (TEMPORARY, testing), e.g. "192.168.1.23". The 8-digit code is a session
+   * secret: it lives in expo-secure-store (lib/wifi-secret.ts), never here.
+   */
+  wifiHost: string | null;
+  /** the Wi-Fi network last sent to the Ripar (the name only: no password is kept anywhere) */
+  wifiSsid: string | null;
 }
 
 /** the device keys as the keys-only pairing QR shows them (nothing signed, nothing pinned) */
@@ -176,6 +184,8 @@ export const DEFAULT_SETTINGS: Settings = {
   logLookback: 3000,
   link: 'qr',
   bleDevice: null,
+  wifiHost: null,
+  wifiSsid: null,
 };
 
 const INITIAL: AppState = {

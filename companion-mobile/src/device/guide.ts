@@ -32,7 +32,9 @@ export function roundSteps(kind: RoundKind, link: LinkKind): string[] {
       ? "Hold the Ripar's camera over the QR on this phone until the review opens."
       : link === 'ble'
         ? 'This phone sends the request over Bluetooth; the review opens by itself.'
-        : 'The emulator receives the request; the review opens by itself.';
+        : link === 'wifi'
+          ? 'This phone sends the request over Wi-Fi; the review opens by itself.'
+          : 'The emulator receives the request; the review opens by itself.';
   return [
     'On the Ripar Home screen, press SIGN once: it starts scanning.',
     feed,
@@ -144,3 +146,42 @@ export const BLE_SETUP_STEPS: readonly string[] = [
 /** what the radio-on state means, said the way the device says it */
 export const RADIO_ON_TEXT =
   'NOT AIR-GAPPED: the Ripar radio is on while BLE LINK runs (RADIO ON badge on every screen). It turns off with BLE OFF in the device menu, after 5 min without traffic, on PANIC and at power-off.';
+
+// ------------------------------------------------------------------------------------------------ Wi-Fi (TEMPORARY)
+/** what the Wi-Fi link means, said plainly (TEMPORARY: for testing) */
+export const WIFI_ON_TEXT =
+  "Turns the device's Wi-Fi on - Ripar is NOT air-gapped while it is on. For testing. It stays on (also after a restart) until WI-FI OFF, FORGET WI-FI or PANIC on the device. QR stays the default and the recommended link.";
+
+/** from sending the network over Bluetooth to a working Wi-Fi link: what happens on the device (firmware flows.cpp) */
+export function wifiDeviceSteps(ssid: string | null): string[] {
+  return [
+    `The Ripar opens JOIN WI-FI ${ssid ? ssid : '<network>'}? Read it (SIGN = next page) and press SIGN on the last page to store the network. No pulse; hold 2 s to refuse. It says WI-FI SAVED.`,
+    'Turn Wi-Fi on: on Home hold SIGN 2 s and let go (pairing QR), hold 2 s again (DEVICE ACTIONS), press SIGN until WI-FI ON, hold 2 s. Read WI-FI ON: TURN WI-FI ON? and press SIGN on the last page.',
+    'Home now says NOT AIR-GAPPED and shows the address and CODE 1234 5678 (a new code after every restart of the Ripar).',
+    'Here: type the code (the address is filled in when the device reports it) and test the link.',
+  ];
+}
+
+export interface LinkMeta {
+  title: string;
+  /** short label for pills */
+  short: string;
+  icon: 'qr' | 'bluetooth' | 'device' | 'wifi';
+  tone: 'signal' | 'warn' | 'info';
+  /** the device has a radio on while this link is used */
+  radio: boolean;
+}
+
+/** how each link is named and marked across the app */
+export function linkMeta(choice: 'qr' | 'ble' | 'emulator' | 'wifi'): LinkMeta {
+  switch (choice) {
+    case 'qr':
+      return { title: 'QR codes (air-gapped)', short: 'QR · air-gapped', icon: 'qr', tone: 'signal', radio: false };
+    case 'ble':
+      return { title: 'Bluetooth fallback', short: 'Bluetooth', icon: 'bluetooth', tone: 'warn', radio: true };
+    case 'wifi':
+      return { title: 'Wi-Fi (testing)', short: 'Wi-Fi · testing', icon: 'wifi', tone: 'warn', radio: true };
+    default:
+      return { title: 'Emulator', short: 'Emulator', icon: 'device', tone: 'info', radio: false };
+  }
+}
