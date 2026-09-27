@@ -115,19 +115,24 @@ const lgfx::IFont* const F_MONO = &lgfx::fonts::FreeMonoBold12pt7b;
 const lgfx::IFont* const F_SMALL = &lgfx::fonts::Font2;
 const lgfx::IFont* const F_TINY = &lgfx::fonts::Font0;
 
-// RADIO ON badge (RIPAR_BLE builds, include/device.h ui_set_radio_badge): drawn by flush() on top of EVERY screen,
-// so no screen can be shown without it while the Bluetooth controller is alive.
-bool g_radio = false;
+// Radio badge (include/device.h ui_set_radio_badge / ui_set_wifi_badge): drawn by flush() on top of EVERY screen, so
+// no screen can be shown without it while the Bluetooth controller or the Wi-Fi driver is alive.
+bool g_radio = false;  // Bluetooth (RIPAR_BLE)
+bool g_wifi = false;   // Wi-Fi (RIPAR_WIFI test link)
 constexpr int kBadgeW = 78, kBadgeH = 18;
 
+bool badge_on() { return g_radio || g_wifi; }
+
 void radio_badge() {
-  if (!g_radio) return;
+  if (!badge_on()) return;
   const int x = W - kBadgeW;
+  const char* text = g_radio && g_wifi ? "BLE+WIFI" : g_wifi ? "WIFI ON" : "RADIO ON";
   g->fillRect(x, 0, kBadgeW, kBadgeH, C_BAD);
   g->setFont(F_SMALL);
+  if (g->textWidth(text) > kBadgeW - 4) g->setFont(F_TINY);
   g->setTextDatum(lgfx::textdatum_t::middle_center);
   g->setTextColor(C_WHITE);
-  g->drawString("RADIO ON", x + kBadgeW / 2, kBadgeH / 2 + 1);
+  g->drawString(text, x + kBadgeW / 2, kBadgeH / 2 + 1);
 }
 
 void flush() {
@@ -218,7 +223,7 @@ void header(const char* title, uint16_t bg) {
   constexpr int kH = 28;
   g->fillRect(0, 0, W, kH, bg);
   const std::string t = sanitize(title ? title : "");
-  fit_font(t, W - 16 - (g_radio ? kBadgeW : 0), {F_BOLD, F_SMALL, F_TINY});  // room for the RADIO ON badge
+  fit_font(t, W - 16 - (badge_on() ? kBadgeW : 0), {F_BOLD, F_SMALL, F_TINY});  // room for the radio badge
   g->setTextDatum(lgfx::textdatum_t::middle_left);
   g->setTextColor(readable_on(bg));
   g->drawString(t.c_str(), 8, kH / 2);
@@ -448,12 +453,12 @@ void ui_boot(const char* status) {
   flush();
 }
 
-void ui_home(const std::string& k1short, int battery, bool paired) {
+void ui_home(const std::string& k1short, int battery, bool paired, const std::string& linkLine) {
   if (!g_inited) ui_init();
   g->fillScreen(C_BG);
   // status bar
-  if (g_radio)
-    draw_text("NOT AIR-GAPPED", 8, 5, C_BAD, F_SMALL);  // Bluetooth is on (RIPAR_BLE): never claim air-gapped
+  if (badge_on())
+    draw_text("NOT AIR-GAPPED", 8, 5, C_BAD, F_SMALL);  // Bluetooth or Wi-Fi is on: never claim air-gapped
   else
     draw_text("AIR-GAPPED", 8, 5, C_ACCENT, F_SMALL);
   char pct[8];
@@ -462,7 +467,7 @@ void ui_home(const std::string& k1short, int battery, bool paired) {
   } else {
     std::snprintf(pct, sizeof pct, "--%%");
   }
-  const int shift = g_radio ? kBadgeW + 4 : 0;  // battery left of the RADIO ON badge
+  const int shift = badge_on() ? kBadgeW + 4 : 0;  // battery left of the radio badge
   battery_icon(W - 34 - shift, 6, battery);
   draw_text(pct, W - 40 - shift, 5, C_DIM, F_SMALL, lgfx::textdatum_t::top_right);
   g->drawFastHLine(0, 26, W, C_FAINT);
@@ -480,6 +485,13 @@ void ui_home(const std::string& k1short, int battery, bool paired) {
   const int bw = text_w(badge) + 20;
   g->drawRoundRect(W / 2 - bw / 2, 160, bw, 24, 6, bc);
   draw_text(badge, W / 2, 172, bc, F_BOLD, lgfx::textdatum_t::middle_center);
+  if (!linkLine.empty()) {  // RIPAR_WIFI: e.g. "192.168.1.23  CODE 1234 5678", between the badge and the hints
+    const std::string t = sanitize(linkLine);
+    fit_font(t, W - 12, {F_BOLD, F_SMALL, F_TINY});
+    g->setTextDatum(lgfx::textdatum_t::middle_center);
+    g->setTextColor(C_WARN);
+    g->drawString(t.c_str(), W / 2, 197);
+  }
 
   // hints (flows.cpp / fsm.h: Short = scan, hold 2 s -> HomeHold: release = pairing QR, keep holding to 5 s = PANIC)
   g->fillRect(0, Hh - 30, W, 30, C_FOOT);
@@ -514,7 +526,7 @@ void ui_scan(const uint8_t* gray, int w, int h, float progress, const char* hint
   if (hint && *hint) {
     g->fillRect(0, 0, W, 22, C_BLACK);
     const std::string t = sanitize(hint);
-    const int hw = W - (g_radio ? kBadgeW : 0);  // left of the RADIO ON badge
+    const int hw = W - (badge_on() ? kBadgeW : 0);  // left of the radio badge
     fit_font(t, hw - 8, {F_BODY, F_SMALL, F_TINY});
     g->setTextDatum(lgfx::textdatum_t::middle_center);
     g->setTextColor(C_TEXT);
@@ -700,7 +712,7 @@ void ui_qr(const std::string& textIn, const char* title, const char* footerText)
     const int trow = pw >= 110 ? 20 : 16, frow = pw >= 110 ? 20 : 10;
     g->setFont(tf);
     const std::vector<std::string> tl = wrap(title ? title : "", pw);
-    int y = g_radio ? kBadgeH + 6 : 8;  // below the RADIO ON badge
+    int y = badge_on() ? kBadgeH + 6 : 8;  // below the radio badge
     for (size_t i = 0; i < tl.size() && y + trow <= Hh / 2; i++, y += trow) draw_text(tl[i], px, y, C_ACCENT, tf);
     g->setFont(ff);
     const std::vector<std::string> fl = wrap(footerText ? footerText : "", pw);
@@ -734,6 +746,8 @@ void ui_message(const char* title, const std::string& body, uint16_t color) {
 
 void ui_set_radio_badge(bool on) { g_radio = on; }
 bool ui_radio_badge() { return g_radio; }
+void ui_set_wifi_badge(bool on) { g_wifi = on; }
+bool ui_wifi_badge() { return g_wifi; }
 
 void ui_ble_pair(const char* name, const char* code, const std::string& body, const char* footerText) {
   if (!g_inited) ui_init();

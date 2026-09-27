@@ -6,7 +6,9 @@ namespace ripar {
 
 const uint32_t Fsm::DEFAULT_TIMEOUT_MS;
 
-bool job_needs_pulse(Job j) { return j != Job::None && j != Job::Deny; }
+bool job_is_setting(Job j) { return j == Job::WifiJoin || j == Job::WifiOn; }
+
+bool job_needs_pulse(Job j) { return j != Job::None && j != Job::Deny && !job_is_setting(j); }
 
 int review_clamp_first(int first, int visible, int total) {
   if (visible < 1) visible = 1;
@@ -133,6 +135,7 @@ Act Fsm::dispatch(Key k, const FsmIn& in, uint32_t now) {
           return Act::None;
         }
         if (job_ == Job::Deny) return Act::SignNoPulse;
+        if (job_is_setting(job_)) return Act::Confirm;  // a device setting: nothing is signed
         return Act::Ignored;
       }
       if (k == Key::Long2s) {

@@ -34,22 +34,27 @@ std::string json_str(const std::string& s) {
   return o;
 }
 
-std::string build_status(const StatusInfo& s, const std::string& k1, const std::string& fw, const std::string& note) {
+std::string build_status(const StatusInfo& s, const std::string& note, bool withIp) {
   std::string j = "{\"v\":1,\"screen\":\"";
   j += screen_code(s.screen);
   j += "\",\"paired\":";
   j += s.paired ? "true" : "false";
-  j += ",\"k1\":\"" + json_str(k1) + "\"";
+  j += ",\"k1\":\"" + json_str(s.k1) + "\"";
   if (s.screen == Screen::Scan) {
     char b[48];
     std::snprintf(b, sizeof b, ",\"scan\":{\"got\":%u,\"of\":%u}", s.got, s.of);
     j += b;
   }
-  j += ",\"radio\":\"on\",\"fw\":\"" + json_str(fw) + "\"";
+  j += s.radio ? ",\"radio\":\"on\"" : ",\"radio\":\"off\"";
+  if (!s.wifi.empty()) j += ",\"wifi\":\"" + json_str(s.wifi) + "\"";
+  if (withIp && !s.ip.empty()) j += ",\"ip\":\"" + json_str(s.ip) + "\"";
+  j += ",\"fw\":\"" + json_str(s.fw) + "\"";
   if (!note.empty()) j += ",\"note\":\"" + json_str(note) + "\"";
   j += "}";
   return j;
 }
+
+std::string cap(const std::string& s, size_t n) { return s.size() > n ? s.substr(0, n) : s; }
 
 }  // namespace
 
@@ -171,25 +176,41 @@ const char* screen_code(Screen s) {
   return "MESSAGE";
 }
 
-std::string status_json(const StatusInfo& s) {
-  std::string k1 = s.k1.size() > 24 ? s.k1.substr(0, 24) : s.k1;
-  std::string fw = s.fw.size() > 16 ? s.fw.substr(0, 16) : s.fw;
-  std::string j = build_status(s, k1, fw, std::string());
-  if (j.size() > kMaxStatus) return j;  // cannot happen with the caps above (max ~150 bytes)
-  if (!s.note.empty()) {
-    // ,"note":"" costs 10 bytes; escaping can double a character, so cut until it fits
-    const size_t room = kMaxStatus - j.size();
-    if (room > 10) {
-      std::string note = s.note.substr(0, room - 10);
-      std::string withNote = build_status(s, k1, fw, note);
-      while (withNote.size() > kMaxStatus && !note.empty()) {
-        note.pop_back();
-        withNote = build_status(s, k1, fw, note);
-      }
-      if (!note.empty()) j = withNote;
-    }
+std::string status_json(const StatusInfo& in) {
+  StatusInfo s = in;
+  s.k1 = cap(in.k1, 24);
+  s.fw = cap(in.fw, 16);
+  s.wifi = cap(in.wifi, 10);
+  s.ip = cap(in.ip, 15);
+  s.note.clear();
+  // without a note: at most ~186 bytes with every key at its cap (scan counts of 10 digits, ip 15, "connecting");
+  // "ip" is optional and goes first. Without "ip" the caps keep it below ~165 bytes.
+  std::string noIp = build_status(s, std::string(), false);
+  while (noIp.size() > kMaxStatus && (!s.k1.empty() || !s.fw.empty() || !s.wifi.empty())) {
+    // only reachable with escaped (device-made, so never expected) characters in k1 / fw / wifi
+    std::string& cut = !s.k1.empty() ? s.k1 : !s.fw.empty() ? s.fw : s.wifi;
+    cut.pop_back();
+    noIp = build_status(s, std::string(), false);
   }
-  return j;
+  const std::string withIp = build_status(s, std::string(), true);
+  const std::string& base = withIp.size() <= kMaxStatus ? withIp : noIp;
+  if (in.note.empty()) return base;
+  std::string j = build_status(s, in.note, true);
+  if (j.size() <= kMaxStatus) return j;
+  // the note matters more than the address (it explains the last line; the address comes back next time)
+  j = build_status(s, in.note, false);
+  if (j.size() <= kMaxStatus) return j;
+  // ,"note":"" costs 10 bytes; escaping can double a character, so cut until it fits
+  if (noIp.size() + 10 < kMaxStatus) {
+    std::string note = in.note.substr(0, kMaxStatus - 10 - noIp.size());
+    std::string withNote = build_status(s, note, false);
+    while (withNote.size() > kMaxStatus && !note.empty()) {
+      note.pop_back();
+      withNote = build_status(s, note, false);
+    }
+    if (!note.empty()) return withNote;
+  }
+  return base;
 }
 
 // ---------------------------------------------------------------------------------------------- auth

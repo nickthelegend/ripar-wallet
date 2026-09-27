@@ -42,7 +42,7 @@ constexpr int kChunk = 16;  // samples per I2C burst (96 bytes < 128-byte Wire b
 
 bool g_present = false;
 bool g_running = false;
-PulseDetector g_det;
+PulseDetector g_det(device_pulse_config());
 PulseResult g_out;
 uint32_t g_clock = 0;    // timestamp of the last sample fed, ms since pulse_start
 uint32_t g_startMs = 0;
@@ -280,7 +280,7 @@ bool pulse_led_challenge() {
   }
   if (!ok || !restored) return false;
 
-  const PulseConfig cfg = PulseConfig();
+  const PulseConfig cfg = device_pulse_config();
   const uint32_t kSat = 250000;  // near the 18-bit ceiling the DC cannot follow a change
   if (baseIr < cfg.fingerIrMin || baseIr > kSat) return false;
   if (baseRed < 10000 || baseRed > kSat) return false;

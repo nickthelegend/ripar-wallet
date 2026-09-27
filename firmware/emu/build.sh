@@ -46,6 +46,7 @@ EXPORTS="_emu_new,_emu_delete,_emu_last_error,_emu_state,_emu_key,_emu_tick,_emu
 
 FLAGS=(
   -std=c++14 -O2 -Wall
+  -DRIPAR_PULSE_STRICT=1  # the emulator runs the strict liveness gate (its synthetic PPG satisfies it)
   -I "$FW/include" -I "$FW/test/host" -I "$HERE/src" -I "$GEN"
   -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createRiparEmuCore
   -sENVIRONMENT=web,node

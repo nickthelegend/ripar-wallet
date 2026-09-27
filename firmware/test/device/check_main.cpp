@@ -156,6 +156,24 @@ void loop() {
       break;
     }
     case kPulse: {
+#ifdef RIPAR_CHECK_RAW
+      // raw recording mode (-DRIPAR_CHECK_RAW=1): stream every FIFO sample as "raw,<n>,<ir>,<red>" for offline
+      // tuning with tools/pulse_replay (the detector is not fed in this mode)
+      {
+        static uint32_t n = 0;
+        uint32_t ir[32], red[32];
+        const int k = pulse_raw_samples(ir, red, 32);
+        for (int i = 0; i < k; i++) Serial.printf("raw,%lu,%lu,%lu
+", (unsigned long)n++, (unsigned long)ir[i], (unsigned long)red[i]);
+        if (now - g_lastDraw >= 500) {
+          PulseResult shown;
+          shown.finger = k > 0 && ir[k - 1] > PulseConfig().fingerIrMin;
+          ui_pulse(shown, "RAW RECORDING");
+          g_lastDraw = now;
+        }
+        break;
+      }
+#endif
       const PulseResult& p = pulse_update();
       if (p.beatNow) buzz_beat();
       if (now - g_lastDraw >= 50) {

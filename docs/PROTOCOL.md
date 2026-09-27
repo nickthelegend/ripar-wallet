@@ -1,6 +1,6 @@
 # Ripar Wallet: device protocol v1
 
-This is the contract between the **air-gapped device firmware**, the **companion app** and the **smart contracts**. Everything travels as QR codes. The radio is off: Wi-Fi is never initialised, and Bluetooth only when the user turns on the optional BLE fallback courier on the device (§1.1; the `ripar-airgap` build has no radio code at all).
+This is the contract between the **air-gapped device firmware**, the **companion app** and the **smart contracts**. Everything travels as QR codes. The radio is off: Bluetooth only runs when the user turns on the optional BLE fallback courier on the device (§1.1), and Wi-Fi only in the `ripar` test build, as a temporary test courier the user turns on in the device menu (§1.2). The `ripar-airgap` build has no radio code at all.
 
 The companion app is **untrusted**. It only carries data. The device parses every request strictly, checks it against the contracts it **pinned at pairing** (§6), shows every field that is signed, and rebuilds every digest itself.
 
@@ -18,7 +18,7 @@ This document describes **firmware v1.2** (contracts v1.2). The wire format is u
 
 Every request map carries key `1` = request id. The id is a byte string of 16 bytes, which may be a UUID (CBOR tag 37). The response echoes it back as a plain byte string.
 
-### 1.1 Optional courier: Bluetooth LE (firmware `env:ripar`)
+### 1.1 Optional courier: Bluetooth LE (firmware `env:ripar`, `env:ripar-ble`)
 
 QR stays the primary, air-gapped path. When the camera cannot read the companion's QR codes, the user can turn on a Bluetooth LE link **on the device** (device menu → BLE LINK → review → pulse + SIGN). The link is only a second courier for the **same UR text**, specified in [BLE_LINK.md](BLE_LINK.md):
 
@@ -26,6 +26,15 @@ QR stays the primary, air-gapped path. When the camera cannot read the companion
 - **Device → companion:** the UR of the QR on screen + `\n`, as TX notifications of at most MTU - 3 bytes.
 - **STATUS:** a small JSON (screen, scan progress, short K1, firmware id) so the companion can say what the device expects next.
 - Security: LE Secure Connections with numeric comparison confirmed on the device, one bonded phone, no GATT access without the authenticated link. The radio is dead until woken on the device, shows **RADIO ON** on every screen while alive, and goes off after 5 min without link traffic, on BLE OFF, PANIC and power-off.
+
+### 1.2 Optional courier: Wi-Fi (TEMPORARY TEST FEATURE, firmware `env:ripar` only)
+
+For testing only, the default test build `env:ripar` (`RIPAR_WIFI=1`) can also carry the **same UR text over the local network**; it will be removed, and `env:ripar-ble` / `env:ripar-airgap` contain no Wi-Fi code at all. Specified in [WIFI_LINK.md](WIFI_LINK.md):
+
+- **Setup:** the bonded phone sends the network (`{"v":1,"ssid":...,"pass":...}`) over the Bluetooth PROV characteristic; the device stores it only after the user confirms the JOIN WI-FI review with SIGN, and Wi-Fi only runs after **WI-FI ON** in the device menu (persisted across restarts until WI-FI OFF, FORGET WI-FI or PANIC). While it is on, every screen shows **WIFI ON** and Home says NOT AIR-GAPPED.
+- **Companion → device:** `POST http://ripar-xxxx.local/rx` with one UR part per line (the text a QR would carry), fed into the same intake as a camera-decoded QR, only while the device is on SCAN (otherwise `409`).
+- **Device → companion:** `GET /tx` returns the UR of the QR on screen (`204` when none); `GET /status` returns the same STATUS JSON as Bluetooth (plus `wifi` and `ip`).
+- Security: every request carries `X-Ripar-Code`, the per-boot 8-digit code shown only on the device screen (constant-time check, lock-out after wrong codes). Plain HTTP: the local network can read the traffic. Parsing, review, policy, pulse and SIGN are identical.
 
 Nothing in the message formats below depends on the courier.
 

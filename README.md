@@ -65,6 +65,7 @@ A phone wallet for your Ripar, in signal orange on graphite.
 - **Send:** a Polaris-style keypad sheet, then confirm, then the device (review, thumb, SIGN), then *Done.* Every payment from the vault needs the device. The phone's key only submits what the device co-signed: a "personal mandate" with AUTO caps 0.
 - **Device link helpers** (`src/device/link.ts`): `sendToDevice()`, `awaitDeviceResponse()` and `requestAndVerify()` work the same over three links:
   - **QR** (default, air-gapped): animated QR on the phone, camera reads the device's answer.
+  - **Wi-Fi test link** (`docs/WIFI_LINK.md`, temporary): the phone gives the device your Wi-Fi network over Bluetooth, and you confirm on the device. The app then talks to it over the local network, using an 8-digit code shown on its screen. It is a testing aid only: it is not air-gapped and will be removed for the pitch build.
   - **Bluetooth fallback** (`docs/BLE_LINK.md`): for when the device camera cannot read. The device's radio stays **off** until you wake it on the device (menu → BLE LINK → pulse + SIGN). A **RADIO ON** badge shows while it is on, and it turns off after 5 min idle, on PANIC and at power-off. Pairing uses a 6-digit code confirmed with SIGN.
   - **Emulator:** the real firmware in a WebView, demo keys only.
 
@@ -80,8 +81,11 @@ adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 | Build (`firmware/`) | What it is |
 |---|---|
 | `pio run -e chk_device -t upload` | **Hardware check first:** display, SIGN key, buzzer, pulse sensor, camera and key self-test, radio-free. Serial log at 115200. SIGN press = next screen (home, scan, pulse, QR, review, message); hold 2 s = action (scan: restart camera; pulse: LED challenge); hold 5 s = error buzz. |
-| `pio run -e ripar -t upload` | The wallet: QR + optional Bluetooth fallback (radio off until woken on the device). |
-| `pio run -e ripar-airgap -t upload` | The wallet with no radio code at all: the build that proves the air-gapped claim. |
+| `pio run -e ripar -t upload` | **Testing build:** the wallet with QR, plus a Bluetooth fallback and a **temporary Wi-Fi test link** (`docs/WIFI_LINK.md`). Both radios stay off until you enable them on the device, and the screen shows the badge while one is on. |
+| `pio run -e ripar-ble -t upload` | The wallet with QR and the Bluetooth fallback only. |
+| `pio run -e ripar-airgap -t upload` | The wallet with no radio code at all: the build that proves the air-gapped claim. **Use it for the pitch and the demo video.** |
+
+**Pulse sensor:** the MAX30102's SDA goes to **GPIO48** and SCL to **GPIO47** (the VIN/SDA/SCL/GND row of the sensor, not GND/RD/IRD/INT). For a pulse-only bench test, flash `PLATFORMIO_BUILD_FLAGS="-DRIPAR_CHECK_START_PULSE=1" pio run -e chk_device -t upload`: it starts on the pulse screen and logs bpm, beats and pass status to serial. The device uses the *standard* pulse gate; see `docs/FIRMWARE.md`, "Pulse gate: standard and strict".
 
 Plug in the **board's own USB-C** with a **data** cable, never the TP4056's port and never both. If Windows shows *Unknown USB device* or no COM port appears, enter download mode: hold **BOOT**, tap **RST**, release BOOT, then upload again and tap RST to start. `pio device monitor -b 115200` shows the log.
 

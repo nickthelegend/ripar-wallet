@@ -40,6 +40,16 @@
 // camera-decoded QR part, and only while SCAN is on screen; the response QR on screen is also sent to the phone. The
 // radio goes off on BLE OFF, PANIC, after 5 min without link traffic, and with the power; while it is alive every
 // screen shows RADIO ON (ui.cpp). env:ripar-airgap (RIPAR_BLE=0) builds none of this.
+//
+// RIPAR_WIFI (env:ripar only; docs/WIFI_LINK.md) - a TEMPORARY TEST FEATURE, removed by building env:ripar-ble or
+// env:ripar-airgap: the paired phone sends a Wi-Fi network over the BLE PROV characteristic (accepted only while Home
+// or the pairing screen is shown); it is only stored after the JOIN WI-FI review is confirmed with SIGN
+// (Job::WifiJoin, no pulse; hold 2 s rejects). Wi-Fi only starts with a stored network AND WI-FI ON chosen in the
+// menu (Job::WifiOn, also SIGN without pulse; the choice is persisted and then also starts Wi-Fi at boot). While the
+// Wi-Fi driver is alive, every screen shows WIFI ON (or BLE+WIFI), Home says NOT AIR-GAPPED and shows the IP address
+// and the per-boot 8-digit link code. The HTTP link (wifi_link.cpp) feeds UR lines into intake_part() exactly like the
+// BLE RX lines, only on SCAN, and serves the same STATUS JSON and the QR on screen. WI-FI OFF, FORGET WI-FI and PANIC
+// turn it off (and clear the persisted choice).
 #include <Arduino.h>
 
 #include <cstdio>
@@ -63,6 +73,10 @@
 #include "ble_link.h"
 #include "ble_proto.h"
 #endif
+#if RIPAR_WIFI
+#include "wifi_link.h"
+#include "wifi_proto.h"
+#endif
 
 namespace ripar {
 namespace {
@@ -75,7 +89,9 @@ constexpr uint32_t kHomeDrawMs = 2000;  // battery refresh on the home screen
 #define RIPAR_LED_CHALLENGE 0  // 1 = also require the MAX30102 LED-drive liveness challenge before arming (unverified)
 #endif
 
-#if RIPAR_BLE
+#if RIPAR_WIFI
+Fsm g_fsm(Fsm::DEFAULT_TIMEOUT_MS, MENU_ITEMS_WIFI);  // + BLE items, WI-FI ON / WI-FI OFF, FORGET WI-FI before BACK
+#elif RIPAR_BLE
 Fsm g_fsm(Fsm::DEFAULT_TIMEOUT_MS, MENU_ITEMS_BLE);  // + BLE LINK / BLE OFF, FORGET PHONE before BACK
 #else
 Fsm g_fsm;
@@ -120,11 +136,16 @@ uint8_t g_salt[16], g_ev[12];
 #if RIPAR_BLE
 // ---- Bluetooth LE fallback courier
 std::string g_bleName;           // "RIPAR-XXXX": shown on the BLE LINK review, advertised once the radio is on
-std::string g_bleNote;           // STATUS "note" (e.g. why a phone line was ignored); cleared on every screen change
+std::string g_linkNote;          // STATUS "note" (why a BLE / Wi-Fi line was ignored); cleared on every screen change
 std::string g_blePairMsg;        // pairing screen status
 bool g_bleCodeDrawn = false;     // the pending comparison value has been drawn on the pairing screen ...
 uint32_t g_bleDrawnCode = 0;     // ... this one
 std::string g_k1Short, g_fwHex;  // for the STATUS JSON
+uint32_t g_badgeCheck = 0;       // last time the radio badges were compared with the drivers
+constexpr const char* kNotOnScan = "ignored: not on SCAN (press SIGN on the device first)";
+#endif
+#if RIPAR_WIFI
+wifip::Creds g_wifiNew;          // the network under review (JOIN WI-FI); wiped when the review is left
 #endif
 
 bool g_dirty = true;
@@ -222,16 +243,27 @@ void on_change(Screen from, Screen to) {
       pulse_start();
     }
 #if RIPAR_BLE
-    if (to == Screen::Scan && ble_link_on())
-      g_scanHint = g_haveCam ? "Scan the QR, or send it from the phone (BLE) - 2 s = cancel"
-                             : "Send the request from the phone (BLE) - hold 2 s = cancel";
+    const bool bleOn = ble_link_on();
+#if RIPAR_WIFI
+    const bool wifiOn = wifi_link_on();
+#else
+    const bool wifiOn = false;
+#endif
+    if (to == Screen::Scan && (bleOn || wifiOn)) {
+      const std::string via = bleOn && wifiOn ? "BLE / Wi-Fi" : bleOn ? "BLE" : "Wi-Fi";
+      g_scanHint = g_haveCam ? "Scan the QR, or send it from the phone (" + via + ") - 2 s = cancel"
+                             : "Send the request from the phone (" + via + ") - hold 2 s = cancel";
+    }
     if (from == Screen::BlePair) {  // the pairing window closes with its screen (a pending code is rejected)
       ble_link_pairing_window(false);
       g_bleCodeDrawn = false;
       g_blePairMsg.clear();
     }
     if (to == Screen::BlePair) ble_link_pairing_window(true);
-    g_bleNote.clear();
+    g_linkNote.clear();
+#endif
+#if RIPAR_WIFI
+    if (from == Screen::Review) g_wifiNew.wipe();  // a JOIN WI-FI review that was left: forget what was sent
 #endif
   }
   // nothing pressed before this screen existed may act on it (Armed in particular); again after drawing (app_loop)
@@ -287,6 +319,10 @@ void open_review(Job job) {
   g_footMore = cosign ? "press = more | hold 2s = DENY" : "press = more | hold 2s = cancel";
   if (!g_review.ok)
     g_footEnd = cosign ? "REFUSED: press = home | 2s = DENY" : "REFUSED: press = home";
+  else if (job == Job::WifiJoin)
+    g_footEnd = "press = SAVE (no pulse) | 2s = reject";
+  else if (job == Job::WifiOn)
+    g_footEnd = "press = WI-FI ON (no pulse) | 2s = cancel";
   else if (!job_needs_pulse(job))
     g_footEnd = "press = SIGN (no pulse) | 2s = cancel";
   else
@@ -363,10 +399,67 @@ void start_deny_from_cosign() {
 
 #if RIPAR_BLE
 // ================================================================================================= Bluetooth LE
-// The badge follows the controller itself: it stays on if a teardown step failed.
+// The badges follow the drivers themselves (Bluetooth controller, Wi-Fi driver): they stay on if a teardown step
+// failed. Compared on every change made here and every 100 ms (app_loop).
+void update_badges() {
+  bool changed = false;
+  const bool ble = ble_link_radio_alive();
+  if (ble != ui_radio_badge()) {
+    ui_set_radio_badge(ble);
+    changed = true;
+  }
+#if RIPAR_WIFI
+  const bool wifi = wifi_link_radio_alive();
+  if (wifi != ui_wifi_badge()) {
+    ui_set_wifi_badge(wifi);
+    changed = true;
+  }
+#endif
+  if (changed) g_dirty = true;
+}
+
 void radio_badge() {
-  ui_set_radio_badge(ble_link_radio_alive());
+  update_badges();
   g_dirty = true;
+}
+
+// ---- shared by the BLE and the Wi-Fi courier: the same STATUS JSON, the same intake, the same output
+std::string link_status() {
+  blep::StatusInfo st;
+  st.screen = g_fsm.screen();
+  st.paired = g_ctx.paired();
+  st.k1 = g_k1Short;
+  st.fw = g_fwHex;
+  st.got = unsigned(g_dec.received_pure());
+  st.of = unsigned(g_dec.seq_len());
+  st.note = g_linkNote;
+  st.radio = ble_link_on();
+#if RIPAR_WIFI
+  st.wifi = wifi_state_text(wifi_link_state());
+  st.ip = wifi_link_ip();
+#endif
+  return blep::status_json(st);
+}
+
+const std::string& link_output() {  // the UR text of the QR on screen (empty when none)
+  static const std::string kNone;
+  const Screen s = g_fsm.screen();
+  return (s == Screen::Qr || s == Screen::PairQr) ? g_qrText : kNone;
+}
+
+UrDecoder::Result intake_part(const std::string& payload, uint32_t now);
+
+// One line (UR part) from the phone, over BLE or Wi-Fi: the camera's intake, only while SCAN is shown.
+void link_line(const std::string& line, uint32_t now) {
+  if (g_fsm.screen() == Screen::Scan) {
+    const UrDecoder::Result r = intake_part(line, now);
+    if (r == UrDecoder::Error || r == UrDecoder::Ignored)
+      g_linkNote = "part not used: " + g_scanHint;
+    else if (g_fsm.screen() == Screen::Scan)
+      g_linkNote.clear();
+  } else {
+    g_linkNote = kNotOnScan;
+  }
 }
 
 void radio_off(const char* why) {
@@ -462,6 +555,167 @@ void draw_ble_pair() {
 }
 #endif
 
+#if RIPAR_WIFI
+// ================================================================================================= Wi-Fi (test)
+// TEMPORARY TEST FEATURE (docs/WIFI_LINK.md). Everything here is removed with RIPAR_WIFI=0.
+void wifi_off(const char* why, bool clearChoice) {
+  if (clearChoice && wifi_auto_on() && !wifi_set_auto_on(false) && Serial)
+    Serial.println("ripar: wifi: could not clear the WI-FI ON choice in NVS");
+  if (!wifi_link_on() && !wifi_link_radio_alive()) return;
+  wifi_link_disable();
+  radio_badge();
+  if (Serial)
+    Serial.printf("ripar: wifi off (%s)%s\n", why, wifi_link_radio_alive() ? " - DRIVER STILL INITIALISED" : "");
+}
+
+bool wifi_start(std::string& err) {
+  ui_message("WI-FI STARTING", "Wi-Fi is starting (test feature). Ripar is not air-gapped while it is on.", UI_WARN);
+  const bool ok = wifi_link_enable(err);
+  radio_badge();
+  if (!ok && wifi_link_radio_alive()) err += " - DRIVER STILL INITIALISED";
+  return ok;
+}
+
+// Home: "192.168.1.23  CODE 1234 5678" (or the connection state instead of the address)
+std::string wifi_home_line() {
+  if (!wifi_link_on()) return std::string();
+  const std::string code = "CODE " + wifip::code_display(wifi_link_code());
+  if (wifi_link_state() == WifiState::On) return wifi_link_ip() + "  " + code;
+  return "WI-FI " + wifi_link_detail() + "...  " + code;
+}
+
+Review review_wifi_join(const wifip::Creds& c) {
+  Review r;
+  bool altered = false;
+  const std::string ssid = wifip::ssid_display(c.ssid, &altered);
+  r.title = "JOIN WI-FI " + ssid + "?";
+  r.ok = true;
+  auto add = [&r](const char* label, const std::string& value, Tone tone) {
+    r.lines.push_back(RLine{label, value, tone});
+  };
+  add("", "TEST FEATURE: stores this Wi-Fi network on the device. Nothing is signed.", Tone::Warn);
+  add("Network", ssid + (altered ? " (bytes that are not printable ASCII shown as ?)" : ""), Tone::Normal);
+  add("Password", c.pass.empty() ? std::string("NONE: open network") : std::string("set (never shown)"),
+      c.pass.empty() ? Tone::Warn : Tone::Normal);
+  add("From", "the paired phone (Bluetooth, PROV)", Tone::Normal);
+  std::string old;
+  if (wifi_creds_ssid(old) && old != c.ssid)
+    add("Replaces", "the stored network " + wifip::ssid_display(old), Tone::Warn);
+  add("Wi-Fi", wifi_link_on() ? "is on: it reconnects to this network now"
+                              : "stays OFF until you choose WI-FI ON in the device menu",
+      Tone::Normal);
+  add("Signing", "unchanged: every request is still reviewed here and needs pulse + SIGN", Tone::Good);
+  return r;
+}
+
+Review review_wifi_on(const std::string& ssid) {
+  Review r;
+  r.title = "WI-FI ON: TURN WI-FI ON?";
+  r.ok = true;
+  auto add = [&r](const char* label, const std::string& value, Tone tone) {
+    r.lines.push_back(RLine{label, value, tone});
+  };
+  add("", "TEST FEATURE: turns Wi-Fi ON. Ripar is not air-gapped while it is on.", Tone::Bad);
+  add("Network", wifip::ssid_display(ssid), Tone::Normal);
+  add("Stays on", "also after a restart, until WI-FI OFF, FORGET WI-FI or PANIC", Tone::Warn);
+  add("Link", "HTTP on port 80 (" + wifi_link_host() + ".local once connected); every request needs the 8-digit "
+              "code shown on Home",
+      Tone::Normal);
+  add("Signing", "unchanged: every request is still reviewed here and needs pulse + SIGN", Tone::Good);
+  add("Badge", "WIFI ON is shown on every screen while Wi-Fi is on", Tone::Warn);
+  return r;
+}
+
+// A PROV value from the paired phone: reviewed on the device, stored only after SIGN
+void wifi_prov(const std::string& json) {
+  wifip::Creds c;
+  std::string err;
+  if (!wifip::parse_prov(json, c, err)) {
+    g_linkNote = "wifi setup refused: " + err;
+    buzz_err();
+    return;
+  }
+  const Screen s = g_fsm.screen();
+  uint32_t code = 0;
+  const bool idle = s == Screen::Home || (s == Screen::BlePair && !ble_link_code(code));
+  if (!idle) {  // never on top of a request, a review or a pairing code
+    c.wipe();
+    g_linkNote = "wifi setup ignored: the device must show HOME (or BLE PAIRING)";
+    return;
+  }
+  g_wifiNew.wipe();
+  g_wifiNew.ssid = c.ssid;
+  g_wifiNew.pass = c.pass;
+  c.wipe();
+  g_review = review_wifi_join(g_wifiNew);
+  open_review(Job::WifiJoin);
+}
+
+// Act::Confirm on a fully seen JOIN WI-FI review
+void wifi_join_confirmed() {
+  wifip::Creds c;
+  c.ssid = g_wifiNew.ssid;
+  c.pass = g_wifiNew.pass;
+  g_wifiNew.wipe();
+  const bool saved = !c.ssid.empty() && wifi_creds_save(c);
+  const std::string ssid = wifip::ssid_display(c.ssid);
+  c.wipe();
+  if (!saved) return refuse("WI-FI NOT SAVED", "Could not store the network in NVS (namespace ripar-wifi).");
+  if (wifi_link_on()) {  // reconnect with the new network
+    wifi_off("new network", false);
+    std::string err;
+    if (!wifi_start(err)) return refuse("WI-FI NOT STARTED", "Network \"" + ssid + "\" stored, but: " + err);
+    buzz_ok();
+    return show_message("WI-FI SAVED", "Network \"" + ssid + "\" stored. Wi-Fi reconnects to it now; the address "
+                        "and the link code are on Home.", UI_WARN);
+  }
+  buzz_ok();
+  show_message("WI-FI SAVED", "Network \"" + ssid + "\" stored. Wi-Fi stays OFF until you choose WI-FI ON in the "
+               "device menu (Home: hold 2 s and release, then hold 2 s on the pairing QR).", UI_GOOD);
+}
+
+// Act::Confirm on a fully seen WI-FI ON review
+void wifi_on_confirmed() {
+  std::string err;
+  if (!wifi_start(err)) {
+    wifi_off("start failed", false);
+    return refuse("WI-FI NOT STARTED", err);
+  }
+  if (!wifi_set_auto_on(true) && Serial) Serial.println("ripar: wifi: could not store the WI-FI ON choice");
+  buzz_ok();
+  go(Screen::Home);  // NOT AIR-GAPPED, the WIFI ON badge, the address and the link code
+}
+
+// The device side of the HTTP link (include/wifi_proto.h LinkApp), called from wifi_link_tick on the app loop
+class FlowsLink : public wifip::LinkApp {
+ public:
+  explicit FlowsLink(uint32_t now) : now_(now) {}
+  std::string status_json() override { return link_status(); }
+  bool on_scan() override { return g_fsm.screen() == Screen::Scan; }
+  void rx_line(const std::string& line) override { link_line(line, now_); }
+  void rx_refused() override { g_linkNote = kNotOnScan; }
+  std::string output() override { return link_output(); }
+
+ private:
+  uint32_t now_;
+};
+
+void wifi_tick(uint32_t now) {
+  if (!wifi_link_on()) return;
+  FlowsLink app(now);
+  if (wifi_link_tick(now, app) == WifiEvt::StateChange) g_dirty = true;  // Home shows the address
+}
+#endif
+
+// Act::Confirm: a fully seen review of a device setting (RIPAR_WIFI jobs); nothing is signed
+void confirm_setting() {
+#if RIPAR_WIFI
+  if (g_fsm.job() == Job::WifiJoin) return wifi_join_confirmed();
+  if (g_fsm.job() == Job::WifiOn) return wifi_on_confirmed();
+#endif
+  go(Screen::Home);
+}
+
 void menu_select(int item) {
   if (item == MENU_REVOKE) {
     g_review = review_revoke(g_ctx);
@@ -490,6 +744,46 @@ void menu_select(int item) {
                  on ? "The Bluetooth bond is deleted and the phone disconnected. It must pair again."
                     : "The Bluetooth bond is deleted before the radio is next turned on. The phone must pair again.",
                  UI_GOOD);
+#endif
+#if RIPAR_WIFI
+  } else if (item == MENU_WIFI) {
+    if (wifi_link_on() || wifi_link_radio_alive()) {  // WI-FI OFF
+      wifi_off("WI-FI OFF", true);
+      if (wifi_link_radio_alive()) {
+        buzz_err();
+        show_message("WI-FI NOT OFF", "The Wi-Fi driver is still initialised (the badge stays). Restart the device: "
+                     "Wi-Fi will not start again (the WI-FI ON choice is cleared).", UI_BAD);
+      } else {
+        buzz_ok();
+        show_message("WI-FI OFF",
+                     std::string("Wi-Fi is off (driver de-initialised) and stays off after a restart.") +
+                         (ble_link_on() ? " Bluetooth is still on." : " Ripar is air-gapped."),
+                     UI_GOOD);
+      }
+    } else {  // WI-FI ON: review, then SIGN (no pulse)
+      std::string ssid;
+      if (!wifi_creds_ssid(ssid)) {
+        buzz_err();
+        show_message("NO WI-FI NETWORK",
+                     "Send one from the Ripar app first: BLE LINK, pair the phone, then the app's Wi-Fi setup. "
+                     "The device shows it for you to confirm.",
+                     UI_WARN);
+      } else {
+        g_review = review_wifi_on(ssid);
+        open_review(Job::WifiOn);
+      }
+    }
+  } else if (item == MENU_WIFI_FORGET) {
+    wifi_off("FORGET WI-FI", true);
+    const bool ok = wifi_creds_forget();
+    if (ok)
+      buzz_ok();
+    else
+      buzz_err();
+    show_message(ok ? "WI-FI FORGOTTEN" : "WI-FI NOT FORGOTTEN",
+                 ok ? "The stored network and the WI-FI ON choice are erased (NVS ripar-wifi). Wi-Fi is off."
+                    : "Could not erase NVS namespace ripar-wifi. Wi-Fi is off.",
+                 ok ? UI_GOOD : UI_BAD);
 #endif
   } else {
     go(Screen::Home);
@@ -606,6 +900,9 @@ void do_panic() {
 #if RIPAR_BLE
   radio_off("PANIC");  // PANIC always leaves the device radio-free
 #endif
+#if RIPAR_WIFI
+  wifi_off("PANIC", true);  // and Wi-Fi stays off after a restart
+#endif
   DeviceSigner keys;
   Response r;
   std::string err;
@@ -716,7 +1013,11 @@ void draw(uint32_t now) {
       break;
     case Screen::Home:
       if (g_dirty || now - g_lastDraw >= kHomeDrawMs) {
+#if RIPAR_WIFI
+        ui_home(short_addr(g_k1), battery_percent(), g_ctx.paired(), wifi_home_line());
+#else
         ui_home(short_addr(g_k1), battery_percent(), g_ctx.paired());
+#endif
         g_lastDraw = now;
       }
       break;
@@ -760,7 +1061,16 @@ void draw(uint32_t now) {
       break;
     case Screen::Menu:
       if (g_dirty) {
-#if RIPAR_BLE
+#if RIPAR_WIFI
+        const bool radio = ble_link_on() || ble_link_radio_alive();
+        const bool wifi = wifi_link_on() || wifi_link_radio_alive();
+        const char* const kItems[MENU_ITEMS_WIFI] = {
+            "REVOKE the last mandate", "REOPEN the agent lane",
+            radio ? "BLE OFF (radio off now)" : "BLE LINK (radio on: phone courier)", "FORGET PHONE (Bluetooth bond)",
+            wifi ? "WI-FI OFF (test link off now)" : "WI-FI ON (test link: not air-gapped)",
+            "FORGET WI-FI (stored network)", "BACK"};
+        const char* const kNote = "REVOKE, REOPEN and BLE LINK need pulse + SIGN. Wi-Fi: test feature.";
+#elif RIPAR_BLE
         const bool radio = ble_link_on() || ble_link_radio_alive();
         const char* const kItems[MENU_ITEMS_BLE] = {
             "REVOKE the last mandate", "REOPEN the agent lane",
@@ -835,29 +1145,16 @@ void tick_scan(uint32_t now) {
 void ble_tick(uint32_t now) {
   if (!ble_link_on()) return;
   std::string line;
-  for (int n = 0; n < 16 && ble_link_poll_line(line); n++) {
-    if (g_fsm.screen() == Screen::Scan) {
-      const UrDecoder::Result r = intake_part(line, now);
-      if (r == UrDecoder::Error || r == UrDecoder::Ignored)
-        g_bleNote = "part not used: " + g_scanHint;
-      else if (g_fsm.screen() == Screen::Scan)
-        g_bleNote.clear();
-    } else {
-      g_bleNote = "ignored: not on SCAN (press SIGN on the device first)";
-    }
+  for (int n = 0; n < 16 && ble_link_poll_line(line); n++) link_line(line, now);
+#if RIPAR_WIFI
+  std::string prov;
+  if (ble_link_poll_prov(prov)) {  // Wi-Fi credentials: reviewed on the device (JOIN WI-FI), stored only after SIGN
+    wifi_prov(prov);
+    wifip::wipe_str(prov);
   }
+#endif
   const Screen s = g_fsm.screen();
-  blep::StatusInfo st;
-  st.screen = s;
-  st.paired = g_ctx.paired();
-  st.k1 = g_k1Short;
-  st.fw = g_fwHex;
-  st.got = unsigned(g_dec.received_pure());
-  st.of = unsigned(g_dec.seq_len());
-  st.note = g_bleNote;
-  static const std::string kNoOutput;
-  const BleEvt e =
-      ble_link_tick(now, blep::status_json(st), (s == Screen::Qr || s == Screen::PairQr) ? g_qrText : kNoOutput);
+  const BleEvt e = ble_link_tick(now, link_status(), link_output());
   switch (e) {
     case BleEvt::AutoOff:
       radio_badge();
@@ -936,8 +1233,30 @@ void app_setup() {
   if (Serial)
     Serial.printf("ripar: K1 %s, vault %s, %s\n", addr_checksum(g_k1).c_str(), addr_checksum(g_vault).c_str(),
                   g_ctx.paired() ? chain_text(g_ctx.chainId).c_str() : lost ? "PAIRING LOST" : "not paired");
+#if RIPAR_BLE
+  g_k1Short = short_addr(g_k1);  // STATUS JSON (BLE and Wi-Fi)
+  g_fwHex = to_hex(g_fwid, 8, false);
+#endif
+  std::string wifiErr;
+  bool wifiFailed = false;
+#if RIPAR_WIFI
+  // TEST FEATURE: WI-FI ON was chosen (and persisted) earlier, and a network is stored: Wi-Fi starts now (after the
+  // self-test and the keys; never on a failed self-test)
+  if (wifi_auto_on()) {
+    std::string ssid;
+    if (!wifi_creds_ssid(ssid)) {
+      wifi_set_auto_on(false);  // the choice without a network: dropped
+    } else if (!wifi_start(wifiErr)) {
+      wifi_off("start at boot failed", false);
+      wifiFailed = true;
+    }
+  }
+#endif
   buzz_ok();
   go(Screen::Home);  // drains the key queue, draws the home screen
+  if (wifiFailed)
+    show_message("WI-FI NOT STARTED", wifiErr + ". The WI-FI ON choice is kept (tried again at the next start); "
+                 "FORGET WI-FI in the menu clears it.", UI_WARN);
   if (lost) {
     // fork review N1: a PANIC / REOPEN signed now would repeat epoch / nonce 1, which the chain refuses
     buzz_err();
@@ -1008,6 +1327,9 @@ void app_loop() {
       ble_pair_key(false);
 #endif
       break;
+    case Act::Confirm:  // a fully seen WifiJoin / WifiOn review (RIPAR_WIFI): nothing is signed
+      confirm_setting();
+      break;
     case Act::Home:
     case Act::None:
       break;
@@ -1015,6 +1337,15 @@ void app_loop() {
   if (g_fsm.screen() == Screen::Scan) tick_scan(now);
 #if RIPAR_BLE
   ble_tick(now);
+#endif
+#if RIPAR_WIFI
+  wifi_tick(now);
+#endif
+#if RIPAR_BLE
+  if (uint32_t(now - g_badgeCheck) >= 100) {
+    g_badgeCheck = now;
+    update_badges();
+  }
 #endif
   draw(now);
   // a press made while the previous screen was still displayed (before this one was drawn) is dropped too, and one

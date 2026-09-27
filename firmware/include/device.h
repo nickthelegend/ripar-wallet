@@ -15,6 +15,15 @@
 #ifndef RIPAR_BLE
 #define RIPAR_BLE 0
 #endif
+// 1 = the Wi-Fi test link is built in (env:ripar, src/wifi_link.cpp, docs/WIFI_LINK.md) - a TEMPORARY TEST FEATURE:
+// the network is sent by the paired phone over the BLE PROV characteristic and confirmed on the device; Wi-Fi only
+// runs after WI-FI ON in the device menu. 0 = no Wi-Fi code at all (env:ripar-ble, env:ripar-airgap).
+#ifndef RIPAR_WIFI
+#define RIPAR_WIFI 0
+#endif
+#if RIPAR_WIFI && !RIPAR_BLE
+#error "RIPAR_WIFI needs RIPAR_BLE: the Wi-Fi network is provisioned over the Bluetooth LE link (docs/WIFI_LINK.md)"
+#endif
 
 namespace ripar {
 
@@ -108,7 +117,8 @@ struct ReviewView {
 };
 void ui_init();
 void ui_boot(const char* status);
-void ui_home(const std::string& k1short, int battery, bool paired);
+// linkLine (RIPAR_WIFI builds, Wi-Fi on): one warning line above the key hints, e.g. the IP address and link code.
+void ui_home(const std::string& k1short, int battery, bool paired, const std::string& linkLine = std::string());
 void ui_scan(const uint8_t* gray, int w, int h, float progress, const char* hint);
 // Review screen (security review M2): every line is split into display rows first (label column + wrapped value, or
 // the full width when the label is empty); `firstRow` is the first ROW to draw, clamped with fsm.h
@@ -120,10 +130,14 @@ void ui_pulse(const PulseResult& p, const char* title);
 void ui_qr(const std::string& text, const char* title, const char* footer);
 void ui_message(const char* title, const std::string& body, uint16_t color);
 void ui_fingerprint(int x, int y, const uint8_t idx[4]);  // 4 icons
-// RADIO ON badge (RIPAR_BLE builds): while set, every screen gets a red "RADIO ON" badge in the top-right corner and
-// Home says NOT AIR-GAPPED instead of AIR-GAPPED. flows.cpp sets it from ble_link_radio_alive() (controller state).
+// Radio badges: while either is set, every screen gets a red badge in the top-right corner - "RADIO ON" (Bluetooth,
+// RIPAR_BLE builds), "WIFI ON" (Wi-Fi, RIPAR_WIFI builds) or "BLE+WIFI" (both) - and Home says NOT AIR-GAPPED
+// instead of AIR-GAPPED. flows.cpp sets them from ble_link_radio_alive() (controller state) and
+// wifi_link_radio_alive() (Wi-Fi driver state).
 void ui_set_radio_badge(bool on);
 bool ui_radio_badge();
+void ui_set_wifi_badge(bool on);
+bool ui_wifi_badge();
 // Bluetooth pairing screen: advertised name in the title, the 6-digit comparison value large (code "" = none), a
 // status text and the footer.
 void ui_ble_pair(const char* name, const char* code, const std::string& body, const char* footer);

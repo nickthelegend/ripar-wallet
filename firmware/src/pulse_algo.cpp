@@ -609,7 +609,7 @@ const PulseResult& PulseDetector::add(uint32_t ir, uint32_t red, uint32_t t_ms) 
 
   // ---- pass decision ----
   bool ok = settled && c_.minBeats > 0 && nBeats_ >= c_.minBeats && r_.bpm >= c_.bpmMin && r_.bpm <= c_.bpmMax &&
-            regular_ >= 1.0f && r_.jitter <= kJitterMax;
+            (!c_.strict || regular_ >= 1.0f) && r_.jitter <= kJitterMax;
   if (ok) {
     // the pulse must still be there: last beat no older than 2.5 median intervals (and never > 2 slowest beats)
     float limitMs = 2.5f * medMs_;
@@ -977,9 +977,11 @@ bool PulseDetector::windowOk(uint32_t el) const {
   if (sat > 0) return false;                                                     // ADC clipped: shape unusable
   if (irMax - irMin <= kFlatSpan || redMax - redMin <= kFlatSpan) return false;  // a channel is constant
   // edge-like (square wave, motion artifacts) or slow symmetric (sine, triangle) upstrokes in over 1/4 of the beats
-  int odd = 0;
-  for (int i = 0; i < nBeats_; i++) odd += int(((edgeMask_ | slowMask_) >> i) & 1u);
-  if (odd * 4 > nBeats_) return false;
+  if (c_.strict) {
+    int odd = 0;
+    for (int i = 0; i < nBeats_; i++) odd += int(((edgeMask_ | slowMask_) >> i) & 1u);
+    if (odd * 4 > nBeats_) return false;
+  }
   const double vx = n * sxx - sx * sx, vy = n * syy - sy * sy;
   if (!(vx > 0) || !(vy > 0)) return false;
   const double corr = (n * sxy - sx * sy) / std::sqrt(vx * vy);

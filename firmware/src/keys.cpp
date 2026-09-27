@@ -8,9 +8,11 @@
 // Entropy: with Wi-Fi/BT never started, esp_fill_random() is only a true RNG while the SAR-ADC entropy source
 // is on, so every draw is wrapped in bootloader_random_enable()/disable(). Do not call trng_fill() /
 // keys_create() while another task uses the ADC (battery_percent() runs on the app thread, so it's fine).
-// RIPAR_BLE: while the Bluetooth controller runs (the optional BLE link), the RF subsystem already feeds the RNG and
-// bootloader_random_enable() must not reconfigure the ADC under it (ESP-IDF), so trng_fill() then draws directly.
-// Keys are only ever created at the first boot, when the radio is always off.
+// RIPAR_BLE / RIPAR_WIFI: while the Bluetooth controller or the Wi-Fi driver runs (the optional BLE link, the Wi-Fi
+// test link), the RF subsystem already feeds the RNG and bootloader_random_enable() must not reconfigure the ADC under
+// it (ESP-IDF), so trng_fill() then draws directly - no ADC entropy toggling while any radio is up.
+// Keys are only ever created at the first boot, before any radio can be on (Wi-Fi's persisted WI-FI ON choice is only
+// acted on after the keys exist).
 //
 // keys_selftest() checks crypto.cpp on the real hardware against published vectors (RFC 6979 A.2.5 P-256,
 // the "Satoshi Nakamoto" secp256k1 RFC 6979 vector, BIP-32 TV1, SLIP-10 nist256p1 TV1) and cross-checks it
@@ -30,6 +32,9 @@
 #include "hashes.h"
 #if RIPAR_BLE
 #include "ble_link.h"
+#endif
+#if RIPAR_WIFI
+#include "wifi_link.h"
 #endif
 #include "mbedtls/bignum.h"
 #include "mbedtls/ecdsa.h"
@@ -258,12 +263,17 @@ void check_vector(Report& R, const char* tag, Curve c, const char* privHex, cons
 
 void trng_fill(uint8_t* p, size_t n) {
   if (!p || !n) return;
+  bool radio = false;
 #if RIPAR_BLE
-  if (ble_link_radio_alive()) {  // RF noise is the entropy source; do not touch the SAR ADC under the radio
+  radio = radio || ble_link_radio_alive();
+#endif
+#if RIPAR_WIFI
+  radio = radio || wifi_link_radio_alive();
+#endif
+  if (radio) {  // RF noise is the entropy source; do not touch the SAR ADC under the radio
     esp_fill_random(p, n);
     return;
   }
-#endif
   bootloader_random_enable();
   esp_fill_random(p, n);
   bootloader_random_disable();

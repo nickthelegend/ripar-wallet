@@ -3,7 +3,8 @@
 The firmware turns a Waveshare ESP32-S3-LCD-2 into an air-gapped signer. Its radio is off. Requests arrive as QR codes through the camera, and every answer leaves as one QR code on the screen. Nothing is signed until the user has seen every line of the review, held a thumb on the pulse sensor until a live pulse is measured, and then pressed SIGN.
 
 - **Protocol:** byte-exact contract in [`PROTOCOL.md`](PROTOCOL.md).
-- **Bluetooth fallback:** the default build (`env:ripar`) can also carry the same QR text over Bluetooth LE when the camera cannot read the codes. The radio stays dead until the user turns it on in the device menu (review + pulse + SIGN), and every screen shows **RADIO ON** while it is alive. `env:ripar-airgap` is the same firmware without any radio code. Contract: [`BLE_LINK.md`](BLE_LINK.md); on the device: [BLE LINK](#ble-link-bluetooth-fallback).
+- **Bluetooth fallback:** the builds `env:ripar` and `env:ripar-ble` can also carry the same QR text over Bluetooth LE when the camera cannot read the codes. The radio stays dead until the user turns it on in the device menu (review + pulse + SIGN), and every screen shows **RADIO ON** while it is alive. `env:ripar-airgap` is the same firmware without any radio code. Contract: [`BLE_LINK.md`](BLE_LINK.md); on the device: [BLE LINK](#ble-link-bluetooth-fallback).
+- **Wi-Fi test link (TEMPORARY TEST FEATURE):** the default build `env:ripar` also contains a Wi-Fi courier for testing (`RIPAR_WIFI=1`): the network is sent by the paired phone over Bluetooth and confirmed on the device, Wi-Fi runs only after **WI-FI ON** in the menu, and every screen shows **WIFI ON** while it is alive. **For the air-gapped pitch firmware flash `env:ripar-airgap`** (or `env:ripar-ble` for Bluetooth without Wi-Fi). Contract: [`WIFI_LINK.md`](WIFI_LINK.md); on the device: [Wi-Fi test link](#wi-fi-test-link-temporary).
 - **Wiring:** full pin list in [`WIRING.md`](WIRING.md).
 - **Source:** `firmware/` (PlatformIO, Arduino-ESP32 2.0.17 / ESP-IDF 4.4).
 
@@ -40,8 +41,9 @@ Requirements: PlatformIO Core and Python 3 (standard library only). `lib_deps` f
 
 ```bash
 cd firmware
-pio run -e ripar            # full firmware, QR + Bluetooth LE fallback (default) -> .pio/build/ripar/firmware.bin
-pio run -e ripar-airgap     # the same firmware without any radio code -> .pio/build/ripar-airgap/firmware.bin
+pio run -e ripar            # TEST build (default): QR + Bluetooth LE fallback + Wi-Fi test link -> .pio/build/ripar/firmware.bin
+pio run -e ripar-ble        # QR + Bluetooth LE fallback, no Wi-Fi code -> .pio/build/ripar-ble/firmware.bin
+pio run -e ripar-airgap     # the air-gapped firmware, no radio code at all -> .pio/build/ripar-airgap/firmware.bin
 pio run -e chk_device       # device bring-up check (no signing code), see test/device/check_main.cpp
 python test/host/run_host_tests.py          # portable modules, MinGW / any g++ as C++14
 python tools/make_request.py selftest       # companion tool: build -> simulate -> verify, tamper tests
@@ -49,25 +51,29 @@ python tools/make_request.py check-vectors  # test/host/vectors_protocol.h match
 python tools/ref_eip712.py check            # test/host/vectors_eip712_abi.h matches the Python reference
 ```
 
-- The host suites are `test_ble_link`, `test_cbor_ur`, `test_crypto`, `test_eip712_abi`, `test_fsm`, `test_hashes`, `test_policy`, `test_protocol`, `test_pulse`, `test_respond` and `test_vault`.
-- Two firmware builds (the only difference is `RIPAR_BLE`):
+- The host suites are `test_ble_link`, `test_cbor_ur`, `test_crypto`, `test_eip712_abi`, `test_fsm`, `test_hashes`, `test_policy`, `test_protocol`, `test_pulse`, `test_respond`, `test_vault` and `test_wifi_link`.
+- Three firmware builds (the only differences are `RIPAR_BLE` and `RIPAR_WIFI`):
 
-| Env | `RIPAR_BLE` | What it is | Last build (2026-09-27), of 327 680 B RAM / 6 553 600 B flash |
-|---|---|---|---|
-| `ripar` (default) | 1 | QR + the Bluetooth LE fallback courier (`src/ble_link.cpp`, `src/ble_proto.cpp`) | RAM 20.3 % (66 496 B), flash 20.5 % (1 343 157 B) |
-| `ripar-airgap` | 0 | radio-free: the BLE sources are not built and no Bluetooth / Wi-Fi code is linked ([radio check](#7-security-model)) | RAM 12.1 % (39 548 B), flash 11.3 % (738 293 B) |
+| Env | `RIPAR_BLE` | `RIPAR_WIFI` | What it is | Last build (2026-09-28), of 327 680 B RAM / 6 553 600 B flash |
+|---|---|---|---|---|
+| `ripar` (default) | 1 | 1 | **test build**: QR + the Bluetooth LE fallback courier + the Wi-Fi test link (`src/wifi_link.cpp`, `src/wifi_proto.cpp`) | RAM 27.5 % (90 024 B), flash 26.8 % (1 759 157 B) |
+| `ripar-ble` | 1 | 0 | QR + the Bluetooth LE fallback courier (`src/ble_link.cpp`, `src/ble_proto.cpp`); no Wi-Fi code linked | RAM 20.3 % (66 568 B), flash 20.5 % (1 345 909 B) |
+| `ripar-airgap` | 0 | 0 | **the air-gapped firmware**: no BLE / Wi-Fi source built, no Bluetooth / Wi-Fi code linked ([radio check](#7-security-model)) | RAM 12.1 % (39 572 B), flash 11.3 % (738 921 B) |
 
-- The sizes are static RAM and flash in the default 16 MB partition table. While the radio is on, Bluedroid also allocates heap (not measured on hardware). The ERC1967Proxy creation code of the vault derivation (1008 bytes) lives in flash.
+- The sizes are static RAM and flash in the default 16 MB partition table. While a radio is on, Bluedroid / the Wi-Fi driver and lwIP also allocate heap (not measured on hardware). The ERC1967Proxy creation code of the vault derivation (1008 bytes) lives in flash.
 - `pio run -t compiledb` without the same `PLATFORMIO_BUILD_FLAGS` as the last build changes the configuration hash, and PlatformIO then empties `.pio/build/<env>`: build again afterwards.
 - A low-disk PC can add `PLATFORMIO_BUILD_FLAGS=-pipe` so that GCC keeps its temporary files in memory. Run one `pio` build at a time.
 - Optional build flags (add them to `build_flags`):
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `RIPAR_BLE` | 1 in `ripar`, 0 in `ripar-airgap` | The Bluetooth LE fallback courier ([BLE_LINK.md](BLE_LINK.md)). Use the envs rather than setting it by hand: `ripar-airgap` also leaves the BLE sources out. |
+| `RIPAR_BLE` | 1 in `ripar` and `ripar-ble`, 0 in `ripar-airgap` | The Bluetooth LE fallback courier ([BLE_LINK.md](BLE_LINK.md)). Use the envs rather than setting it by hand: `ripar-airgap` also leaves the BLE sources out. |
+| `RIPAR_WIFI` | 1 in `ripar`, 0 in `ripar-ble` and `ripar-airgap` | The Wi-Fi test link ([WIFI_LINK.md](WIFI_LINK.md)), a TEMPORARY TEST FEATURE. Needs `RIPAR_BLE=1`. Use the envs: `ripar-ble` / `ripar-airgap` also leave the Wi-Fi sources and libraries out. |
 | `RIPAR_LCD_ROTATION` | 1 | Use 3 if the screen is upside down. |
 | `RIPAR_CAM_VFLIP` / `RIPAR_CAM_HMIRROR` | 1 / 0 | Viewfinder orientation. QR decoding works either way. |
 | `RIPAR_CAM_AE_LEVEL` | -2 | Camera exposure. Go darker (down to -4) if phone screens wash out. |
+| `RIPAR_PULSE_STRICT` | 0 on the device, 1 in the emulator | 1 adds the strict anti-spoof liveness tests (beat-timing variability, pulse shape, IR/red cross-timing) to the standard pulse gate. **Off on the device**: on the first hardware test they rejected a real resting thumb (82 bpm, very low beat-to-beat variability). See [Pulse gate: standard and strict](#pulse-gate-standard-and-strict). |
+| `RIPAR_CHECK_START_PULSE` / `RIPAR_CHECK_RAW` | unset | `chk_device` only: start on the pulse screen / stream raw MAX30102 samples (`raw,<n>,<ir>,<red>` at 100 Hz) for `tools/pulse_replay`. |
 | `RIPAR_LED_CHALLENGE` | 0 | 1 also requires the MAX30102 LED-drive liveness challenge before SIGN is armed. Not tested on hardware. |
 | `RIPAR_TIME_FLOOR` | 2026-09-26 00:00 UTC | The earliest "now" the device assumes (see [co-sign expiry](#co-sign)). |
 
@@ -89,7 +95,9 @@ pio device monitor -b 115200        # optional: status lines (self-test, K1 addr
 4. Run `pio run -e ripar -t upload` again.
 5. Press **RST** to start the new firmware.
 
-A normal upload does not touch the NVS partition, so the seed and the pairing survive re-flashing.
+`ripar` is the **test build** (with the temporary Wi-Fi test link). For a demo, a pitch or funds flash `pio run -e ripar-airgap -t upload` (no radio code) or `-e ripar-ble` (Bluetooth fallback, no Wi-Fi code).
+
+A normal upload does not touch the NVS partition, so the seed and the pairing survive re-flashing (and so does a stored Wi-Fi network: FORGET WI-FI before flashing another build if its password matters).
 
 > **`pio run -t erase` erases the whole flash, including the seed.** The device then creates new keys, which means a new K1 address and a new vault owner. There is no seed backup yet (see [Known limitations](#known-limitations)). Only erase a unit that holds no funds.
 
@@ -139,10 +147,12 @@ Every screen except Home returns to Home after 120 s without a key press. The bu
 | **QR** | the signed response | done → Home | done → Home | - |
 | Message | refusal or error, with the exact reason | → Home | → Home | - |
 | Pairing QR | `ripar-pair` with K1 + P1 + firmware id (nothing signed, nothing pinned) | → Home | device menu | - |
-| Device menu | REVOKE the last mandate / REOPEN the agent lane / (`ripar` only) BLE LINK or BLE OFF / FORGET PHONE / BACK | next item | select | - |
-| BLE pairing (`ripar` only) | advertised name `RIPAR-XXXX`, link state; during a pairing the 6-digit code, large | no code: → Home (radio stays on); code: **confirm** it | no code: **radio off**; code: **reject** it | - |
+| Device menu | REVOKE the last mandate / REOPEN the agent lane / (`ripar`, `ripar-ble`) BLE LINK or BLE OFF / FORGET PHONE / (`ripar` only) WI-FI ON or WI-FI OFF / FORGET WI-FI / BACK | next item | select | - |
+| BLE pairing (`ripar`, `ripar-ble`) | advertised name `RIPAR-XXXX`, link state; during a pairing the 6-digit code, large | no code: → Home (radio stays on); code: **confirm** it | no code: **radio off**; code: **reject** it | - |
 
-**RADIO ON badge** (`ripar` only). While the Bluetooth controller is alive, every screen carries a red **RADIO ON** badge in the top-right corner and Home says **NOT AIR-GAPPED** instead of AIR-GAPPED. The badge is drawn by the display flush itself (`ui.cpp`), so no screen appears without it, and it follows the controller state (`esp_bt_controller_get_status()`), not a flag. On SCAN with the radio on, the hint says the request can also come from the phone.
+**RADIO ON / WIFI ON badge** (`ripar`, `ripar-ble`). While the Bluetooth controller is alive, every screen carries a red **RADIO ON** badge in the top-right corner; while the Wi-Fi driver is alive (`ripar` only) it says **WIFI ON**, and **BLE+WIFI** when both are. Home then says **NOT AIR-GAPPED** instead of AIR-GAPPED. The badge is drawn by the display flush itself (`ui.cpp`), so no screen appears without it, and it follows the driver state (`esp_bt_controller_get_status()`, `esp_wifi_get_mode()`, compared every 100 ms), not a flag. On SCAN with a link on, the hint says the request can also come from the phone (`BLE`, `Wi-Fi` or `BLE / Wi-Fi`). While Wi-Fi is on, Home also shows one amber line with the device's address (or the connection state) and the 8-digit **link code** every HTTP request needs.
+
+**JOIN WI-FI and WI-FI ON reviews** (`ripar` only) are device settings, not signatures: once every row has been shown, a press confirms them **without the pulse**; hold 2 s rejects (state machine: `Job::WifiJoin` / `Job::WifiOn` → `Act::Confirm`).
 
 The review shows at most 9 rows at a time. Each press moves the page by 8 rows, overlapping one row, so every row appears on screen. The last-page footer (for example "press = PULSE + SIGN") appears only once the last row has been drawn. Until then the footer reads "press = more", and SIGN cannot be armed.
 
@@ -318,7 +328,7 @@ These are started on the device and use the **pinned** contracts only.
 | Revoke | Home: hold 2 s and release, then hold 2 s on the pairing QR → **REVOKE**. Revokes the last mandate this device signed, then forgets it: scan the QR before leaving the screen. Does not clear PANIC FIRST | yes | `parse @revoke.txt --pair @pair.txt --chain 10143` |
 | Reopen | same menu → **REOPEN**. Nonce = last + 1, never reused; needs a pinned sentinel; names the device's vault | yes | `parse @reopen.txt --pair @pair.txt --chain 10143 --contract <SENTINEL>` |
 
-PANIC also turns the Bluetooth radio off first (`ripar` build).
+PANIC also turns the Bluetooth radio and Wi-Fi off first (`ripar` / `ripar-ble` builds) and clears the persisted WI-FI ON choice.
 
 Relay a PANIC QR at once. The device never lowers its epoch: every later mandate needs `epoch =` the new minimum. If the new epoch cannot be stored in NVS, the QR is still shown with a warning, and the device keeps using the new epoch until it restarts.
 
@@ -335,6 +345,47 @@ Relay a PANIC QR at once. The device never lowers its epoch: every later mandate
 | Forget the phone | menu **FORGET PHONE**: deletes the bond now (radio on) or before the radio is next turned on | no |
 
 The Bluetooth controller is never initialised at boot. Turning the radio off disables and de-initialises Bluedroid and the controller; the controller memory stays reserved so it can be turned on again without a reboot.
+
+### Wi-Fi test link (temporary)
+
+`ripar` build only, a **TEMPORARY TEST FEATURE**; protocol, security model and phone flow in [WIFI_LINK.md](WIFI_LINK.md). For the air-gapped pitch firmware flash `ripar-airgap` (or `ripar-ble`).
+
+| Action | How | Pulse? |
+|---|---|---|
+| Store a network | BLE LINK and pair the phone first. With the device on Home (or the BLE pairing screen), the app writes `{"v":1,"ssid":...,"pass":...}` to the PROV characteristic → review **JOIN WI-FI &lt;ssid&gt;?** (the password is never shown) → press SIGN to store it (NVS `ripar-wifi`); hold 2 s rejects | no |
+| Wi-Fi on | device menu → **WI-FI ON** → review "turns Wi-Fi ON. Ripar is not air-gapped while it is on" → press SIGN. The choice is persisted: Wi-Fi also starts after a restart | no |
+| Use it | Home shows `192.168.1.23  CODE 1234 5678`: every HTTP request needs `X-Ripar-Code: 12345678` (a new code at every boot). `GET /status`, `POST /rx` (UR lines, only on SCAN), `GET /tx` (the QR on screen) | as the request |
+| Wi-Fi off | menu **WI-FI OFF**, **FORGET WI-FI** (also erases the network), PANIC. All three clear the persisted choice | no |
+
+Wi-Fi never starts without a stored network **and** the WI-FI ON choice. It has no idle timeout (a developer may keep it on), and it may run together with Bluetooth (the framework is built with Wi-Fi / BLE coexistence).
+
+## Pulse gate: standard and strict
+
+**First hardware test, 2026-09-28** (Waveshare ESP32-S3-Touch-LCD-2 + MAX30102, `chk_device`):
+- The crypto self-test passed on the chip, including every mbedTLS cross-check.
+- The MAX30102 answered on the I2C bus (PART_ID 0x15) once SDA went to GPIO48 and SCL to GPIO47.
+- It measured a resting thumb at **82–85 bpm with 11–12 beats per 8 s window**. The IR DC was 118k, well above the 50k finger threshold.
+
+The v1.2 strict liveness tests never let that real pulse pass. They were tuned on synthetic signals, and a resting heart can be as regular as they assume a spoof is (beat-to-beat jitter about 0.03). The device therefore runs two gates:
+
+| Gate | Requires | Used by |
+|---|---|---|
+| **Standard** | All of these: <br>• a finger (IR DC above 50k); <br>• at least 5 beats in the 8 s window, at 40–180 bpm; <br>• a rhythm (interval jitter ≤ 0.35); <br>• a beat within the last 2.5 intervals; <br>• no ADC clipping, and both channels moving; <br>• IR and red pulses correlated (r > 0.5). | the device (`RIPAR_PULSE_STRICT=0`, default) |
+| **Strict** | The standard gate plus the "too regular" timing statistics, the beat-shape screen and the IR/red cross-timing test (host-tested against square, sine, triangle, rate-step and replayed-shape spoofs) | the emulator and the host tests; the device with `RIPAR_PULSE_STRICT=1` |
+
+**Tuning strict mode on real data:**
+
+```bash
+# record 60 s of your thumb as raw samples (the screen shows RAW RECORDING)
+PLATFORMIO_BUILD_FLAGS="-DRIPAR_CHECK_START_PULSE=1 -DRIPAR_CHECK_RAW=1" pio run -e chk_device -t upload
+pio device monitor -b 115200 > capture.txt
+# replay it through both gates
+g++ -std=c++14 -O2 -Iinclude tools/pulse_replay.cpp src/pulse_algo.cpp -o pulse_replay && ./pulse_replay capture.txt
+```
+
+**What the standard gate still stops:** no finger, a finger without a pulse, a constant signal, rates below 40 or above 180 bpm, and an irregular rhythm. All of these are host-tested.
+
+**What it no longer stops:** a synthetic optical source driving both LEDs' reflections in step, such as a perfectly periodic "fake finger". Resisting that needs the strict tests tuned on recorded data, or a hardware liveness signal (`RIPAR_LED_CHALLENGE`).
 
 ## 7. Security model
 
@@ -376,14 +427,16 @@ The Bluetooth controller is never initialised at boot. Turning the radio off dis
   - K1 (secp256k1, `m/44'/60'/0'/0/0`) signs only mandates and BindDevice. P1 (P-256, `m/7951'/0'`) signs everything else.
   - Each private key is derived for one signature, the signature is verified (K1 is also recovered) before release, and the key is then wiped.
   - Signatures are RFC 6979 and low-s.
-- **Radio.** Wi-Fi is never initialised: no source file includes the Wi-Fi headers, in either build.
-  - **`ripar-airgap`: no radio code.** `src/ble_link.cpp` and `src/ble_proto.cpp` are not built and nothing else includes the Bluetooth headers. Radio check on the linked `firmware.elf` (2026-09-27): `xtensa-esp32s3-elf-nm -C .pio/build/ripar-airgap/firmware.elf | grep -E "esp_wifi_init|esp_bt_controller_init|esp_phy_enable|lwip"` gives **0 matches**. What remains is code the SDK links unconditionally, not radio code: `esp_bt_controller_mem_release` (called by Arduino's start-up only when `btInUse()` is false, which the framework's ESP32-S3 default is not), the coexistence pre-init stubs from IDF start-up, a Wi-Fi log-level constructor and an empty PHY hook. ROM function addresses from the ROM linker scripts also appear, but they are not linked code.
-  - **`ripar` (default): Bluetooth LE only when the user turns it on.** The controller is never initialised at boot; only the device menu's BLE LINK (review + pulse + SIGN) starts it, and BLE OFF, PANIC, 5 min without link traffic and power-off stop it (disable + deinit). While it is alive every screen shows **RADIO ON**. The link is LE Secure Connections with numeric comparison confirmed on the device, one bonded phone, and no GATT access without that authenticated link; it only delivers UR parts to SCAN, the same intake as the camera ([BLE_LINK.md](BLE_LINK.md) §3). The same nm check lists `esp_bt_controller_init` / `esp_phy_enable` (Bluetooth) and still no `esp_wifi_init`, `esp_wifi_start`, `esp_netif` or `lwip`.
+- **Radio.**
+  - **`ripar-airgap`: no radio code.** `src/ble_link.cpp`, `src/ble_proto.cpp`, `src/wifi_link.cpp` and `src/wifi_proto.cpp` are not built, nothing else includes the Bluetooth or Wi-Fi headers, and the framework's `BLE`, `WiFi`, `WebServer` and `ESPmDNS` libraries are ignored. Radio check on the linked `firmware.elf` (2026-09-27): `xtensa-esp32s3-elf-nm -C .pio/build/ripar-airgap/firmware.elf | grep -E "esp_wifi_init|esp_bt_controller_init|esp_phy_enable|lwip"` gives **0 matches** (again on 2026-09-28, also for `chk_device`). What remains is code the SDK links unconditionally, not radio code: `esp_bt_controller_mem_release` (called by Arduino's start-up only when `btInUse()` is false, which the framework's ESP32-S3 default is not), the coexistence pre-init stubs from IDF start-up, a Wi-Fi log-level constructor and an empty PHY hook. ROM function addresses from the ROM linker scripts also appear, but they are not linked code.
+  - **`ripar-ble`: Bluetooth LE only when the user turns it on, no Wi-Fi code.** The controller is never initialised at boot; only the device menu's BLE LINK (review + pulse + SIGN) starts it, and BLE OFF, PANIC, 5 min without link traffic and power-off stop it (disable + deinit). While it is alive every screen shows **RADIO ON**. The link is LE Secure Connections with numeric comparison confirmed on the device, one bonded phone, and no GATT access without that authenticated link; it only delivers UR parts to SCAN, the same intake as the camera ([BLE_LINK.md](BLE_LINK.md) §3). The same nm check lists `esp_bt_controller_init` / `esp_phy_enable` (Bluetooth) and no `esp_wifi_init`, `esp_wifi_start`, `esp_netif` or `lwip`.
+  - **`ripar` (default, for testing): Bluetooth as above, plus the Wi-Fi test link.** Wi-Fi starts only with a network the user confirmed on the device (sent by the bonded phone over BLE) and after WI-FI ON in the menu; that choice is persisted, so such a device is **not air-gapped from boot** until WI-FI OFF / FORGET WI-FI / PANIC. While the driver is alive every screen shows **WIFI ON**. Every HTTP request needs the per-boot 8-digit code shown only on the device; the link only delivers UR parts to SCAN and reads STATUS and the QR on screen ([WIFI_LINK.md](WIFI_LINK.md) §6). Plain HTTP: anyone who can read the network traffic sees the code and the URs.
 - **Only one port.** The data USB-C port is the only way in besides the camera. The serial log prints status lines only: self-test results, the K1 address, the pairing chain and "output <type>". It never prints keys or request contents.
 
 ## Known limitations
 
-- **Bluetooth fallback not tested on hardware** (`ripar` build). Controller start / stop cycles, advertising, pairing with real phones (numeric comparison, the one-bond rule with phones that use resolvable private addresses, the MITM flag Bluedroid reports when a bonded phone re-encrypts), GATT access, notifications, pacing, throughput, the 5-minute auto-off and power use have never run. Only the portable parts (`ble_proto.cpp`, the state-machine additions) are host-tested. While the radio is on, the Bluetooth stack on the same chip as the keys is reachable over the air: keep it off unless needed, or flash `ripar-airgap`. The bond keys are stored by Bluedroid in NVS, unencrypted.
+- **Wi-Fi test link not tested on hardware** (`ripar` build, TEMPORARY TEST FEATURE). The PROV write over a real BLE link, association, DHCP, mDNS, HTTP from real clients, coexistence with an active BLE link, WI-FI ON / OFF cycles, the start at boot, heap and power use have never run; only `wifi_proto.cpp` and the state-machine additions are host-tested (`test_wifi_link.cpp`). While Wi-Fi is on the device is on the local network over plain HTTP; the network's password sits in NVS unencrypted. Flash `ripar-airgap` for anything that is not a test.
+- **Bluetooth fallback not tested on hardware** (`ripar` and `ripar-ble` builds). Controller start / stop cycles, advertising, pairing with real phones (numeric comparison, the one-bond rule with phones that use resolvable private addresses, the MITM flag Bluedroid reports when a bonded phone re-encrypts), GATT access, notifications, pacing, throughput, the 5-minute auto-off and power use have never run. Only the portable parts (`ble_proto.cpp`, the state-machine additions) are host-tested. While the radio is on, the Bluetooth stack on the same chip as the keys is reachable over the air: keep it off unless needed, or flash `ripar-airgap`. The bond keys are stored by Bluedroid in NVS, unencrypted.
 - **Hardware not tested.** The display rotation, the camera orientation and exposure, QR decoding at real distances, MAX30102 detection on real thumbs, the key timings, the buzzer, the battery gauge and the NVS behaviour have not been checked on a board. Everything above comes from the build and the host tests.
 - **Crypto is not constant-time.** The ECDSA arithmetic in `crypto.cpp` leaks timing, and the stack used by the point arithmetic is not wiped. This is accepted for an air-gapped prototype that signs only after a physical confirmation. The ESP32-S3 hardware accelerators are not used for private-key operations.
 - **The seed is not encrypted.**
@@ -434,9 +487,11 @@ The Bluetooth controller is never initialised at boot. Turning the radio off dis
 | `src/crypto.cpp`, `src/hashes.cpp`, `src/eip712.cpp`, `src/abi.cpp`, `src/cbor.cpp`, `src/ur.cpp` | portable crypto and encodings (`test_crypto`, `test_hashes`, `test_eip712_abi`, `test_cbor_ur`) |
 | `src/pulse_algo.cpp` | beat detection (`test_pulse.cpp`) |
 | `src/keys.cpp`, `src/store.cpp` | seed, K1 / P1, self-test (mbedTLS cross-check), context in NVS |
-| `src/io.cpp`, `src/pulse.cpp`, `src/qrscan.cpp`, `src/ui.cpp` | BOOT key and buzzer, MAX30102, camera + quirc, LovyanGFX screens (incl. the RADIO ON badge and the BLE pairing screen) |
-| `include/ble_link.h`, `src/ble_link.cpp` | `ripar` only: the Bluetooth LE fallback courier on Bluedroid (radio on / off, pairing, GATT service, TX pacing, auto-off) |
-| `include/ble_proto.h`, `src/ble_proto.cpp` | `ripar` only: its portable logic - RX line reassembly, TX chunking, STATUS JSON, idle timer, pairing-outcome rule, UUIDs (`test_ble_link.cpp`) |
+| `src/io.cpp`, `src/pulse.cpp`, `src/qrscan.cpp`, `src/ui.cpp` | BOOT key and buzzer, MAX30102, camera + quirc, LovyanGFX screens (incl. the RADIO ON / WIFI ON badge, the Home Wi-Fi line and the BLE pairing screen) |
+| `include/ble_link.h`, `src/ble_link.cpp` | `ripar` / `ripar-ble`: the Bluetooth LE fallback courier on Bluedroid (radio on / off, pairing, GATT service incl. PROV in `ripar`, TX pacing, auto-off) |
+| `include/ble_proto.h`, `src/ble_proto.cpp` | `ripar` / `ripar-ble`: its portable logic - RX line reassembly, TX chunking, STATUS JSON (incl. the Wi-Fi keys), idle timer, pairing-outcome rule, UUIDs (`test_ble_link.cpp`) |
+| `include/wifi_link.h`, `src/wifi_link.cpp` | `ripar` only, TEMPORARY TEST FEATURE: the Wi-Fi test link (stored network in NVS `ripar-wifi`, station mode, mDNS, the non-blocking HTTP server on port 80) |
+| `include/wifi_proto.h`, `src/wifi_proto.cpp` | `ripar` only: its portable logic - PROV JSON, link code + lock-out, HTTP reader and routes (`test_wifi_link.cpp`) |
 | `tools/make_request.py`, `tools/ref_*.py` | companion-side builder and verifier; independent Python references |
 | `tools/companion_lite.html` | static page: request QR animation, response → verify command |
 | `test/device/check_main.cpp` | `chk_device` bring-up program (screens, sensors, self-test; no signing flows) |

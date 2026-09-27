@@ -109,7 +109,7 @@ class EmuPulse {
   static const uint32_t kSampleMs = 10, kStaleMs = 250;
   bool present_ = false, running_ = false, sampling_ = false;
   Fault fault_ = Fault::None;
-  PulseDetector det_;
+  PulseDetector det_{device_pulse_config()};
   PulseResult out_;
   uint32_t clock_ = 0, startMs_ = 0, lastSampleMs_ = 0, nextSampleAt_ = 0;
   std::deque<uint64_t> fifo_;  // ir << 32 | red (at most kFifoDepth: the chip's FIFO)

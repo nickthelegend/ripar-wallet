@@ -3,7 +3,8 @@
 //
 // Radio policy (enforced by src/flows.cpp through this API):
 //   - the Bluetooth controller is never initialised at boot; ble_link_enable() is only called after the BLE LINK
-//     review + pulse + SIGN on the device; Wi-Fi is never initialised by anything;
+//     review + pulse + SIGN on the device; this file never initialises Wi-Fi (the separate RIPAR_WIFI test link,
+//     src/wifi_link.cpp, docs/WIFI_LINK.md, only receives its credentials through the PROV characteristic here);
 //   - ble_link_disable() tears everything down (advertising, link, Bluedroid, controller: disable + deinit);
 //     it runs on BLE OFF, on PANIC, after 5 min without link traffic (ble_link_tick) and a power cycle always
 //     leaves the radio off;
@@ -45,6 +46,10 @@ BleLinkView ble_link_view();
 // ---- data
 // Next complete RX line (one UR part), only from an authenticated link.
 bool ble_link_poll_line(std::string& line);
+// RIPAR_WIFI builds (TEMPORARY TEST FEATURE): the newest complete PROV value (Wi-Fi credentials JSON, at most
+// blep::kMaxProv bytes) from the authenticated link, handed over once. Always false in builds without RIPAR_WIFI.
+// The caller wipes it after use (it holds a Wi-Fi password).
+bool ble_link_poll_prov(std::string& json);
 
 enum class BleEvt : uint8_t {
   None,

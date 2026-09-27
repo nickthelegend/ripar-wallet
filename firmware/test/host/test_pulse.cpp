@@ -927,6 +927,74 @@ void test_config_and_ui() {
 
 }  // namespace
 
+
+// ---- the standard gate (the device default until strict mode is tuned on recorded sensor data) ----------------------
+// First hardware test: a real resting thumb (about 82 bpm, beat-to-beat jitter about 0.03) never passed the strict
+// liveness tests. The standard gate must pass such pulses and still refuse everything that is not a finger pulse.
+PulseConfig standard_cfg() {
+  PulseConfig c;
+  c.strict = false;
+  return c;
+}
+
+void test_standard_gate() {
+  CHECK_SECTION("device config: standard gate unless built with RIPAR_PULSE_STRICT=1");
+  CHECK_EQ(device_pulse_config().strict, RIPAR_PULSE_STRICT != 0);
+  CHECK(PulseConfig().strict);  // library default stays strict (the spoof tests above run it)
+
+  const double rates[] = {50, 60, 72, 82, 100, 120, 150};
+  const double hrvs[] = {0.003, 0.01, 0.03};
+  for (double hrv : hrvs) {
+    for (double bpm : rates) {
+      char name[96];
+      std::snprintf(name, sizeof name, "standard gate passes a real pulse: %.0f bpm, hrv %.3f", bpm, hrv);
+      CHECK_SECTION(name);
+      for (int k = 1; k <= 4; k++) {
+        Sim s;
+        s.bpm = bpm;
+        s.hrv = hrv;
+        s.rsa = hrv;
+        s.duration = 25;
+        s.seed = uint64_t(k) * 104729 + uint64_t(bpm * 10) + uint64_t(hrv * 1e4);
+        const Stats st = run(s, standard_cfg());
+        if (!CHECK(st.everPassed && st.firstPass >= 0 && st.firstPass <= 15.0))
+          std::printf("   seed %d: passed=%d at %.2f s (beats=%d bpm=%.1f jitter=%.4f)\n", k, st.everPassed, st.firstPass,
+                      st.last.beats, double(st.last.bpm), double(st.last.jitter));
+        CHECK(!st.evLeak);
+      }
+    }
+  }
+
+  auto expect_std_fail = [](const char* name, Sim s, bool fingerExpected) {
+    CHECK_SECTION(name);
+    for (int k = 1; k <= 4; k++) {
+      s.seed = uint64_t(k) * 7919 + uint64_t(s.bpm);
+      s.duration = 25;
+      const Stats st = run(s, standard_cfg());
+      if (!CHECK(!st.everPassed)) std::printf("   seed %d PASSED at %.2f s\n", k, st.firstPass);
+      CHECK_EQ(st.everFinger, fingerExpected);
+      CHECK(!st.evLeak);
+    }
+  };
+  Sim s;
+  s.kind = NOFINGER;
+  expect_std_fail("standard gate: no finger", s, false);
+  s = Sim();
+  s.kind = FLAT;
+  expect_std_fail("standard gate: finger, no pulse", s, true);
+  s = Sim();
+  s.kind = CONSTANT;
+  expect_std_fail("standard gate: constant signal", s, true);
+  s = Sim();
+  s.bpm = 30;
+  expect_std_fail("standard gate: 30 bpm (too slow)", s, true);
+  s.bpm = 200;
+  expect_std_fail("standard gate: 200 bpm (too fast)", s, true);
+  s = Sim();
+  s.irregular = true;
+  expect_std_fail("standard gate: irregular rhythm", s, true);
+}
+
 int main() {
   test_real_pulses();
   test_rejections();
@@ -938,5 +1006,6 @@ int main() {
   test_pulse_stops();
   test_timestamps();
   test_config_and_ui();
+  test_standard_gate();
   return CHECK_SUMMARY();
 }

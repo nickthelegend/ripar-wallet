@@ -931,6 +931,7 @@ void Device::app_loop() {
     case Act::None:
     case Act::BleConfirm:  // only on Screen::BlePair, which the emulator (no radio) never enters
     case Act::BleReject:
+    case Act::Confirm:     // only for the RIPAR_WIFI setting reviews (WifiJoin / WifiOn), never opened here
       break;
   }
   if (fsm_.screen() == Screen::Scan) tick_scan(now);

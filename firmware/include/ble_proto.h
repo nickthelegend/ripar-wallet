@@ -25,6 +25,10 @@ constexpr const char* kServiceUuid = "52495041-5200-4c49-4e4b-000000000001";  //
 constexpr const char* kRxUuid = "52495041-5200-4c49-4e4b-000000000002";       // phone -> device, write / write NR
 constexpr const char* kTxUuid = "52495041-5200-4c49-4e4b-000000000003";       // device -> phone, notify
 constexpr const char* kStatusUuid = "52495041-5200-4c49-4e4b-000000000004";   // read + notify, JSON
+// Wi-Fi credentials, phone -> device, write (RIPAR_WIFI builds only: a TEMPORARY TEST FEATURE, docs/WIFI_LINK.md).
+// The value is one JSON document (include/wifi_proto.h parse_prov), at most kMaxProv bytes (single or long write).
+constexpr const char* kProvUuid = "52495041-5200-4c49-4e4b-000000000005";
+constexpr size_t kMaxProv = 512;
 constexpr uint16_t kLocalMtu = 247;                                             // requested (local) ATT MTU
 constexpr size_t kMaxLine = 4096;       // longest RX line (without the '\n') that is kept
 constexpr size_t kMaxStatus = 180;      // STATUS JSON limit
@@ -84,9 +88,15 @@ struct StatusInfo {
   unsigned got = 0, of = 0; // UR parts received / expected (only sent on SCAN)
   std::string fw;           // firmware id, 16 hex digits
   std::string note;         // optional short message (e.g. why a line was ignored); cut to fit
+  bool radio = true;        // the Bluetooth link is on ("radio":"on" / "off"); always on when read over BLE
+  std::string wifi;         // RIPAR_WIFI builds: "off" | "connecting" | "on"; "" = no Wi-Fi in this build (key omitted)
+  std::string ip;           // the device's IPv4 address while Wi-Fi is on ("" = key omitted)
 };
-// {"v":1,"screen":"SCAN","paired":true,"k1":"0x..","scan":{"got":2,"of":5},"radio":"on","fw":"..","note":".."}
-// "scan" only on SCAN, "note" only when not empty. Never longer than kMaxStatus bytes (note, then k1 / fw are cut).
+// {"v":1,"screen":"SCAN","paired":true,"k1":"0x..","scan":{"got":2,"of":5},"radio":"on","wifi":"on","ip":"..",
+//  "fw":"..","note":".."}
+// "scan" only on SCAN, "wifi" / "ip" / "note" only when not empty. Never longer than kMaxStatus bytes: the optional
+// keys go first - a note that does not fit next to "ip" drops "ip" (the address is in the next STATUS again), a note
+// that still does not fit is cut (or dropped); k1 / fw / wifi / ip are capped at 24 / 16 / 10 / 15 bytes.
 std::string status_json(const StatusInfo& s);
 
 // ---- radio auto-off: millis() based, wrap-safe

@@ -12,7 +12,11 @@
 // advertising (flags + the 128-bit service UUID; the name in the scan response). Disable = stop advertising, drop
 // the link, Bluedroid disable + deinit, controller disable + deinit. The controller memory is NOT released
 // (esp_bt_controller_mem_release), because a released controller can never be started again until reboot (see
-// btInUse() below). Wi-Fi is never touched.
+// btInUse() below). This file never touches Wi-Fi.
+//
+// PROV (RIPAR_WIFI builds only, a TEMPORARY TEST FEATURE, docs/WIFI_LINK.md): a fifth characteristic, write only,
+// under the same authenticated-link rule. Its value (Wi-Fi credentials as JSON) is handed to the app loop as a whole
+// (ble_link_poll_prov); the device reviews it and stores it only after SIGN. Nothing here connects to Wi-Fi.
 //
 // Security: LE Secure Connections only, MITM, bonding (ESP_LE_AUTH_REQ_SC_MITM_BOND with "only accept the specified
 // authentication"), IO capability DisplayYesNo -> numeric comparison: the 6-digit value is shown on the device and
@@ -61,16 +65,22 @@ constexpr const char* kNvsNs = "riparble";
 constexpr const char* kNvsForget = "forget";
 
 // ---- attribute table
-enum Idx { IDX_SVC, IDX_RX_CHAR, IDX_RX_VAL, IDX_TX_CHAR, IDX_TX_VAL, IDX_TX_CCC, IDX_ST_CHAR, IDX_ST_VAL, IDX_ST_CCC,
-           IDX_NB };
-uint8_t g_uuidSvc[16], g_uuidRx[16], g_uuidTx[16], g_uuidSt[16];
+enum Idx {
+  IDX_SVC, IDX_RX_CHAR, IDX_RX_VAL, IDX_TX_CHAR, IDX_TX_VAL, IDX_TX_CCC, IDX_ST_CHAR, IDX_ST_VAL, IDX_ST_CCC,
+#if RIPAR_WIFI
+  IDX_PROV_CHAR, IDX_PROV_VAL,
+#endif
+  IDX_NB
+};
+uint8_t g_uuidSvc[16], g_uuidRx[16], g_uuidTx[16], g_uuidSt[16], g_uuidProv[16];
 const uint16_t kUuidPrimary = ESP_GATT_UUID_PRI_SERVICE;
 const uint16_t kUuidCharDecl = ESP_GATT_UUID_CHAR_DECLARE;
 const uint16_t kUuidCcc = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
 const uint8_t kPropWrite = ESP_GATT_CHAR_PROP_BIT_WRITE | ESP_GATT_CHAR_PROP_BIT_WRITE_NR;
 const uint8_t kPropNotify = ESP_GATT_CHAR_PROP_BIT_NOTIFY;
 const uint8_t kPropReadNotify = ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_NOTIFY;
-uint8_t g_initRx[1], g_initTx[1], g_initSt[1], g_initTxCcc[2], g_initStCcc[2];
+const uint8_t kPropWriteOnly = ESP_GATT_CHAR_PROP_BIT_WRITE;
+uint8_t g_initRx[1], g_initTx[1], g_initSt[1], g_initTxCcc[2], g_initStCcc[2], g_initProv[1];
 constexpr esp_gatt_perm_t kPermMitm = ESP_GATT_PERM_READ_ENC_MITM | ESP_GATT_PERM_WRITE_ENC_MITM;
 
 esp_gatts_attr_db_t g_db[IDX_NB];
@@ -100,6 +110,15 @@ void build_db() {
   decl(g_db[IDX_ST_VAL], ESP_GATT_RSP_BY_APP, ESP_UUID_LEN_128, g_uuidSt, ESP_GATT_PERM_READ_ENC_MITM, 256, 0,
        g_initSt);
   decl(g_db[IDX_ST_CCC], ESP_GATT_RSP_BY_APP, ESP_UUID_LEN_16, &kUuidCcc, kPermMitm, 2, 2, g_initStCcc);
+#if RIPAR_WIFI
+  decl(g_db[IDX_PROV_CHAR], ESP_GATT_AUTO_RSP, ESP_UUID_LEN_16, &kUuidCharDecl, ESP_GATT_PERM_READ, 1, 1,
+       &kPropWriteOnly);
+  decl(g_db[IDX_PROV_VAL], ESP_GATT_RSP_BY_APP, ESP_UUID_LEN_128, g_uuidProv, ESP_GATT_PERM_WRITE_ENC_MITM,
+       uint16_t(kMaxProv), 0, g_initProv);
+#else
+  (void)kPropWriteOnly;
+  (void)g_initProv;
+#endif
 }
 
 // ---- advertising
@@ -165,8 +184,11 @@ bool g_evTraffic = false, g_evCode = false, g_evPaired = false, g_evPairFailed =
 bool g_evRestartAdv = false, g_evResendTx = false, g_evResendSt = false;
 LineAssembler g_asm;
 LineQueue g_lines;
-std::string g_prep;       // prepared-write buffer (RX)
-std::string g_statusVal;  // STATUS value served on reads
+std::string g_prep;          // prepared-write buffer (RX or PROV, see g_prepHandle)
+uint16_t g_prepHandle = 0;   // the characteristic the prepared writes in g_prep belong to
+std::string g_statusVal;     // STATUS value served on reads
+std::string g_prov;          // RIPAR_WIFI: the last complete PROV value (Wi-Fi credentials JSON), for the app loop
+bool g_provNew = false;
 
 // setup progress (written by the Bluetooth task, polled by ble_link_enable)
 volatile bool g_session = false;  // callbacks registered, Bluedroid running
@@ -198,6 +220,26 @@ void wipe_txq() {
 }
 
 bool same_addr(const esp_bd_addr_t a, const esp_bd_addr_t b) { return std::memcmp(a, b, sizeof(esp_bd_addr_t)) == 0; }
+
+bool is_prov(uint16_t handle) {  // with g_mtx held (or from the Bluetooth task)
+#if RIPAR_WIFI
+  return handle != 0 && handle == g_handles[IDX_PROV_VAL];
+#else
+  (void)handle;
+  return false;
+#endif
+}
+
+void take_prov(const char* p, size_t n) {  // with g_mtx held: the newest value replaces an unread one
+  wipe_str(g_prov);
+  g_prov.assign(p, n);
+  g_provNew = true;
+}
+
+void clear_prep() {  // with g_mtx held
+  wipe_str(g_prep);
+  g_prepHandle = 0;
+}
 
 // ================================================================================================ Bluetooth task
 void maybe_start_adv() {  // Bluetooth task
@@ -359,15 +401,25 @@ void on_write(esp_gatt_if_t ifc, esp_ble_gatts_cb_param_t* p) {
     Lock l;
     if (!g_link.connected || !g_link.authenticated || w.conn_id != g_link.connId) {
       st = ESP_GATT_INSUF_AUTHENTICATION;
-    } else if (w.handle == g_handles[IDX_RX_VAL]) {
+    } else if (w.handle == g_handles[IDX_RX_VAL] || is_prov(w.handle)) {
       g_evTraffic = true;
-      if (w.is_prep) {
-        if (w.offset != g_prep.size())
+      const bool prov = is_prov(w.handle);
+      if (w.is_prep) {  // long write: one characteristic at a time
+        if (!g_prep.empty() && g_prepHandle != w.handle)
+          st = ESP_GATT_REQ_NOT_SUPPORTED;
+        else if (w.offset != g_prep.size())
           st = ESP_GATT_INVALID_OFFSET;
-        else if (g_prep.size() + w.len > kMaxPrep)
+        else if (g_prep.size() + w.len > (prov ? kMaxProv : kMaxPrep))
           st = ESP_GATT_PREPARE_Q_FULL;
-        else
+        else {
+          g_prepHandle = w.handle;
           g_prep.append(reinterpret_cast<const char*>(w.value), w.len);
+        }
+      } else if (prov) {  // one write = one whole JSON value
+        if (w.len == 0 || w.len > kMaxProv)
+          st = ESP_GATT_INVALID_ATTR_LEN;
+        else
+          take_prov(reinterpret_cast<const char*>(w.value), w.len);
       } else {
         std::vector<std::string> out;
         g_asm.push(w.value, w.len, out);
@@ -413,12 +465,16 @@ void on_exec_write(esp_gatt_if_t ifc, esp_ble_gatts_cb_param_t* p) {
     if (!g_link.connected || !g_link.authenticated || x.conn_id != g_link.connId) {
       st = ESP_GATT_INSUF_AUTHENTICATION;
     } else if (x.exec_write_flag == ESP_GATT_PREP_WRITE_EXEC && !g_prep.empty()) {
-      std::vector<std::string> out;
-      g_asm.push(reinterpret_cast<const uint8_t*>(g_prep.data()), g_prep.size(), out);
-      queue_lines(out);
+      if (is_prov(g_prepHandle)) {
+        take_prov(g_prep.data(), g_prep.size());
+      } else {
+        std::vector<std::string> out;
+        g_asm.push(reinterpret_cast<const uint8_t*>(g_prep.data()), g_prep.size(), out);
+        queue_lines(out);
+      }
       g_evTraffic = true;
     }
-    g_prep.clear();
+    clear_prep();
   }
   respond(ifc, x.conn_id, x.trans_id, st, nullptr);
 }
@@ -466,7 +522,7 @@ void gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t ifc, esp_ble_gatts_cb_pa
           std::memcpy(g_link.bda, p->connect.remote_bda, sizeof(esp_bd_addr_t));
           g_link.connectedAt = millis();
           g_asm.reset();
-          g_prep.clear();
+          clear_prep();
           g_evLink = true;
         }
       }
@@ -485,7 +541,7 @@ void gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t ifc, esp_ble_gatts_cb_pa
         if (g_link.pairing || g_link.codePending) g_evPairFailed = true;
         g_link = LinkState();
         g_asm.reset();
-        g_prep.clear();
+        clear_prep();
         g_evLink = true;
         g_evRestartAdv = true;
       }
@@ -583,7 +639,9 @@ void teardown() {
     g_evRestartAdv = g_evResendTx = g_evResendSt = false;
     g_asm.reset();
     g_lines.clear();
-    wipe_str(g_prep);
+    clear_prep();
+    wipe_str(g_prov);
+    g_provNew = false;
     g_statusVal.clear();
   }
   g_gattsIf = ESP_GATT_IF_NONE;
@@ -616,7 +674,7 @@ bool ble_link_enable(const std::string& name, std::string& err) {
     return false;
   }
   if (!uuid128_le(kServiceUuid, g_uuidSvc) || !uuid128_le(kRxUuid, g_uuidRx) || !uuid128_le(kTxUuid, g_uuidTx) ||
-      !uuid128_le(kStatusUuid, g_uuidSt)) {
+      !uuid128_le(kStatusUuid, g_uuidSt) || !uuid128_le(kProvUuid, g_uuidProv)) {
     err = "bad UUID table";
     return false;
   }
@@ -749,6 +807,21 @@ bool ble_link_poll_line(std::string& line) {
   if (!g_on) return false;
   Lock l;
   return g_lines.pop(line);
+}
+
+bool ble_link_poll_prov(std::string& json) {
+#if RIPAR_WIFI
+  if (!g_on) return false;
+  Lock l;
+  if (!g_provNew) return false;
+  wipe_str(json);
+  json.swap(g_prov);
+  g_provNew = false;
+  return true;
+#else
+  (void)json;
+  return false;
+#endif
 }
 
 BleEvt ble_link_tick(uint32_t now, const std::string& status, const std::string& output) {

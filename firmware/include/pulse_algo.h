@@ -24,7 +24,25 @@ struct PulseConfig {
   int minBeats = 5;
   uint32_t windowMs = 8000;
   float bpmMin = 40, bpmMax = 180;
+  // strict = the v1.2 anti-spoof liveness tests on top of the standard gate: 'too regular' timing statistics
+  // (successive differences, repeats, cross-channel IR/red timing) and the beat-shape screen (edge-like / slow
+  // symmetric upstrokes). They were tuned on synthetic signals and rejected a real resting thumb (82 bpm, very low
+  // beat-to-beat variability) on the first hardware test, so the DEVICE runs the standard gate until strict mode is
+  // tuned on recorded sensor data (see device_pulse_config / RIPAR_PULSE_STRICT). The standard gate still needs: a
+  // finger (IR DC), >= minBeats in the window, bpm in range, a rhythm (jitter <= 0.35), a recent beat, no ADC
+  // clipping, both channels moving, and IR and red pulses correlated.
+  bool strict = true;
 };
+
+#ifndef RIPAR_PULSE_STRICT
+#define RIPAR_PULSE_STRICT 0
+#endif
+// The configuration the device (and the emulator) run: strict only when built with RIPAR_PULSE_STRICT=1.
+inline PulseConfig device_pulse_config() {
+  PulseConfig c;
+  c.strict = RIPAR_PULSE_STRICT != 0;
+  return c;
+}
 
 class PulseDetector {
  public:

@@ -14,6 +14,8 @@
 //     needs the pulse. go() refuses Pulse, Armed and Review (use open_review) so the driver cannot skip a step.
 //   - A refused review (ok == false) never leads to a signature. Its only exits are Home and, on a co-sign review,
 //     Act::Deny (a deny can only restrict).
+//   - Act::Confirm (RIPAR_WIFI test feature) is only returned for a fully seen WifiJoin / WifiOn review: a device
+//     setting, never a signature; those jobs can never reach Pulse / Armed / Act::Sign.
 //   - Deny: Long2s on a co-sign Review -> Act::Deny (the driver builds the deny itself with policy.h
 //     deny_from_cosign and opens its review; that review signs with Act::SignNoPulse, no pulse).
 //   - Panic: only from HomeHold, i.e. a hold that BEGAN on Home, passed the "RELEASE = PAIRING QR / keep holding =
@@ -55,11 +57,16 @@ enum class Screen : uint8_t {
 // What the review / signature is for.
 // BleOn (RIPAR_BLE builds only): the confirmation that turns the radio on; it needs pulse + SIGN like a signature,
 // but nothing is signed.
-enum class Job : uint8_t { None, Pair, Cosign, Mandate, Deny, Privy, Revoke, Reopen, BleOn };
-bool job_needs_pulse(Job j);  // every job except Deny (Panic never goes through a review)
+// WifiJoin / WifiOn (RIPAR_WIFI builds only, a TEMPORARY TEST FEATURE, docs/WIFI_LINK.md): store the Wi-Fi network a
+// phone sent over BLE / turn Wi-Fi on. Device settings, not signatures: a fully seen review is confirmed with SIGN
+// WITHOUT the pulse (Act::Confirm); hold 2 s rejects.
+enum class Job : uint8_t { None, Pair, Cosign, Mandate, Deny, Privy, Revoke, Reopen, BleOn, WifiJoin, WifiOn };
+bool job_needs_pulse(Job j);  // every job except Deny, WifiJoin and WifiOn (Panic never goes through a review)
+bool job_is_setting(Job j);   // WifiJoin / WifiOn: confirmed with Act::Confirm, nothing is signed
 
 // Device actions menu (Screen::Menu). The last item is always BACK. The radio-free build has MENU_ITEMS items; a
-// RIPAR_BLE build constructs its Fsm with MENU_ITEMS_BLE (BLE LINK / BLE OFF and FORGET PHONE before BACK).
+// RIPAR_BLE build constructs its Fsm with MENU_ITEMS_BLE (BLE LINK / BLE OFF and FORGET PHONE before BACK), a
+// RIPAR_WIFI build with MENU_ITEMS_WIFI (then also WI-FI ON / WI-FI OFF and FORGET WI-FI before BACK).
 enum MenuItem : int {
   MENU_REVOKE = 0,
   MENU_REOPEN = 1,
@@ -69,6 +76,10 @@ enum MenuItem : int {
   MENU_FORGET = 3,
   MENU_BLE_BACK = 4,
   MENU_ITEMS_BLE = 5,
+  MENU_WIFI = 4,  // RIPAR_WIFI menu (after the two BLE items): WI-FI ON (Wi-Fi off) / WI-FI OFF (Wi-Fi on)
+  MENU_WIFI_FORGET = 5,
+  MENU_WIFI_BACK = 6,
+  MENU_ITEMS_WIFI = 7,
 };
 
 struct FsmIn {
@@ -93,6 +104,7 @@ enum class Act : uint8_t {
   Timeout,      // back to Home after timeoutMs without a key press
   BleConfirm,   // BlePair: Short (the driver confirms a shown pairing code, or goes Home)
   BleReject,    // BlePair: Long2s (the driver rejects a shown pairing code, or turns the radio off)
+  Confirm,      // fully seen WifiJoin / WifiOn review: Short -> the driver applies it (no pulse, nothing signed)
 };
 
 // First display row to draw: `first` clamped so that a full screen of `visible` rows is shown whenever the review
@@ -105,7 +117,7 @@ int review_next_first(int firstShown, int rowsShown);
 class Fsm {
  public:
   static const uint32_t DEFAULT_TIMEOUT_MS = 120000;
-  // menuItems: MENU_ITEMS (radio-free build) or MENU_ITEMS_BLE; the last item is BACK
+  // menuItems: MENU_ITEMS (radio-free build), MENU_ITEMS_BLE or MENU_ITEMS_WIFI; the last item is BACK
   explicit Fsm(uint32_t timeoutMs = DEFAULT_TIMEOUT_MS, int menuItems = MENU_ITEMS)
       : timeoutMs_(timeoutMs), menuItems_(menuItems < 2 ? 2 : menuItems) {}
 
