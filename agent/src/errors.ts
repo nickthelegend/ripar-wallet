@@ -216,3 +216,22 @@ export class ApiError extends Error {
     super(message);
   }
 }
+
+/**
+ * Longest string accepted for a device QR payload (`ur`) or a mandate `request` / `signature` field. A real multipart
+ * co-sign request is a few KiB; the cap keeps a hostile body from reaching the CBOR / UR decoders with megabytes.
+ */
+export const MAX_QR_FIELD = 16 * 1024;
+
+/** refuses (413) any of these fields that is a string longer than MAX_QR_FIELD, before anything decodes it */
+export function capQrFields(body: unknown, fields: readonly string[] = ['ur', 'request', 'signature']): void {
+  if (!body || typeof body !== 'object') return;
+  const o = body as Record<string, unknown>;
+  for (const k of fields) {
+    if (!Object.hasOwn(o, k)) continue;
+    const v = o[k];
+    if (typeof v === 'string' && v.length > MAX_QR_FIELD) {
+      throw new ApiError(413, 'field_too_large', `${k}: longer than ${MAX_QR_FIELD} characters`);
+    }
+  }
+}

@@ -23,25 +23,32 @@ export function KillSwitch() {
   const [msg, setMsg] = useState<KillSwitchMessage | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [run, setRun] = useState(0);
+  const [readErr, setReadErr] = useState<string | null>(null);
 
   const refresh = async () => {
     if (!device) return;
     setBusy(true);
+    setReadErr(null);
     try {
       const pc = publicClientFor(settings);
       const p = device.pinned;
+      // every read settles on its own: one failing read shows "could not read" for that value only
       const [open, nonce, minEpoch, ...ms] = await Promise.all([
         pc.readContract({ address: p.sentinel, abi: RIPAR_SENTINEL_ABI, functionName: 'laneOpen', args: [p.vault] }).catch(() => null),
         pc.readContract({ address: p.sentinel, abi: RIPAR_SENTINEL_ABI, functionName: 'lastReopenNonce', args: [p.vault] }).catch(() => null),
         readMinEpoch(pc, p.enforcer, device.keyId).catch(() => null),
-        ...mandates.map((m) => readMandateStatus(pc, p.enforcer, device.keyId, m.delegationHash, m.pulseTerms)),
+        ...mandates.map((m) => readMandateStatus(pc, p.enforcer, device.keyId, m.delegationHash, m.pulseTerms).catch(() => null)),
       ]);
       setLane({ open: open as boolean | null, nonce: nonce as bigint | null, minEpoch: minEpoch as bigint | null });
-      setMstat(Object.fromEntries(mandates.map((m, i) => [m.delegationHash, ms[i] as MandateStatus])));
+      setMstat(Object.fromEntries(mandates.flatMap((m, i) => (ms[i] ? [[m.delegationHash, ms[i] as MandateStatus]] : []))));
+      if (open === null && nonce === null && minEpoch === null) setReadErr(`No answer from ${settings.rpcUrl}: check the network on the Connect page.`);
+    } catch (e) {
+      setReadErr(errorText(e));
     } finally {
       setBusy(false);
     }
   };
+  const val = (v: unknown, text: string) => (busy && !lane ? 'reading...' : v === null || v === undefined ? 'could not read' : text);
   useEffect(() => {
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -81,20 +88,25 @@ export function KillSwitch() {
             Refresh
           </Button>
         </div>
+        {readErr && (
+          <Note kind="warning" alert>
+            {readErr}
+          </Note>
+        )}
         <div className="big-status">
           <div>
             <div className="k">Agent AUTO lane</div>
-            <div className={`v ${lane?.open === false ? 'bad' : lane?.open ? 'good' : ''}`}>
-              {!lane || lane.open === null ? '?' : lane.open ? 'Open' : 'Closed'}
+            <div className={`v ${lane?.open === false ? 'bad' : lane?.open ? 'good' : 'unknown'}`}>
+              {!lane ? 'reading...' : val(lane.open, lane.open ? 'Open' : 'Closed')}
             </div>
           </div>
           <div>
             <div className="k">Panic epoch (minEpoch)</div>
-            <div className="v">{minEpoch === null ? '?' : minEpoch.toString()}</div>
+            <div className={`v${minEpoch === null ? ' unknown' : ''}`}>{!lane ? 'reading...' : val(minEpoch, String(minEpoch))}</div>
           </div>
           <div>
             <div className="k">Last reopen nonce</div>
-            <div className="v">{lane?.nonce == null ? '?' : lane.nonce.toString()}</div>
+            <div className={`v${lane?.nonce == null ? ' unknown' : ''}`}>{!lane ? 'reading...' : val(lane.nonce, String(lane.nonce))}</div>
           </div>
           <div>
             <div className="k">Mandates recorded</div>
@@ -127,7 +139,9 @@ export function KillSwitch() {
                       <td>{m.epoch}</td>
                       <td>
                         {!st ? (
-                          '?'
+                          busy ? 'reading...' : 'could not read'
+                        ) : st.revoked === null ? (
+                          'could not read'
                         ) : st.revoked ? (
                           <Mark tone="bad">REVOKED</Mark>
                         ) : killed ? (
@@ -180,7 +194,7 @@ export function KillSwitch() {
       <section className="section">
         <h2>Read and relay</h2>
         {!msg ? (
-          <DeviceExchangePanel parts={[]} expect={[...KILL_TYPES]} onResponse={onRead} runKey={`kill-${run}`} figB="7.1" />
+          <DeviceExchangePanel parts={[]} expect={[...KILL_TYPES]} onResponse={onRead} runKey={`kill-${run}`} figB="7.1" round="kill" />
         ) : (
           <div className="stack">
             <VerifyPanel report={msg.report} />
@@ -205,7 +219,11 @@ export function KillSwitch() {
             </p>
           </div>
         )}
-        {err && <Note kind="warning">{err}</Note>}
+        {err && (
+          <Note kind="warning" alert>
+            {err}
+          </Note>
+        )}
       </section>
     </div>
   );

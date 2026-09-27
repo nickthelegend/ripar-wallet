@@ -99,6 +99,17 @@ function heart(g: CanvasRenderingContext2D, cx: number, cy: number, r: number, c
   g.fill();
 }
 
+/**
+ * The rows of the review page on screen. The emulator's `display.rows` already IS the visible page (firmware/emu
+ * README: "exactly as ui_review() pages them"; rows.length <= rowsShown) and `firstRow` is the page's absolute index
+ * into the whole review, used only for the scrollbar. Slicing again with firstRow blanked every page after the first.
+ * A display that carries every row (rows.length > rowsShown) is paged here.
+ */
+export function visibleReviewRows(d: Extract<EmuDisplay, { kind: 'review' }>): Extract<EmuDisplay, { kind: 'review' }>['rows'] {
+  if (d.rows.length > d.rowsShown) return d.rows.slice(d.firstRow, d.firstRow + d.rowsShown);
+  return d.rows;
+}
+
 export function drawLcd(g: CanvasRenderingContext2D, d: EmuDisplay, s: EmuState, beatOn = false): void {
   g.save();
   g.fillStyle = C.bg;
@@ -185,7 +196,7 @@ export function drawLcd(g: CanvasRenderingContext2D, d: EmuDisplay, s: EmuState,
       const kTop = 32;
       const kRow = 20;
       const bottom = LCD_H - 24 - 2;
-      d.rows.slice(d.firstRow, d.firstRow + d.rowsShown).forEach((row, i) => {
+      visibleReviewRows(d).forEach((row, i) => {
         const y = kTop + i * kRow;
         if (row.label) text(g, row.label, 6, y + 2, C.dim, F_BODY);
         if (row.value) text(g, row.value, row.full ? 6 : 98, y + 2, row.colorHex, F_BODY);
@@ -312,8 +323,9 @@ export function describeLcd(d: EmuDisplay): string {
     case 'scan':
       return `Scanning. ${d.hint} ${d.progress > 0 ? `${Math.round(d.progress * 100)} percent received.` : ''}`;
     case 'review': {
-      const rows = d.rows.slice(d.firstRow, d.firstRow + d.rowsShown).map((r) => `${r.label} ${r.value}`.trim());
-      return `${d.title}. ${rows.join('. ')}. ${d.footer}`;
+      const rows = visibleReviewRows(d).map((r) => `${r.label} ${r.value}`.trim());
+      const page = d.totalRows > d.rowsShown ? ` Rows ${d.firstRow + 1} to ${Math.min(d.totalRows, d.firstRow + rows.length)} of ${d.totalRows}.` : '';
+      return `${d.title}.${page} ${rows.join('. ')}. ${d.footer}`;
     }
     case 'pulse':
       return `${d.title}. ${d.bpmText} BPM, ${d.beatsText}. ${d.status}`;

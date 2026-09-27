@@ -29,6 +29,8 @@ import { deriveVault } from '../src/lib/flows/vault';
 import { previewCosign, previewMandate } from '../src/lib/review-preview';
 import type { KeysOnly, MandateRecord, PairedDevice } from '../src/lib/store';
 import { DeviceExchange } from '../src/device/transport';
+import type { EmuDisplay } from '../src/device/emulator';
+import { describeLcd, visibleReviewRows } from '../src/device/lcd';
 import { AGENT, DEMO_K1, DEMO_VAULT, DEP, MOCK_USD, NOW, PAYEE, Rig, loadEmu, tickPromises, track } from './helpers';
 
 let rig: Rig;
@@ -205,6 +207,23 @@ describe('co-sign and deny', () => {
     expect(s.screen).toBe('review');
     expect(s.review!.ok, s.review!.refusal).toBe(true);
     expect(preview.lines).toEqual(linesOf(s));
+    // the emulated LCD paints EVERY page: display.rows is already the visible page (firstRow is absolute)
+    const pages: string[] = [];
+    let p = s;
+    for (let i = 0; i < 20 && p.screen === 'review'; i++) {
+      const d = p.display as Extract<EmuDisplay, { kind: 'review' }>;
+      expect(d.kind).toBe('review');
+      const rows = visibleReviewRows(d);
+      expect(rows.length, `page ${i + 1} (firstRow ${d.firstRow})`).toBeGreaterThan(0);
+      expect(rows.length).toBeLessThanOrEqual(d.rowsShown);
+      if (i > 0) expect(d.firstRow).toBeGreaterThan(0);
+      pages.push(describeLcd(d));
+      if (p.review!.allSeen) break;
+      p = rig.key('press');
+    }
+    expect(pages.length).toBeGreaterThanOrEqual(3);
+    expect(pages.slice(1).join(' ')).toMatch(/Nonce/);
+    expect(pages[1]).toMatch(/Rows \d+ to \d+ of \d+/);
     rig.pageToEnd();
     rig.pulseAndSign();
     await tickPromises();

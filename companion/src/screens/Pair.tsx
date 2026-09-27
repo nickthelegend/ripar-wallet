@@ -6,7 +6,7 @@ import { PageHead } from '../App';
 import { DeviceExchangePanel } from '../components/DeviceExchangePanel';
 import { VerifyPanel } from '../components/Review';
 import { TxAction } from '../components/TxAction';
-import { Button, EmulatorMark, Hex, Mark, Note, Procedure, Spec, Step, type StepState } from '../components/ui';
+import { Button, EmulatorMark, Hex, Mark, NextStep, Note, Procedure, Spec, Step, type StepState } from '../components/ui';
 import { registerDeviceWrite } from '../lib/chain';
 import { publicClientFor } from '../lib/clients';
 import { errorText, utcText } from '../lib/format';
@@ -135,12 +135,7 @@ export function Pair() {
               onResponse={onKeys}
               runKey="keys-only"
               figB="3.1"
-              instructions={
-                <ol className="small" style={{ margin: 0, paddingLeft: 18 }}>
-                  <li>On the device's Home screen, hold SIGN for 2 s until it shows RELEASE = PAIRING QR.</li>
-                  <li>Release. The device shows its keys as a QR (nothing is signed, nothing is pinned).</li>
-                </ol>
-              }
+              round="keys"
             />
           )}
           {keysErr && <Note kind="warning">{keysErr}</Note>}
@@ -148,6 +143,7 @@ export function Pair() {
 
         <Step n={2} title="Pin contracts and vault" state={s2}>
           {!deployment && <Note kind="caution">Load the Ripar deployments JSON on the Connect page first.</Note>}
+          {deployment && !keys && <p className="small muted">After the device keys are read (step 1): the vault follows from K1.</p>}
           {deployment && keys && !plan && (
             <>
               <Spec
@@ -194,22 +190,27 @@ export function Pair() {
                 runKey={plan.request.reqId}
                 figA="3.2"
                 figB="3.3"
-                instructions={
-                  <ol className="small" style={{ margin: 0, paddingLeft: 18 }}>
-                    <li>Home screen: press SIGN to scan. The device collects the looping parts.</li>
-                    <li>Read every line of the review: each contract, the vault, the clock. Press to page.</li>
-                    <li>On the last page press once, rest your thumb on the sensor until PULSE OK, then press SIGN.</li>
-                  </ol>
-                }
+                round="pair"
               />
+              <p className="small muted">
+                The device checks the vault itself: firmware v1.2 refuses any vault but the SimpleFactory vault of its own
+                K1, which is exactly the one derived above (never typed in). If it answers VAULT IS NOT THIS DEVICE'S VAULT,
+                another device answered than the one whose keys were read: read the keys again. PANIC FIRST or REVOKE
+                FIRST: use the Kill switch page, then pair again.
+              </p>
             </>
           )}
           {report && <VerifyPanel report={report} extra={report.type === 'ripar-pair' && report.fields.emulator ? 'EMULATOR' : undefined} />}
-          {pairErr && <Note kind="warning">{pairErr}</Note>}
+          {pairErr && (
+            <Note kind="warning" alert>
+              {pairErr}
+            </Note>
+          )}
           {paired && !plan && device && (
             <Note kind="ok" title="Paired">
               <p>
-                Chain {device.pinned.chainId}, vault {device.pinned.vault}. Both BindDevice signatures verified.
+                Chain {device.pinned.chainId}, vault <Hex value={device.pinned.vault} label="pinned vault" />. Both BindDevice
+                signatures verified.
               </p>
             </Note>
           )}
@@ -249,6 +250,7 @@ export function Pair() {
           )}
         </Step>
       </Procedure>
+      {registered && <NextStep to="vault" label="Vault">The device is paired and registered. Deploy and fund its vault next.</NextStep>}
     </div>
   );
 }

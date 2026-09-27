@@ -156,10 +156,15 @@ export function adoptAgentRequest(
   if (q.expiry > BigInt(opts.now + 7 * 86400)) throw new ProtoError("the agent's request expires more than 7 days ahead: the device refuses it");
   if (opts.nonceUsed) throw new ProtoError(`nonce ${q.nonce} was already used on-chain for this mandate: the redemption would revert (CosignReplayed)`);
   tokenCheck(q);
-  const denyRequestHash = denyRequestHashOf(q);
-  if (e.requestHash && e.requestHash.toLowerCase() !== denyRequestHash.toLowerCase()) {
+  const plan = planOfCbor(cbor, opts.fragLen);
+  if (e.requestHash && e.requestHash.toLowerCase() !== plan.denyRequestHash.toLowerCase()) {
     throw new ProtoError("the agent's requestHash is not the hash of its own request");
   }
+  return plan;
+}
+
+function planOfCbor(cbor: Uint8Array, fragLen = 70): CosignPlan {
+  const q = decodeRequest('cosign', cbor) as CosignRequest;
   const type = REQ_TYPES.cosign;
   const request: BuiltRequest = {
     kind: 'cosign',
@@ -168,9 +173,54 @@ export function adoptAgentRequest(
     map: cborDecode(cbor) as CborMap,
     cbor,
     ur: urSingle(type, cbor),
-    parts: urParts(type, cbor, opts.fragLen ?? 70),
+    parts: urParts(type, cbor, fragLen),
   };
-  return { request, decoded: q, nonce: q.nonce, expiry: q.expiry, denyRequestHash };
+  return { request, decoded: q, nonce: q.nonce, expiry: q.expiry, denyRequestHash: denyRequestHashOf(q) };
+}
+
+/**
+ * The plan of a co-sign request shown earlier (persisted as its single-part UR), so a reload resumes the same round
+ * with the same req-id and nonce. The escalation must still describe it (checked like the agent's own request).
+ */
+export function resumePlan(requestUr: string, e: Escalation, device: PairedDevice, fragLen = 70): CosignPlan {
+  const { kind, cbor } = readRequest(requestUr);
+  if (kind !== 'cosign') throw new ProtoError(`a stored ${kind} request, not a co-sign`);
+  const plan = planOfCbor(cbor, fragLen);
+  const q = plan.decoded;
+  const p = device.pinned;
+  const same = (a: Uint8Array, b: string) => bytesEqual(a, toAddr(b));
+  if (
+    Number(q.chainId) !== p.chainId ||
+    !same(q.enforcer, p.enforcer) ||
+    !same(q.delegator, p.vault) ||
+    !bytesEqual(q.delegationHash, toBytes(e.delegationHash, 32)) ||
+    !same(q.target, e.call.target) ||
+    q.value !== e.call.value ||
+    !bytesEqual(q.calldata, toBytes(e.call.callData))
+  ) {
+    throw new ProtoError('the stored request no longer matches this escalation or the pinned device');
+  }
+  return plan;
+}
+
+/**
+ * May this escalation show a request with this nonce? A nonce the chain has used can never be redeemed. A nonce this
+ * companion already handed out is fine for the SAME escalation (showing its request again after a reload or a
+ * detour: at most one redemption can ever use it on chain) and refused for any other escalation.
+ */
+export function nonceConflict(
+  escalationId: string,
+  delegationHash: string,
+  nonce: bigint,
+  work: Record<string, { delegationHash: string; nonce: string }>,
+): string | null {
+  for (const [id, w] of Object.entries(work)) {
+    if (id === escalationId) continue;
+    if (w.delegationHash.toLowerCase() === delegationHash.toLowerCase() && w.nonce === nonce.toString()) {
+      return `nonce ${nonce} was already handed out for escalation ${id} under this mandate: only one of them could ever be redeemed (CosignReplayed)`;
+    }
+  }
+  return null;
 }
 
 /** accept() filter: a ripar-cosign or ripar-deny echoing the co-sign's req-id */

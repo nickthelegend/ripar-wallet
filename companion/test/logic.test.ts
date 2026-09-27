@@ -30,7 +30,11 @@ import {
 import type { Courier } from '../src/lib/clients';
 import { durationText, hexGroups, parseUnits, utcText } from '../src/lib/format';
 import { deriveVault } from '../src/lib/flows/vault';
-import { devStackSettings, loadDevStack } from '../src/lib/devstack';
+import { devStackSettings, loadDevStack, probeDevStack } from '../src/lib/devstack';
+import { nonceConflict } from '../src/lib/flows/cosign';
+import { ownEntry } from '../src/lib/store';
+import { deviceGuide, refusalHelp } from '../src/device/guide';
+import type { EmuState } from '../src/device/emulator';
 import { stringifyJson } from '../src/lib/json';
 import { DeviceExchange, HardwareQrTransport } from '../src/device/transport';
 import { DEMO_K1, DEMO_VAULT, DEP, DEPLOYMENT_JSON, ManualScheduler, MOCK_USD, PAYEE, tickPromises } from './helpers';
@@ -325,5 +329,156 @@ describe('?devstack (scripts/dev-stack.sh stack.json)', () => {
     expect(await loadDevStack({ search: '', origin: 'http://127.0.0.1:5173' }, fake)).toBeNull();
     expect((await loadDevStack({ search: '?devstack', origin: 'http://127.0.0.1:5173' }, fake))?.rpcUrl).toBe('http://127.0.0.1:8545');
     await expect(loadDevStack({ search: '?devstack=https://evil.example/s.json', origin: 'http://127.0.0.1:5173' }, fake)).rejects.toThrow(/only a file served/);
+  });
+});
+
+describe('review fixes: prototype-safe ids, agent client calls, dev stack probe', () => {
+  const base = {
+    id: 'esc-1',
+    chainId: 10143,
+    enforcer: DEP.enforcer,
+    delegationHash: H32('ab'),
+    delegator: DEMO_VAULT,
+    redeemer: PAYEE,
+    call: { target: MOCK_USD, value: '0', callData: '0x' },
+    reason: 'per-tx-cap',
+  };
+
+  it('refuses escalation ids that name Object.prototype members; records are prototype-less', () => {
+    for (const id of ['__proto__', 'constructor', 'prototype', 'toString', 'hasOwnProperty']) {
+      expect(() => parseEscalation({ ...base, id }), id).toThrow(/reserved/);
+    }
+    expect(parseEscalations([{ ...base, id: '__proto__' }, base]).items.map((e) => e.id)).toEqual(['esc-1']);
+    const rec = { 'esc-1': 1 } as Record<string, number>;
+    expect(ownEntry(rec, '__proto__')).toBeUndefined();
+    expect(ownEntry(rec, 'constructor')).toBeUndefined();
+    expect(ownEntry(rec, 'esc-1')).toBe(1);
+  });
+
+  it('POST /run and a deny with its relay transaction; the event stream carries the token', async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const fake = (async (url: string, init?: RequestInit) => {
+      calls.push({ url, ...(init ? { init } : {}) });
+      if (url.endsWith('/run')) return new Response(JSON.stringify({ planner: 'scripted', summary: 'sent INV-001 to the human', actions: [{}, {}] }));
+      return new Response(JSON.stringify({ escalation: { id: 'esc-1', status: 'denied' } }));
+    }) as typeof fetch;
+    const c = new AgentClient('http://127.0.0.1:8787', fake, 'tok');
+    const r = await c.run();
+    expect(r).toEqual({ summary: 'sent INV-001 to the human', planner: 'scripted', error: null, actions: 2 });
+    expect(calls[0]!.init!.method).toBe('POST');
+    expect((calls[0]!.init!.headers as Record<string, string>).authorization).toBe('Bearer tok');
+    const deny = { ur: 'UR:RIPAR-DENY/X', requestHash: H32('05'), agentId: '1', presenceHash: H32('06'), emulator: false };
+    await c.postDeny('esc-1', { ...deny, attestTx: null });
+    expect(JSON.parse(String(calls[1]!.init!.body))).toEqual({ ur: 'UR:RIPAR-DENY/X', note: 'denied on the device; on-chain relay pending' });
+    await c.postDeny('esc-1', { ...deny, attestTx: H32('07') });
+    expect(JSON.parse(String(calls[2]!.init!.body))).toMatchObject({ ur: 'UR:RIPAR-DENY/X', attestTx: H32('07') });
+
+    const opened: string[] = [];
+    class FakeEs {
+      onerror: (() => void) | null = null;
+      constructor(u: string) {
+        opened.push(u);
+      }
+      addEventListener() {}
+      close() {}
+    }
+    const g = globalThis as { EventSource?: unknown };
+    const prev = g.EventSource;
+    g.EventSource = FakeEs;
+    try {
+      c.stream(
+        () => {},
+        () => {},
+      )();
+      new AgentClient('http://127.0.0.1:8787', fake).stream(
+        () => {},
+        () => {},
+      )();
+    } finally {
+      g.EventSource = prev;
+    }
+    expect(opened).toEqual(['http://127.0.0.1:8787/events?token=tok', 'http://127.0.0.1:8787/events']);
+  });
+
+  it('probes a local dev stack only on a local origin, and only a JSON stack.json', async () => {
+    const stack = {
+      chainId: 10143,
+      rpcUrl: 'http://127.0.0.1:8545',
+      agentUrl: 'http://127.0.0.1:8787',
+      courier: '0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266',
+      deployments: JSON.parse(DEPLOYMENT_JSON),
+    };
+    const json = (async () => new Response(JSON.stringify(stack), { headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch;
+    const html = (async () => new Response('<!doctype html>', { headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch;
+    const down = (async () => {
+      throw new TypeError('fetch failed');
+    }) as unknown as typeof fetch;
+    const local = { origin: 'http://127.0.0.1:5173', hostname: '127.0.0.1' };
+    expect((await probeDevStack(local, json))?.agentUrl).toBe('http://127.0.0.1:8787');
+    expect(await probeDevStack(local, html)).toBeNull(); // the dev server's SPA fallback
+    expect(await probeDevStack(local, down)).toBeNull();
+    expect(await probeDevStack({ origin: 'https://ripar.example', hostname: 'ripar.example' }, json)).toBeNull();
+  });
+});
+
+describe('device guidance (docs/FIRMWARE.md section 5)', () => {
+  const st = (over: Record<string, unknown>) =>
+    ({
+      screen: 'home',
+      review: null,
+      display: { kind: 'home' },
+      scan: { active: false, hint: '', progress: 0, received: 0, seqLen: 0 },
+      pulse: { finger: false, beats: 0, minBeats: 5 },
+      qr: null,
+      message: null,
+      ...over,
+    }) as unknown as EmuState;
+
+  it('says what to press next, per screen, and never "keep holding" for the menu on Home', () => {
+    expect(deviceGuide(st({}), 'cosign', true, false).text).toMatch(/Press SIGN once to scan/);
+    expect(deviceGuide(st({}), 'keys', false, false).text).toMatch(/5 s and it PANICs/);
+    expect(deviceGuide(st({ screen: 'homeHold' }), 'keys', false, false).text).toMatch(/Release SIGN now/);
+    const review = (over: Record<string, unknown>, display: Record<string, unknown> = {}) =>
+      st({
+        screen: 'review',
+        review: { job: 'cosign', ok: true, refusal: '', allSeen: false, ...over },
+        display: { kind: 'review', firstRow: 8, rowsShown: 9, totalRows: 40, moreBelow: true, ...display },
+      });
+    expect(deviceGuide(review({}), 'cosign', true, false).text).toMatch(/^Page 2 of 5: .*Hold 2 s to deny/);
+    expect(deviceGuide(review({}, { firstRow: 31, moreBelow: false }), 'cosign', true, false).text).toMatch(/^Page 5 of 5/);
+    expect(deviceGuide(review({ allSeen: true }), 'cosign', true, false).text).toMatch(/continue to the pulse check/);
+    expect(deviceGuide(review({ job: 'deny', allSeen: true }), 'cosign', true, false).text).toMatch(/sign the DENY/);
+    expect(deviceGuide(st({ screen: 'pulse' }), 'mandate', true, false).text).toMatch(/Place thumb/);
+    expect(deviceGuide(st({ screen: 'armed' }), 'mandate', true, true).text).toMatch(/press SIGN now/);
+    // a QR still on screen while this round shows a request is an earlier answer (this round's would have been read)
+    expect(deviceGuide(st({ screen: 'qr', qr: { signed: true } }), 'mandate', true, false).text).toMatch(/earlier answer: press SIGN once to go Home/);
+    expect(deviceGuide(st({ screen: 'qr', qr: { signed: true } }), 'kill', false, false).text).toMatch(/this page reads it/);
+  });
+
+  it('explains the device refusals, including the firmware v1.2 vault and PANIC FIRST rules', () => {
+    const g = deviceGuide(
+      st({ screen: 'review', review: { job: 'pair', ok: false, refusal: "VAULT IS NOT THIS DEVICE'S VAULT", allSeen: false } }),
+      'pair',
+      true,
+      false,
+    );
+    expect(g.tone).toBe('bad');
+    expect(g.text).toMatch(/REFUSED.*VAULT IS NOT.*SimpleFactory vault of its own K1/);
+    expect(refusalHelp('PANIC FIRST')).toMatch(/hold SIGN for 5 s/);
+    expect(refusalHelp('REVOKE FIRST')).toMatch(/revoke it/);
+    expect(refusalHelp('something else entirely')).toBeNull();
+    const m = deviceGuide(st({ screen: 'message', message: { title: 'REFUSED', body: 'PANIC FIRST', color: 'bad' } }), 'pair', true, false);
+    expect(m.text).toMatch(/PANIC FIRST.*Press SIGN to go Home.*5 s/);
+  });
+});
+
+describe('co-sign nonces are tied to their escalation', () => {
+  it('the same escalation may show its request again; another escalation may not reuse the nonce', () => {
+    const dh = H32('ab');
+    const work = { 'esc-1': { delegationHash: dh, nonce: '42' } };
+    expect(nonceConflict('esc-1', dh, 42n, work)).toBeNull();
+    expect(nonceConflict('esc-2', dh, 42n, work)).toMatch(/esc-1/);
+    expect(nonceConflict('esc-2', H32('cd'), 42n, work)).toBeNull();
+    expect(nonceConflict('esc-2', dh, 43n, work)).toBeNull();
   });
 });

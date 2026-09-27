@@ -5,6 +5,7 @@ import { Icon } from './components/Icon';
 import { EmulatorMark } from './components/ui';
 import { useDevice } from './device/DeviceContext';
 import { NETWORKS } from './lib/networks';
+import { useSetupStatus } from './lib/setup';
 import { currentMandate, deploymentOf, store, useStore } from './lib/store';
 import { About } from './screens/About';
 import { Activity } from './screens/Activity';
@@ -60,29 +61,51 @@ function useTheme() {
 
 type TocState = { text: string; tone?: 'done' | 'next' | 'alert' };
 
+/** which setup steps are really done: from chain reads where the chain is the truth (registry, vault code, funds) */
+export function useSetupDone(): Record<string, boolean> {
+  const s = useStore((x) => x);
+  const dev = useDevice();
+  const chain = useSetupStatus();
+  const dep = deploymentOf(s.settings);
+  const m = currentMandate(s);
+  return {
+    connect: !!dep.deployment,
+    device: dev.mode === 'hardware' || dev.emulatorStatus === 'ready',
+    pair: !!s.device && chain.registered === true,
+    vault: !!s.device && chain.vaultDeployed === true && chain.vaultFunded === true,
+    mandate: !!m && !!m.sentToAgentAt && chain.mandateLive !== false,
+  };
+}
+
 function useTocStates(): Record<Route, TocState> {
   const s = useStore((x) => x);
   const dev = useDevice();
+  const chain = useSetupStatus();
   const dep = deploymentOf(s.settings);
   const m = currentMandate(s);
-  const setupDone: Record<string, boolean> = {
-    connect: !!dep.deployment,
-    device: dev.mode === 'hardware' || dev.emulatorStatus === 'ready',
-    pair: !!s.device,
-    vault: !!s.device,
-    mandate: !!m,
-  };
+  const setupDone = useSetupDone();
   const next = SETUP.find((x) => !setupDone[x.id])?.id;
-  const st = (id: Route, doneText: string): TocState =>
-    setupDone[id] ? { text: doneText, tone: 'done' } : id === next ? { text: 'next', tone: 'next' } : { text: '' };
+  const st = (id: Route, doneText: string, partial?: string): TocState =>
+    setupDone[id]
+      ? { text: doneText, tone: 'done' }
+      : id === next
+        ? { text: partial ?? 'next', tone: 'next' }
+        : partial
+          ? { text: partial }
+          : { text: '' };
   const handled = Object.keys(s.inbox).length;
+  const waiting = Object.values(s.work).filter((w) => w.answer && !w.agentAt).length;
   return {
     connect: dep.error ? { text: 'check', tone: 'alert' } : st('connect', 'ready'),
     device: st('device', dev.mode === 'emulator' ? 'emulator' : 'hardware'),
-    pair: st('pair', 'paired'),
-    vault: st('vault', 'derived'),
-    mandate: st('mandate', 'signed'),
-    inbox: { text: handled ? `${handled} answered` : '' },
+    pair: st('pair', 'registered', s.device ? (chain.registered === false ? 'register' : undefined) : undefined),
+    vault: st(
+      'vault',
+      'funded',
+      s.device ? (chain.vaultDeployed === false ? 'deploy' : chain.vaultDeployed && chain.vaultFunded === false ? 'fund' : undefined) : undefined,
+    ),
+    mandate: m && chain.mandateLive === false ? { text: 'dead', tone: 'alert' } : st('mandate', 'signed', m && !m.sentToAgentAt ? 'send' : undefined),
+    inbox: waiting ? { text: `${waiting} to deliver`, tone: 'alert' } : { text: handled ? `${handled} answered` : '' },
     kill: { text: '' },
     activity: { text: '' },
     about: { text: '' },
@@ -108,8 +131,15 @@ function Toc({ route, onNavigate }: { route: Route; onNavigate: () => void }) {
       </ol>
     </>
   );
+  const settings = useStore((s) => s.settings);
+  const device = useStore((s) => s.device);
   return (
     <nav className="toc" aria-label="Contents">
+      <p className="toc-status">
+        {NETWORKS[settings.network]?.label ?? 'Network'} ({settings.chainId})
+        <br />
+        {device ? `Paired ${device.k1Address.slice(0, 8)}...${device.k1Address.slice(-4)}` : 'No device paired'}
+      </p>
       {group('Setup', SETUP, true)}
       {group('Operation', OPERATION, false)}
       {group('Reference', REFERENCE, false)}
@@ -137,6 +167,20 @@ export function App() {
   const device = useStore((s) => s.device);
   const dev = useDevice();
   const main = useRef<HTMLElement>(null);
+
+  // the contents sheet (narrow screens): Escape closes it, opening it moves focus to its first link
+  useEffect(() => {
+    if (!menu) return;
+    document.querySelector<HTMLElement>('#rail a')?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setMenu(false);
+        document.querySelector<HTMLElement>('.menu-btn')?.focus();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [menu]);
 
   useEffect(() => {
     setMenu(false);
@@ -173,8 +217,9 @@ export function App() {
           </span>
           <span className="sep" aria-hidden="true" />
           <span>{device ? `Paired ${device.k1Address.slice(0, 8)}...${device.k1Address.slice(-4)}` : 'No device paired'}</span>
-          {dev.mode === 'emulator' && <EmulatorMark />}
         </div>
+        {/* always visible, at every width: the signer is an emulator with demo keys */}
+        {dev.mode === 'emulator' && <EmulatorMark compact />}
         <span className="grow" />
         <button
           type="button"
@@ -185,9 +230,9 @@ export function App() {
         >
           <Icon name={theme === 'dark' ? 'moon' : theme === 'light' ? 'sun' : 'device'} />
         </button>
-        <a className="kill" href="#/kill" aria-current={route === 'kill' ? 'page' : undefined}>
+        <a className="kill" href="#/kill" aria-label="Kill switch" aria-current={route === 'kill' ? 'page' : undefined}>
           <Icon name="power" size={16} />
-          Kill switch
+          <span className="kill-text">Kill switch</span>
         </a>
       </header>
       <div className="shell">

@@ -155,6 +155,44 @@ describe('fountain decoder vs encoder (random messages)', () => {
   });
 });
 
+describe('decoder limits (hostile multipart parts)', () => {
+  const hostile = (seqNum: number, seqLen: number, messageLen: number, frag: Uint8Array): string =>
+    `ur:ripar-cosign/${seqNum}-${seqLen}/${bytewordsEncode(cborEncode([seqNum, seqLen, messageLen, 0, frag]))}`;
+  it('a part claiming seqLen 2^32-1 is refused at once by urRead, UrDecoder and FountainDecoder', () => {
+    const t0 = Date.now();
+    const ur = hostile(1, 0xffffffff, 60, new Uint8Array(1));
+    expect(() => urRead(ur)).toThrow(/seqLen 4294967295 outside 1\.\.128/);
+    expect(() => new UrDecoder().receive(ur)).toThrow(/seqLen/);
+    expect(() => new FountainDecoder().receive({ seqNum: 1, seqLen: 1_000_000, messageLen: 1_000_000, checksum: 0, data: new Uint8Array(1) })).toThrow(
+      /seqLen/,
+    );
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
+  it('a mixed part with a huge seqLen does not hang the camera decoder', () => {
+    const t0 = Date.now();
+    expect(() => new UrDecoder().receive(hostile(2_000_001, 1_000_000, 1_000_000, new Uint8Array(1)))).toThrow(/seqLen/);
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
+  it('messageLen above 8192 and inconsistent lengths are refused', () => {
+    expect(() => urRead(hostile(1, 100, 9000, new Uint8Array(90)))).toThrow(/messageLen 9000/);
+    expect(() => urRead(hostile(1, 5, 100, new Uint8Array(10)))).toThrow(/inconsistent/);
+    expect(() => urRead(hostile(0, 1, 10, new Uint8Array(10)))).toThrow(/seqNum/);
+  });
+  it('missing-part errors stay short', () => {
+    const parts = urParts('ripar-cosign', Xoshiro256.fromString('big').nextData(8000), 70);
+    expect(parts.length).toBeLessThanOrEqual(128);
+    let msg = '';
+    try {
+      urRead(parts[0]!);
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    expect(msg).toMatch(/in all\)/);
+    expect(msg.length).toBeLessThan(200);
+    expect(urRead(parts.join(' ')).cbor.length).toBe(8000);
+  });
+});
+
 describe('canonical CBOR (ref_ur.cbor)', () => {
   it('shortest heads, negative ints, tags, simple values, insertion-order maps', () => {
     const cases: [unknown, string][] = [

@@ -5,8 +5,8 @@ import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from 'ope
 import { QwenPlanner, SYSTEM_PROMPT } from '../src/planner/qwen.js';
 import { ScriptedPlanner, memoRedirect } from '../src/planner/scripted.js';
 import { TOOL_DEFINITIONS } from '../src/planner/tools.js';
-import { ATTACKER, CLOUDNEST, makeFixture, type Fixture } from './helpers/fixture.js';
-import { cosignEscalation, delegationJson } from './helpers/soft-device.js';
+import { ATTACKER, CLOUDNEST, RELAY, makeFixture, type Fixture } from './helpers/fixture.js';
+import { cosignEscalation, delegationJson, denyEscalation } from './helpers/soft-device.js';
 
 let f: Fixture;
 beforeEach(async () => {
@@ -40,7 +40,7 @@ describe('scripted planner', () => {
     // the human co-signs INV-001 and denies the redirect
     const e1 = esc[0]!;
     await f.svc.submitCosign(e1.id, { ur: cosignEscalation(f.dev, e1.cosign, e1.request.reqId).ur });
-    await f.svc.deny(esc[3]!.id);
+    await f.svc.deny(esc[3]!.id, { ur: denyEscalation(f.dev, esc[3]!, RELAY, 7n) });
     f.chain.time += 61n;
     const s6 = await p.step();
     expect(s6.summary).toMatch(/paid INV-001 .* AUTO/);

@@ -26,12 +26,12 @@ import {
   type CosignRequest,
 } from '@ripar/protocol';
 import type { Address, Hex } from 'viem';
-import { TxPendingError, type Execution, type RiparChain, type TxOutcome } from './chain.js';
+import { TxPendingError, type Execution, type RiparChain, type SignedTx, type TxOutcome } from './chain.js';
 import type { AgentConfig } from './config.js';
-import { ApiError, ChainRevertError } from './errors.js';
+import { ApiError, capQrFields, ChainRevertError } from './errors.js';
 import type { EventBus } from './events.js';
 import { delegationOf, mandateFromInput, validateMandate, type MandateInput } from './mandate.js';
-import type { AgentStore } from './store.js';
+import { ownEntry, type AgentStore } from './store.js';
 import type {
   CosignRequestJson,
   Escalation,
@@ -39,9 +39,31 @@ import type {
   Invoice,
   InvoiceState,
   PaymentRecord,
+  PendingTx,
   StoredMandate,
 } from './types.js';
-import { checksum, errorMessage, fmtAmount, isHexBytes, Mutex, parseAmount, randomId, sameAddress, shortAddr, ZERO_ADDRESS } from './util.js';
+import {
+  checksum,
+  displaySymbol,
+  errorMessage,
+  fmtAmount,
+  isHexBytes,
+  Mutex,
+  parseAmount,
+  randomId,
+  SAFE_SYMBOL,
+  sameAddress,
+  shortAddr,
+  ZERO_ADDRESS,
+} from './util.js';
+
+/** escalation ids are randomId('esc'): anything else is refused before it reaches a lookup */
+export const ESCALATION_ID = /^esc_[0-9a-f]{16}$/;
+
+/** how often settlePending() re-broadcasts the same signed transaction (state() polls call it often) */
+const REBROADCAST_EVERY_MS = 15_000;
+
+const VAULT_NOT_DEPLOYED = 'the vault is not deployed yet: deploy it (companion Vault page) before the agent can pay';
 
 export interface PayOptions {
   /** a destination other than the invoice's payee of record (e.g. an injected memo): always forced to the device */
@@ -68,6 +90,24 @@ export interface CosignSubmission {
   s?: string;
   rs?: string;
 }
+
+/**
+ * POST /escalations/:id/deny. `ur` = the device's ripar-deny (verified before anything changes); without it only an
+ * operator can deny ({operator: true}, and only when AGENT_API_TOKEN authenticates the request). `attestTx` = the
+ * companion's RiparReputationRelay.attestDenial transaction, recorded on the (already) denied escalation.
+ */
+export interface DenySubmission {
+  ur?: string;
+  note?: string;
+  attestTx?: string;
+  operator?: boolean;
+}
+
+/** the outcome of a transaction that was sent but not confirmed */
+type PendingFate =
+  | { status: 'success' | 'reverted'; gasUsed?: bigint; blockNumber?: bigint }
+  | { status: 'dropped' }
+  | { status: 'pending'; rebroadcastError?: string };
 
 export interface InvoiceView extends Invoice {
   status: InvoiceState['status'];
@@ -135,6 +175,8 @@ export class AgentService {
   readonly events: EventBus;
   private readonly lock = new Mutex();
   private readonly nonces = new CosignNonceTracker(8);
+  /** tx hash -> last re-broadcast (ms) */
+  private readonly rebroadcastAt = new Map<string, number>();
 
   constructor(d: ServiceDeps) {
     this.config = d.config;
@@ -180,6 +222,7 @@ export class AgentService {
 
   async acceptMandate(input: MandateInput): Promise<StoredMandate> {
     return this.lock.run(async () => {
+      capQrFields(input, ['request', 'signature']);
       const { delegation, request } = mandateFromInput(input, this.config.chainId);
       const v = validateMandate(delegation, { agent: this.agent, chainId: this.config.chainId, deployment: this.config.deployment }, request);
       if (v.agentId === undefined && input.agentId !== undefined) {
@@ -262,12 +305,13 @@ export class AgentService {
 
   async tokenMeta(token: Address): Promise<{ decimals: number; symbol: string }> {
     if (sameAddress(token, ZERO_ADDRESS)) return { decimals: 18, symbol: 'MON' };
-    return this.chain.tokenInfo(token);
+    const t = await this.chain.tokenInfo(token);
+    return { decimals: t.decimals, symbol: displaySymbol(t.symbol) };
   }
 
   // ------------------------------------------------------------------------------------------------ invoices
   private invState(id: string): InvoiceState {
-    let s = this.store.invoiceState[id];
+    let s = ownEntry(this.store.invoiceState, id);
     if (!s) {
       s = { status: 'open', paidCount: 0, payments: [], updatedAt: Date.now() };
       this.store.invoiceState[id] = s;
@@ -339,6 +383,13 @@ export class AgentService {
     if (st.status === 'paid') return refuse('already paid');
     if (st.status === 'denied') return refuse('the human denied this payment on the device');
     if (!this.isDue(inv, st, Number(now))) return refuse(`not due before ${st.nextDueAt ?? inv.dueAt}`);
+    // A funded counterfactual vault has no code yet: the DelegationManager then checks the mandate signature as if
+    // the vault were an EOA and every redemption (AUTO or HUMAN) reverts InvalidEOASignature. The mandate is fine and
+    // a device co-sign would revert the same way, so neither mark it dead nor escalate: wait for the deployment.
+    if (!(await this.chain.hasCode(m.vault))) {
+      this.setInvoice(inv.id, { lastError: VAULT_NOT_DEPLOYED });
+      return refuse(VAULT_NOT_DEPLOYED);
+    }
 
     const token = this.resolveToken(inv.token);
     const meta = await this.tokenMeta(token);
@@ -380,9 +431,19 @@ export class AgentService {
     const decision = autoPathDecision(m.pulse.terms, exec, { laneOpen, payeeKnown, stored, now });
     if (decision.path === 'human') return this.escalate(ctx, decision.reason);
 
-    // AUTO: the enforcer decides; HumanRequired / LaneClosed at estimation means escalate instead
+    // AUTO: the enforcer decides; HumanRequired / LaneClosed at estimation means escalate instead.
+    // Write-ahead: the signed transaction is recorded on the invoice BEFORE it is broadcast, so neither a broadcast
+    // error nor a crash in between can lead to paying this invoice again with a new nonce (settlePending resolves it).
+    let signed = false;
+    const onSigned = (t: SignedTx): void => {
+      signed = true;
+      this.setInvoice(inv.id, {
+        pendingTx: { hash: t.hash, gasLimit: t.gasLimit.toString(), nonce: t.nonce, raw: t.raw, to: dest, token, amount: amount.toString(), at: Date.now() },
+      });
+    };
     try {
-      const tx = await this.chain.redeem(delegationOf(m), exec, '0x');
+      const tx = await this.chain.redeem(delegationOf(m), exec, '0x', onSigned);
+      if (signed) this.setInvoice(inv.id, { pendingTx: undefined });
       const payment: PaymentRecord = {
         id: randomId('pay'),
         invoiceId: inv.id,
@@ -404,24 +465,48 @@ export class AgentService {
       return { outcome: 'paid', path: 'auto', invoiceId: inv.id, payment };
     } catch (e) {
       if (e instanceof TxPendingError) {
-        // sent, outcome unknown: never pay this invoice again before the receipt settles it (settlePending)
+        // signed and broadcast (maybe accepted even if the broadcast errored), outcome unknown: never pay this invoice
+        // again before settlePending() resolves this exact transaction (receipt, dropped, or re-broadcast unchanged)
         this.setInvoice(inv.id, {
-          pendingTx: { hash: e.hash, gasLimit: e.gasLimit.toString(), to: dest, token, amount: amount.toString(), at: Date.now() },
+          pendingTx: {
+            hash: e.hash,
+            gasLimit: e.gasLimit.toString(),
+            ...(e.nonce !== undefined ? { nonce: e.nonce } : {}),
+            ...(e.raw !== undefined ? { raw: e.raw } : {}),
+            to: dest,
+            token,
+            amount: amount.toString(),
+            at: Date.now(),
+          },
           lastError: e.message,
         });
         this.events.log(`AUTO payment of ${inv.id} sent (${e.hash}) but not confirmed yet`);
         return { outcome: 'pending', invoiceId: inv.id, txHash: e.hash };
       }
       if (e instanceof ChainRevertError) {
+        // a mined, reverted transaction has settled: it no longer blocks the invoice
+        if (signed) this.setInvoice(inv.id, { pendingTx: undefined });
         if (e.escalate) return this.escalate(ctx, e.revert.name === 'LaneClosed' ? 'chain-lane-closed' : 'chain-human-required');
-        if (e.mandateDead) this.markMandateDead(`${e.revert.name}: ${e.revert.message}`);
+        if (await this.revertKillsMandate(e, m.vault)) this.markMandateDead(`${e.revert.name}: ${e.revert.message}`);
         this.setInvoice(inv.id, { status: 'failed', lastError: `${e.revert.name}: ${e.revert.message}` });
         return { outcome: 'failed', invoiceId: inv.id, error: { name: e.revert.name, message: e.revert.message } };
       }
       const msg = errorMessage(e);
+      // after the signature the transaction may be out there: the recorded pendingTx stays until it settles
       this.setInvoice(inv.id, { lastError: msg });
+      if (signed) return { outcome: 'pending', invoiceId: inv.id, txHash: ownEntry(this.store.invoiceState, inv.id)!.pendingTx!.hash };
       return { outcome: 'failed', invoiceId: inv.id, error: { name: 'Error', message: msg } };
     }
+  }
+
+  /**
+   * A revert in DEAD_MANDATE_ERRORS kills the mandate, except InvalidEOASignature while the vault has no code: that
+   * is the counterfactual vault being checked as an EOA (not deployed yet, or the code read failed), not a bad mandate.
+   */
+  private async revertKillsMandate(e: ChainRevertError, vault: Address): Promise<boolean> {
+    if (!e.mandateDead) return false;
+    if (e.revert.name !== 'InvalidEOASignature') return true;
+    return this.chain.hasCode(vault).catch(() => false);
   }
 
   private async escalate(
@@ -441,7 +526,17 @@ export class AgentService {
   ): Promise<PayOutcome> {
     const { m, inv, exec, token, meta, amount, dest, now } = c;
     const dh = m.delegationHash;
-    const nonce = await this.nonces.nextUnused(dh, (n) => this.chain.nonceUsed(dh, n));
+    // fail closed: a nonceUsed read that errors is never taken as "unused" (no escalation without a checked nonce)
+    let nonce: bigint;
+    try {
+      nonce = await this.nonces.nextUnused(dh, (n) => this.chain.nonceUsed(dh, n));
+    } catch (e) {
+      const msg = `cannot escalate: the co-sign nonce could not be checked on chain (${errorMessage(e)})`;
+      this.setInvoice(inv.id, { lastError: msg });
+      return { outcome: 'failed', invoiceId: inv.id, error: { name: 'NonceCheckFailed', message: msg } };
+    }
+    // the symbol comes from the token contract (attacker-controlled): only printable ASCII is shown or signed
+    const symbol = displaySymbol(meta.symbol);
     const expiry = Number(now) + Math.min(this.config.cosignTtlSeconds, 7 * 24 * 3600);
     let budget: AutoBudget;
     try {
@@ -452,8 +547,8 @@ export class AgentService {
     const amountText = fmtAmount(amount, meta.decimals);
     const base =
       why === 'payee-redirect'
-        ? `REDIRECT ${inv.id}: memo says pay ${shortAddr(dest)}, not ${inv.vendor}; ${amountText} ${meta.symbol}`
-        : `${inv.id} ${inv.vendor}: ${amountText} ${meta.symbol} (${WHY_SHORT[why]})`;
+        ? `REDIRECT ${inv.id}: memo says pay ${shortAddr(dest)}, not ${inv.vendor}; ${amountText} ${symbol}`
+        : `${inv.id} ${inv.vendor}: ${amountText} ${symbol} (${WHY_SHORT[why]})`;
     const note = c.opts.note ? aiTextTrunc(c.opts.note, 100).trim() : '';
     const text = aiTextTrunc(note ? `${base}. ${note}` : base, 100);
     // The claims are what the agent's task says it pays: the invoice of record (payee, token, amount). The device
@@ -478,12 +573,14 @@ export class AgentService {
       risk: riskFor(why, inv.vendor),
       ai: { text, claims },
       budgetLeft: budget.remaining.toString(),
-      decimals: meta.decimals,
-      symbol: aiTextTrunc(meta.symbol, 16),
+      // keys 15 / 16 only for a symbol the builder and the device can carry (printable ASCII, 1..16 characters)
+      ...(SAFE_SYMBOL.test(meta.symbol) && meta.symbol !== '?' ? { decimals: meta.decimals, symbol: meta.symbol } : {}),
     };
-    // the token claims (keys 15 / 16) must agree with the firmware table, otherwise the device refuses the request
-    let built = buildRequest('cosign', cosign as unknown as CosignFields);
+    // The token claims (keys 15 / 16) must agree with the firmware table, otherwise the device refuses the request;
+    // any refusal of the builder with them (a hostile token's decimals / symbol) falls back to the request without.
+    let built: ReturnType<typeof buildRequest>;
     try {
+      built = buildRequest('cosign', cosign as unknown as CosignFields);
       tokenCheck(decodeRequest('cosign', built.cbor) as CosignRequest);
     } catch {
       delete cosign.decimals;
@@ -507,7 +604,7 @@ export class AgentService {
         vendor: inv.vendor,
         payee: dest,
         amount: amountText,
-        symbol: meta.symbol,
+        symbol,
         token,
         ...(inv.memo !== undefined ? { memo: inv.memo } : {}),
         ...(c.redirectedFrom ? { redirectedFrom: c.redirectedFrom } : {}),
@@ -550,8 +647,9 @@ export class AgentService {
   }
 
   escalation(id: string): Escalation {
-    const e = this.store.escalations[id];
-    if (!e) throw new ApiError(404, 'unknown_escalation', `no escalation ${id}`);
+    // own entries of the id-keyed record only: '__proto__' / 'constructor' must never resolve to Object.prototype
+    const e = typeof id === 'string' && ESCALATION_ID.test(id) ? ownEntry(this.store.escalations, id) : undefined;
+    if (!e) throw new ApiError(404, 'unknown_escalation', `no escalation ${String(id).slice(0, 64)}`);
     return e;
   }
 
@@ -570,6 +668,7 @@ export class AgentService {
     const m = this.requireMandate();
     if (m.delegationHash !== e.cosign.delegationHash) throw new ApiError(409, 'mandate_changed', 'the mandate changed since this escalation');
 
+    capQrFields(body, ['ur']);
     const sig = parseCosignSubmission(body);
     const c = e.cosign;
     const ph = presenceHash(sig.evidence12, sig.salt16);
@@ -600,11 +699,20 @@ export class AgentService {
       this.store.saveEscalations();
       throw new ApiError(410, 'expired', 'the co-sign expired');
     }
-    if (await this.chain.nonceUsed(c.delegationHash, BigInt(c.nonce))) {
+    // fail closed: a failed nonceUsed read sends nothing (it is never taken as "unused")
+    let used: boolean;
+    try {
+      used = await this.chain.nonceUsed(c.delegationHash, BigInt(c.nonce));
+    } catch (err) {
+      throw new ApiError(502, 'chain_error', `nonceUsed could not be read, nothing was sent: ${errorMessage(err)}`);
+    }
+    if (used) {
       this.closeEscalation(e, 'failed', 'CosignReplayed', 'the nonce of this co-sign is already used on chain');
       this.store.saveEscalations();
       throw new ApiError(409, 'replayed', 'CosignReplayed: this co-sign nonce was already used');
     }
+    // an undeployed (counterfactual) vault reverts every redemption InvalidEOASignature: refuse before sending
+    if (!(await this.chain.hasCode(m.vault))) throw new ApiError(409, 'vault_not_deployed', VAULT_NOT_DEPLOYED);
     const args = cosignCaveatArgs(BigInt(c.nonce), c.expiry, ph, sig.rs);
     const exec: Execution = { target: e.execution.target, value: BigInt(e.execution.value), callData: e.execution.callData };
     e.status = 'submitting';
@@ -612,13 +720,23 @@ export class AgentService {
     e.submission = { approvalDigest: toHex(digest), presenceHash: toHex(ph), at: Date.now() };
     this.store.saveEscalations();
     let tx: TxOutcome;
+    const sub = e.submission!;
     try {
-      tx = await this.chain.redeem(delegationOf(m), exec, args);
+      tx = await this.chain.redeem(delegationOf(m), exec, args, (t) => {
+        // write-ahead: recorded before the broadcast; with a txHash the escalation is settled by settlePending()
+        sub.txHash = t.hash;
+        sub.gasLimit = t.gasLimit.toString();
+        sub.nonce = t.nonce;
+        sub.raw = t.raw;
+        this.store.saveEscalations();
+      });
     } catch (err) {
       if (err instanceof TxPendingError) {
         // sent, outcome unknown: stays 'submitting' until settlePending() reads the receipt
         e.submission.txHash = err.hash;
         e.submission.gasLimit = err.gasLimit.toString();
+        if (err.nonce !== undefined) e.submission.nonce = err.nonce;
+        if (err.raw !== undefined) e.submission.raw = err.raw;
         e.error = { name: 'TxPending', message: err.message, at: Date.now() };
         this.store.saveEscalations();
         this.events.emit('escalation', e);
@@ -626,10 +744,11 @@ export class AgentService {
       }
       if (err instanceof ChainRevertError) {
         const name = err.revert.name;
+        const dead = await this.revertKillsMandate(err, m.vault);
         if (name === 'CosignExpired') this.closeEscalation(e, 'expired', name, err.revert.message);
-        else if (['CosignReplayed', 'BadCosign', 'InvalidArgs'].includes(name) || err.mandateDead) {
+        else if (['CosignReplayed', 'BadCosign', 'InvalidArgs'].includes(name) || dead) {
           this.closeEscalation(e, 'failed', name, err.revert.message);
-          if (err.mandateDead) this.markMandateDead(`${name}: ${err.revert.message}`);
+          if (dead) this.markMandateDead(`${name}: ${err.revert.message}`);
         } else {
           // e.g. an empty vault or a paused DelegationManager: the co-sign is still unused, it can be submitted again
           e.status = 'pending';
@@ -639,6 +758,13 @@ export class AgentService {
         this.store.saveEscalations();
         this.events.emit('escalation', e);
         throw new ApiError(502, 'chain_revert', `${name}: ${err.revert.message}`, { revert: err.revert, phase: err.phase, txHash: err.txHash });
+      }
+      if (sub.txHash) {
+        // signed (and maybe broadcast) before the failure: stays 'submitting' until settlePending() resolves it
+        e.error = { name: 'TxPending', message: errorMessage(err), at: Date.now() };
+        this.store.saveEscalations();
+        this.events.emit('escalation', e);
+        throw new ApiError(504, 'tx_pending', `${errorMessage(err)}; GET /escalations/${e.id} shows the outcome once it settles`, { txHash: sub.txHash });
       }
       e.status = 'pending';
       e.error = { name: 'Error', message: errorMessage(err), at: Date.now() };
@@ -710,18 +836,27 @@ export class AgentService {
   }
 
   /**
-   * Settles transactions that were sent but whose receipt could not be read (TxPendingError): an AUTO payment is
-   * recorded (or released after a revert), a HUMAN redemption is finalized (or its escalation re-opened: a reverted
-   * redemption does not consume the co-sign). Runs under the service lock.
+   * Settles transactions that were sent but not confirmed (TxPendingError): an AUTO payment is recorded (or released
+   * after a revert or when it was dropped), a HUMAN redemption is finalized (or its escalation re-opened: a reverted
+   * or dropped redemption does not consume the co-sign). Runs under the service lock.
    */
   private async settlePending(): Promise<void> {
     let now: bigint | null = null;
     const chainNow = async (): Promise<bigint> => (now ??= await this.chain.now());
     for (const inv of this.store.invoices) {
-      const p = this.store.invoiceState[inv.id]?.pendingTx;
+      const p = ownEntry(this.store.invoiceState, inv.id)?.pendingTx;
       if (!p) continue;
-      const r = await this.chain.txStatus(p.hash);
-      if (r.status === 'pending') continue;
+      const r = await this.resolvePending(p);
+      if (r.status === 'pending') {
+        if (r.rebroadcastError) this.setInvoice(inv.id, { lastError: `transaction ${p.hash} not confirmed; re-broadcast failed: ${r.rebroadcastError}` });
+        continue;
+      }
+      if (r.status === 'dropped') {
+        // never mined and its nonce is gone: it can never land, so the invoice is free to be paid (with a new tx)
+        this.setInvoice(inv.id, { pendingTx: undefined, lastError: `transaction ${p.hash} was dropped (nonce ${p.nonce} used by another transaction)` });
+        this.events.log(`AUTO payment of ${inv.id} was dropped (${p.hash}): the invoice is open again`);
+        continue;
+      }
       if (r.status === 'reverted') {
         this.setInvoice(inv.id, { pendingTx: undefined, lastError: `transaction ${p.hash} reverted` });
         continue;
@@ -749,8 +884,14 @@ export class AgentService {
     for (const e of Object.values(this.store.escalations)) {
       const sub = e.submission;
       if (e.status !== 'submitting' || !sub?.txHash) continue;
-      const r = await this.chain.txStatus(sub.txHash);
-      if (r.status === 'pending') continue;
+      const r = await this.resolvePending({ hash: sub.txHash, gasLimit: sub.gasLimit ?? '0', nonce: sub.nonce, raw: sub.raw, at: sub.at });
+      if (r.status === 'pending') {
+        if (r.rebroadcastError) {
+          e.error = { name: 'TxPending', message: `redemption ${sub.txHash} not confirmed; re-broadcast failed: ${r.rebroadcastError}`, at: Date.now() };
+          this.store.saveEscalations();
+        }
+        continue;
+      }
       if (r.status === 'success') {
         await this.finalizeHuman(
           e,
@@ -761,7 +902,10 @@ export class AgentService {
         );
       } else {
         e.status = 'pending';
-        e.error = { name: 'Reverted', message: `redemption ${sub.txHash} reverted; the co-sign was not consumed`, at: Date.now() };
+        e.error =
+          r.status === 'dropped'
+            ? { name: 'Dropped', message: `redemption ${sub.txHash} was dropped (nonce ${sub.nonce} used by another transaction); the co-sign was not consumed`, at: Date.now() }
+            : { name: 'Reverted', message: `redemption ${sub.txHash} reverted; the co-sign was not consumed`, at: Date.now() };
         e.updatedAt = Date.now();
         this.store.saveEscalations();
         this.events.emit('escalation', e);
@@ -769,49 +913,139 @@ export class AgentService {
     }
   }
 
-  /** the user denied on the device; the companion relays the deny (RiparReputationRelay.attestDenial) and tells us */
-  async deny(id: string, body: { ur?: string; note?: string } = {}): Promise<Escalation> {
+  /**
+   * The fate of a transaction sent earlier. A receipt settles it. Without one, the account's LATEST nonce decides:
+   * above the transaction's nonce means that nonce was mined, so the receipt is read once more (it may just have
+   * landed) and, still absent, the transaction was replaced by another one of this account: dropped, it can never
+   * be mined. Otherwise the SAME signed bytes are broadcast again (same hash and nonce: it can never pay twice).
+   * Any read that fails keeps it pending: only positive evidence releases an invoice.
+   */
+  private async resolvePending(p: PendingTx): Promise<PendingFate> {
+    const r = await this.chain.txStatus(p.hash);
+    if (r.status === 'success' || r.status === 'reverted') return { status: r.status, gasUsed: r.gasUsed, blockNumber: r.blockNumber };
+    if (r.status === 'unknown' || p.nonce === undefined) return { status: 'pending' };
+    let latest: number;
+    try {
+      latest = await this.chain.accountNonce();
+    } catch {
+      return { status: 'pending' };
+    }
+    if (latest > p.nonce) {
+      const again = await this.chain.txStatus(p.hash);
+      if (again.status === 'success' || again.status === 'reverted') return { status: again.status, gasUsed: again.gasUsed, blockNumber: again.blockNumber };
+      if (again.status === 'unknown') return { status: 'pending' };
+      this.rebroadcastAt.delete(p.hash);
+      return { status: 'dropped' };
+    }
+    if (p.raw) {
+      const last = this.rebroadcastAt.get(p.hash) ?? 0;
+      if (Date.now() - last >= REBROADCAST_EVERY_MS) {
+        this.rebroadcastAt.set(p.hash, Date.now());
+        try {
+          await this.chain.rebroadcast(p.raw);
+        } catch (e) {
+          return { status: 'pending', rebroadcastError: errorMessage(e) };
+        }
+      }
+    }
+    return { status: 'pending' };
+  }
+
+  /**
+   * The human denied on the device; the companion relays the deny (RiparReputationRelay.attestDenial) and tells us,
+   * possibly twice: right after the device answered, then with `attestTx` once the relay transaction is sent. A deny
+   * only restricts, but it is still a decision: it needs the device's signed ripar-deny, verified here, or an explicit
+   * operator action authenticated by AGENT_API_TOKEN. Anything else is refused and changes nothing.
+   */
+  async deny(id: string, body: DenySubmission = {}): Promise<Escalation> {
     return this.lock.run(async () => {
       const e = this.escalation(id);
+      if (!body || typeof body !== 'object') throw new ApiError(400, 'bad_request', 'expected a JSON object');
+      capQrFields(body, ['ur']);
+      const { ur, note, attestTx, operator } = body;
+      if (ur !== undefined && typeof ur !== 'string') throw new ApiError(400, 'bad_request', 'ur: expected a string');
+      if (note !== undefined && typeof note !== 'string') throw new ApiError(400, 'bad_request', 'note: expected a string');
+      if (operator !== undefined && typeof operator !== 'boolean') throw new ApiError(400, 'bad_request', 'operator: expected a boolean');
+      if (attestTx !== undefined && !(typeof attestTx === 'string' && /^0x[0-9a-fA-F]{64}$/.test(attestTx))) {
+        throw new ApiError(400, 'bad_request', 'attestTx: expected a transaction hash (0x + 64 hex digits)');
+      }
+      const cleanNote = note !== undefined ? note.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 200) : undefined;
+
+      if (e.status === 'denied') {
+        // idempotent; a repeated deny may add the relay transaction (attestTx) and the note, nothing else
+        const rh = ur !== undefined ? this.verifyDeny(e, ur) : undefined;
+        const d = (e.deny ??= { at: e.updatedAt, verified: false });
+        if (rh) {
+          d.requestHash = rh;
+          d.verified = true;
+        } else if (!d.verified) {
+          return e;
+        }
+        if (attestTx !== undefined && !d.attestTx) d.attestTx = attestTx as Hex;
+        if (cleanNote && !d.note) d.note = cleanNote;
+        e.updatedAt = Date.now();
+        this.store.saveEscalations();
+        this.events.emit('escalation', e);
+        return e;
+      }
       if (e.status === 'executed') throw new ApiError(409, 'already_executed', 'already redeemed: a deny can no longer stop it');
       if (e.status === 'submitting') throw new ApiError(409, 'in_progress', 'being redeemed right now');
-      if (e.status === 'denied') return e;
-      let verified = false;
+
       let requestHash: Hex | undefined;
-      if (body.ur !== undefined) {
-        if (typeof body.ur !== 'string') throw new ApiError(400, 'bad_request', 'ur: expected a string');
-        let rep;
-        try {
-          rep = parseResponse(body.ur, {
-            request: e.request.ur,
-            p1Key: this.store.mandate?.pulse.p1Key ?? null,
-            chainId: this.config.chainId,
-            contract: this.config.deployment.relay,
-          });
-        } catch (err) {
-          throw new ApiError(400, 'bad_deny', `not a ripar-deny response: ${errorMessage(err)}`);
-        }
-        if (rep.type !== 'ripar-deny') throw new ApiError(400, 'bad_deny', `expected ripar-deny, got ${rep.type}`);
-        requestHash = rep.fields.requestHash;
-        const sigOk = rep.checks.some((x) => /P-256 signature/.test(x.name) && x.ok) && rep.checks.filter((x) => /P-256|low-s/.test(x.name)).every((x) => x.ok);
-        const mandateAgent = this.store.mandate?.agentId;
-        const agentOk = mandateAgent === undefined || BigInt(mandateAgent) === rep.fields.agentId;
-        verified = sigOk && agentOk && requestHash.toLowerCase() === e.requestHash.toLowerCase();
+      let byOperator = false;
+      if (ur !== undefined) requestHash = this.verifyDeny(e, ur);
+      else if (operator === true && this.config.apiToken) byOperator = true;
+      else {
+        throw new ApiError(
+          400,
+          'deny_needs_device',
+          this.config.apiToken
+            ? "a deny needs the device's signed ripar-deny ({ur}); an operator denies without one with {operator: true}"
+            : "a deny needs the device's signed ripar-deny ({ur})",
+        );
       }
       e.status = 'denied';
       e.updatedAt = Date.now();
       e.deny = {
         at: Date.now(),
-        verified,
+        verified: !byOperator,
+        ...(byOperator ? { operator: true } : {}),
         ...(requestHash ? { requestHash } : {}),
-        ...(typeof body.note === 'string' ? { note: body.note.slice(0, 200) } : {}),
+        ...(cleanNote ? { note: cleanNote } : {}),
+        ...(attestTx !== undefined ? { attestTx: attestTx as Hex } : {}),
       };
       this.store.saveEscalations();
-      if (e.invoiceId) this.setInvoice(e.invoiceId, { status: 'denied', escalationId: e.id, lastError: 'denied on the device' });
+      if (e.invoiceId) this.setInvoice(e.invoiceId, { status: 'denied', escalationId: e.id, lastError: byOperator ? 'denied by the operator' : 'denied on the device' });
       this.events.emit('escalation', e);
-      this.events.log(`escalation ${e.id} denied by the human${verified ? ' (device deny verified)' : ''}`);
+      this.events.log(`escalation ${e.id} denied ${byOperator ? 'by the operator (no device deny)' : 'by the human (device deny verified)'}`);
       return e;
     });
+  }
+
+  /**
+   * The device's ripar-deny for this escalation, or 400 bad_deny: it must parse, carry a P-256 signature (low-s) that
+   * verifies against the mandate's device key in the relay's domain, name this escalation's requestHash and the
+   * mandate's ERC-8004 agentId. Returns the requestHash.
+   */
+  private verifyDeny(e: Escalation, ur: string): Hex {
+    const p1Key = this.store.mandate?.pulse.p1Key;
+    if (!p1Key) throw new ApiError(400, 'bad_deny', 'no mandate: the device key to verify the deny against is unknown');
+    let rep;
+    try {
+      rep = parseResponse(ur, { request: e.request.ur, p1Key, chainId: this.config.chainId, contract: this.config.deployment.relay });
+    } catch (err) {
+      throw new ApiError(400, 'bad_deny', `not a ripar-deny response: ${errorMessage(err)}`);
+    }
+    if (rep.type !== 'ripar-deny') throw new ApiError(400, 'bad_deny', `expected ripar-deny, got ${rep.type}`);
+    const sigOk = rep.checks.some((x) => /P-256 signature/.test(x.name) && x.ok) && rep.checks.filter((x) => /P-256|low-s/.test(x.name)).every((x) => x.ok);
+    if (!sigOk) throw new ApiError(400, 'bad_deny', "the deny's P-256 signature does not verify against the mandate's device key");
+    const requestHash = rep.fields.requestHash;
+    if (requestHash.toLowerCase() !== e.requestHash.toLowerCase()) throw new ApiError(400, 'bad_deny', 'the deny is for another request (requestHash differs)');
+    const expectAgent = this.store.mandate?.agentId ?? this.config.agentId?.toString();
+    if (expectAgent !== undefined && BigInt(expectAgent) !== rep.fields.agentId) {
+      throw new ApiError(400, 'bad_deny', `the deny names agentId ${rep.fields.agentId}, the mandate's agent is ${expectAgent}`);
+    }
+    return requestHash;
   }
 
   // ------------------------------------------------------------------------------------------------ state
@@ -857,7 +1091,7 @@ export class AgentService {
         if (!sameAddress(musd, ZERO_ADDRESS) && !sameAddress(musd, token)) {
           try {
             const [mi, mb] = await Promise.all([this.chain.tokenInfo(musd), this.chain.tokenBalance(musd, m.vault)]);
-            balances.push({ token: musd, symbol: mi.symbol, decimals: mi.decimals, balance: mb.toString(), formatted: fmtAmount(mb, mi.decimals) });
+            balances.push({ token: musd, symbol: displaySymbol(mi.symbol), decimals: mi.decimals, balance: mb.toString(), formatted: fmtAmount(mb, mi.decimals) });
           } catch {
             /* MockUSD not deployed on this chain */
           }

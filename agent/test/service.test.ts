@@ -288,15 +288,24 @@ describe('nonces, expiry, replay, deny, failures', () => {
     expect(f.chain.redeems).toHaveLength(0);
   });
 
-  it('deny without a UR (the companion relayed it) and a deny signed by another key (not verified, still denied)', async () => {
+  it('a deny without a device UR, or one that does not verify, is refused and changes nothing', async () => {
     const e1 = await escalated(f, 'INV-002');
-    expect((await f.svc.deny(e1.id, {})).deny!.verified).toBe(false);
+    const noUr = await apiError(f.svc.deny(e1.id, {}));
+    expect(noUr).toMatchObject({ status: 400, code: 'deny_needs_device' });
+    // {operator: true} needs AGENT_API_TOKEN (the request is then authenticated): without a token it is refused too
+    expect((await apiError(f.svc.deny(e1.id, { operator: true }))).code).toBe('deny_needs_device');
+    expect(f.svc.escalation(e1.id).status).toBe('pending');
     const e2 = await escalated(f, 'INV-003');
-    const d2 = await f.svc.deny(e2.id, { ur: denyEscalation(newSoftDevice(), e2, RELAY, 7n) });
-    expect(d2.status).toBe('denied');
-    expect(d2.deny!.verified).toBe(false);
-    // a deny of a denied escalation is a no-op; garbage instead of a deny UR is refused and changes nothing
-    expect((await f.svc.deny(e2.id, { ur: 'UR:NOT-A-DENY/xyz' })).status).toBe('denied');
+    // signed by another device key
+    expect((await apiError(f.svc.deny(e2.id, { ur: denyEscalation(newSoftDevice(), e2, RELAY, 7n) }))).code).toBe('bad_deny');
+    // the device's deny of ANOTHER escalation (wrong requestHash)
+    expect((await apiError(f.svc.deny(e2.id, { ur: denyEscalation(f.dev, e1, RELAY, 7n) }))).code).toBe('bad_deny');
+    // a device response that is not a ripar-deny (a co-sign)
+    expect((await apiError(f.svc.deny(e2.id, { ur: cosignEscalation(f.dev, e2.cosign, e2.request.reqId).ur }))).code).toBe('bad_deny');
+    expect(f.svc.escalation(e2.id).status).toBe('pending');
+    expect(f.svc.escalation(e2.id).deny).toBeUndefined();
+    expect(f.svc.invoiceViews().find((i) => i.id === 'INV-003')!.status).toBe('escalated');
+    // garbage instead of a deny UR is refused and changes nothing
     const e3 = await escalated(f, 'INV-001');
     expect((await apiError(f.svc.deny(e3.id, { ur: 'UR:NOT-A-DENY/xyz' }))).status).toBe(400);
     expect(f.svc.escalation(e3.id).status).toBe('pending');

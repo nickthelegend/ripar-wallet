@@ -2,21 +2,42 @@
 import { PageHead } from '../App';
 import { CameraReader } from '../components/CameraReader';
 import { EmulatorDevice } from '../components/EmulatorDevice';
-import { Button, EmulatorMark, Figure, Hex, Note, Spec } from '../components/ui';
+import { Button, EmulatorMark, Figure, Hex, NextStep, Note, Spec } from '../components/ui';
+import { useStore } from '../lib/store';
 import { useDevice, useEmuState } from '../device/DeviceContext';
 
-const KEYS: [string, string, string, string][] = [
-  ['Home', 'scan a request', 'release = pairing QR (keys only); keep holding = device menu', 'PANIC, signed at once'],
-  ['Review', 'next page; on the last page: continue to PULSE', 'co-sign review: DENY; other reviews: cancel', '-'],
-  ['Pulse', 'ignored', 'cancel', '-'],
-  ['Armed', 'SIGN (only while the pulse is live)', 'cancel', '-'],
-  ['QR / message', 'done, back to Home', 'done', '-'],
-  ['Device menu', 'next item (REVOKE, REOPEN, BACK)', 'select', '-'],
+// docs/FIRMWARE.md §5, row for row. A hold that is kept going on Home reaches the Hold screen at 2 s and PANICs at
+// 5 s: the device menu is reached from the Pairing QR screen, never by holding on Home.
+const KEYS: { screen: string; shows: string; press: string; hold2: string; hold5: string; danger?: boolean }[] = [
+  { screen: 'Home', shows: 'K1 (short), battery, PAIRED / NOT PAIRED', press: 'scan a request', hold2: 'opens the Hold screen', hold5: 'only through the Hold screen' },
+  {
+    screen: 'Hold (on Home)',
+    shows: 'RELEASE = PAIRING QR',
+    press: '-',
+    hold2: 'release before 5 s = pairing QR (keys only)',
+    hold5: 'PANIC, signed at once: every mandate dies',
+    danger: true,
+  },
+  { screen: 'Scan', shows: 'camera, multipart progress, hint', press: '-', hold2: 'cancel, back to Home', hold5: '-' },
+  {
+    screen: 'Review',
+    shows: 'every line of the request, 9 rows at a time',
+    press: 'next page; on the last page: continue to Pulse (or sign a deny); refused: Home',
+    hold2: 'co-sign review: DENY (opens the DENY + REPORT AGENT review); other reviews: cancel',
+    hold5: '-',
+  },
+  { screen: 'Pulse', shows: 'heart, bpm, beats n/5, progress ring', press: 'ignored (error beep)', hold2: 'cancel, back to Home', hold5: '-' },
+  { screen: 'Armed', shows: 'PULSE OK - press SIGN', press: 'SIGN (only while the pulse still counts as live)', hold2: 'cancel, back to Home', hold5: '-' },
+  { screen: 'QR', shows: 'the signed answer', press: 'done, back to Home', hold2: 'done, back to Home', hold5: '-' },
+  { screen: 'Message', shows: 'a refusal or error, with the exact reason', press: 'back to Home', hold2: 'back to Home', hold5: '-' },
+  { screen: 'Pairing QR', shows: 'K1 + P1 + firmware id (nothing signed)', press: 'back to Home', hold2: 'device menu', hold5: '-' },
+  { screen: 'Device menu', shows: 'REVOKE the last mandate / REOPEN the agent lane / BACK', press: 'next item', hold2: 'select', hold5: '-' },
 ];
 
 export function Device() {
   const dev = useDevice();
   const s = useEmuState(dev.emulator);
+  const paired = useStore((x) => !!x.device);
   return (
     <div className="page">
       <PageHead
@@ -123,6 +144,7 @@ export function Device() {
             <thead>
               <tr>
                 <th scope="col">Screen</th>
+                <th scope="col">Shows</th>
                 <th scope="col">Press</th>
                 <th scope="col">Hold 2 s</th>
                 <th scope="col">Hold 5 s</th>
@@ -130,16 +152,31 @@ export function Device() {
             </thead>
             <tbody>
               {KEYS.map((r) => (
-                <tr key={r[0]}>
-                  {r.map((c, i) => (
-                    <td key={i}>{c}</td>
-                  ))}
+                <tr key={r.screen}>
+                  <th scope="row">{r.screen}</th>
+                  <td>{r.shows}</td>
+                  <td>{r.press}</td>
+                  <td>{r.hold2}</td>
+                  <td className={r.danger ? 'danger-cell' : undefined}>{r.hold5}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+        <Note kind="warning" title="PANIC at 5 s on Home">
+          <p>
+            Keep holding SIGN on Home past 2 s and the device PANICs at 5 s: it raises its epoch and every mandate it ever
+            signed dies. To open the device menu (REVOKE, REOPEN), release at the pairing QR first, then hold 2 s there.
+          </p>
+        </Note>
+        <p className="small muted">
+          The review shows 9 rows at a time; each press moves 8 rows, so every row appears once. The last-page footer
+          (for example press = PULSE + SIGN) appears only after the last row was on screen.
+        </p>
       </section>
+      {(dev.mode === 'hardware' || dev.emulatorStatus === 'ready') && !paired && (
+        <NextStep to="pair" label="Pair the device">The signer is ready. Pairing reads its keys and pins your contracts.</NextStep>
+      )}
     </div>
   );
 }

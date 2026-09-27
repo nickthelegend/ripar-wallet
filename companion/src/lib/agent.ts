@@ -7,8 +7,11 @@
 //   GET  /events                   -> Server-Sent Events: `event: escalation`, `data: {at, ...escalation}`
 //   POST /mandate                  <- { request: <ripar-mandate-req UR>, signature: <eth-signature UR>, agentId?, label? }
 //   POST /escalations/:id/cosign   <- { ur: <the device's ripar-cosign> }  -> the agent redeems on the HUMAN path
-//   POST /escalations/:id/deny     <- { ur: <the device's ripar-deny>, note? }
-// Errors come back as { error: { code, message } }. With AGENT_API_TOKEN set, requests carry a bearer token.
+//   POST /escalations/:id/deny     <- { ur: <the device's ripar-deny>, note?, attestTx? } (the agent verifies the
+//                                     device's signature; posted at once, and again with attestTx after the relay)
+//   POST /run                      <- {}  -> one planner step: { summary, actions, ... }
+// Errors come back as { error: { code, message } }. With AGENT_API_TOKEN set, every request (GET too) carries a bearer
+// token; the event stream, which cannot send headers, carries it as ?token=.
 // A simpler escalation shape ({ call, note, claims, risk } without a prebuilt request) is accepted too: the companion
 // then builds the co-sign request itself.
 import { type EscalationReason, isValidAddress, toChecksumAddress } from '@ripar/protocol';
@@ -132,11 +135,23 @@ function seconds(v: unknown): number | null {
   return v > 1e12 ? Math.floor(v / 1000) : v; // the agent stamps milliseconds
 }
 
+const RESERVED_IDS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/** POST /run: what one planner step did */
+export interface RunResult {
+  summary: string;
+  planner: string | null;
+  error: string | null;
+  actions: number;
+}
+
 /** strict parse of one escalation from the agent (throws ShapeError) */
 export function parseEscalation(x: unknown): Escalation {
   if (!isRecord(x)) throw new ShapeError('escalation: not an object');
   const id = strField(x, 'id', false, 128)!;
   if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(id)) throw new ShapeError('id: only [A-Za-z0-9_.:-] allowed');
+  // ids key the companion's records: never a name Object.prototype already has
+  if (RESERVED_IDS.has(id) || id in Object.prototype) throw new ShapeError(`id: "${id}" is reserved`);
   const reasonRaw = typeof x.reason === 'string' ? x.reason : 'other';
   const reason = (REASONS.includes(reasonRaw) ? reasonRaw : 'other') as EscalationWhy;
   const status = strField(x, 'status', true, 40) ?? 'pending';
@@ -327,18 +342,37 @@ export class AgentClient {
     return { txHash: typeof tx === 'string' && /^0x[0-9a-fA-F]{64}$/.test(tx) ? (tx as Hex) : null };
   }
 
+  /**
+   * Hands the device's signed deny to the agent (it verifies the P-256 signature and the request hash itself): once at
+   * once, "relay pending", and again with the attestDenial transaction once it is relayed. Idempotent on the agent.
+   */
   async postDeny(id: string, a: DenyAnswer): Promise<void> {
-    const note = a.attestTx ? `denial relayed on-chain: ${a.attestTx}` : 'denied on the device';
-    await this.json(`/escalations/${encodeURIComponent(id)}/deny`, { method: 'POST', body: stringifyJson({ ur: a.ur, note }) });
+    const note = a.attestTx ? `denial relayed on-chain: ${a.attestTx}` : 'denied on the device; on-chain relay pending';
+    await this.json(`/escalations/${encodeURIComponent(id)}/deny`, {
+      method: 'POST',
+      body: stringifyJson({ ur: a.ur, note, ...(a.attestTx ? { attestTx: a.attestTx } : {}) }),
+    });
+  }
+
+  /** asks the agent to run one planner step now (POST /run): due invoices are paid or escalated to this inbox */
+  async run(): Promise<RunResult> {
+    const b = await this.json('/run', { method: 'POST', body: '{}' });
+    if (!isRecord(b)) throw new AgentError('agent /run: not an object');
+    return {
+      summary: clipField(b, 'summary', 400) ?? '(no summary)',
+      planner: clipField(b, 'planner', 60) ?? null,
+      error: clipField(b, 'error', 400) ?? null,
+      actions: Array.isArray(b.actions) ? b.actions.length : 0,
+    };
   }
 
   /**
    * The agent's event stream (GET /events): calls back for every escalation event. Returns a closer. EventSource
-   * cannot send a bearer token, so with AGENT_API_TOKEN set the caller keeps polling instead.
+   * cannot send headers, so an API token travels as ?token= (the agent accepts it there for /events only).
    */
   stream(onEscalation: (e: Escalation) => void, onError: (msg: string) => void): () => void {
-    if (typeof EventSource === 'undefined' || this.token) return () => {};
-    const es = new EventSource(this.url('/events'));
+    if (typeof EventSource === 'undefined') return () => {};
+    const es = new EventSource(this.url(this.token ? `/events?token=${encodeURIComponent(this.token)}` : '/events'));
     const handle = (ev: MessageEvent) => {
       try {
         onEscalation(parseEscalation(JSON.parse(String(ev.data))));

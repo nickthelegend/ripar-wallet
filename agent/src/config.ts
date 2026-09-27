@@ -37,9 +37,14 @@ export interface AgentConfig {
   qwen: QwenConfig;
   port: number;
   host: string;
+  /**
+   * extra Host header names accepted besides localhost, IP literals and HOST (AGENT_ALLOWED_HOSTS, lower case): the
+   * Host allow-list stops DNS rebinding (a page on attacker.example re-pointing its name at 127.0.0.1)
+   */
+  allowedHosts: string[];
   /** CORS allow-list (the companion's origin) */
   companionOrigins: string[];
-  /** optional bearer token for POST requests */
+  /** optional bearer token: every POST and every GET except /health (and /events via ?token=) */
   apiToken?: string;
   dataDir: string;
   invoicesPath: string;
@@ -160,6 +165,16 @@ export function loadConfig(env: Env = process.env, opts: LoadOptions = {}): Agen
     .filter(Boolean);
   for (const o of origins) if (o !== '*' && !/^https?:\/\/[^/]+$/.test(o)) throw new ConfigError(`COMPANION_ORIGIN: bad origin ${o}`);
 
+  const allowedHosts = (str(env, 'AGENT_ALLOWED_HOSTS') ?? '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  for (const h of allowedHosts) {
+    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/.test(h) || h.length > 253) {
+      throw new ConfigError(`AGENT_ALLOWED_HOSTS: ${h} is not a host name (no scheme, port or path)`);
+    }
+  }
+
   const agentIdS = str(env, 'AGENT_ID');
   if (agentIdS !== undefined && !/^\d+$/.test(agentIdS)) throw new ConfigError('AGENT_ID must be an integer');
 
@@ -172,7 +187,9 @@ export function loadConfig(env: Env = process.env, opts: LoadOptions = {}): Agen
     signer,
     qwen,
     port: int(env, 'PORT', 8787, 0, 65535),
+    // loopback only unless HOST says otherwise
     host: str(env, 'HOST') ?? '127.0.0.1',
+    allowedHosts,
     companionOrigins: origins,
     apiToken: str(env, 'AGENT_API_TOKEN'),
     dataDir,
@@ -194,17 +211,44 @@ export function configWarnings(c: AgentConfig): string[] {
   }
   if (!c.qwen.apiKey) w.push('QWEN_API_KEY is not set: using the deterministic scripted planner');
   if (c.companionOrigins.includes('*')) w.push('COMPANION_ORIGIN=* lets any web page call this API');
-  if (c.host !== '127.0.0.1' && c.host !== 'localhost' && !c.apiToken) {
-    w.push(`listening on ${c.host} without AGENT_API_TOKEN: anyone who can reach the port can trigger planner steps`);
+  if (!isLoopbackHost(c.host)) {
+    if (!c.apiToken) {
+      w.push(`listening on ${c.host} without AGENT_API_TOKEN: anyone who can reach the port can read the agent's state, trigger planner steps and submit co-signs`);
+    } else {
+      w.push(`listening on ${c.host}: the API is reachable from the network over plain HTTP; AGENT_API_TOKEN is the only guard (keep HOST=127.0.0.1 unless a TLS proxy fronts it)`);
+    }
   }
   return w;
 }
 
+/** 127.0.0.0/8, ::1 and localhost */
+export function isLoopbackHost(h: string): boolean {
+  const x = h.toLowerCase().replace(/^\[(.*)\]$/, '$1');
+  return x === 'localhost' || x === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(x);
+}
+
+/**
+ * RPC_URL reduced to scheme://host[:port]. Providers put API keys in the path (/v2/<key>), the query or the userinfo;
+ * none of it is echoed. `redacted` is true when anything was dropped.
+ */
+export function rpcOrigin(url: string): { origin: string; redacted: boolean } {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return { origin: '(unparseable)', redacted: true };
+  }
+  const redacted = !!(u.username || u.password || (u.pathname && u.pathname !== '/') || u.search || u.hash);
+  return { origin: `${u.protocol}//${u.host}`, redacted };
+}
+
 /** the config without secrets, for /health and logs */
 export function publicConfig(c: AgentConfig): Record<string, unknown> {
+  const rpc = rpcOrigin(c.rpcUrl);
   return {
     chainId: c.chainId,
-    rpcUrl: c.rpcUrl.replace(/\/\/([^/@]*@)/, '//***@'),
+    rpcUrl: rpc.origin,
+    rpcUrlRedacted: rpc.redacted,
     deploymentsPath: c.deploymentsPath,
     signer: c.signer.kind,
     planner: c.qwen.apiKey ? `qwen (${c.qwen.model})` : 'scripted',

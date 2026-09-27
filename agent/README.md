@@ -35,8 +35,24 @@ repo), `viem`, `openai`.
   A bad co-sign costs no gas.
 - Every transaction carries an explicit gas limit, set to `eth_estimateGas` + `GAS_MARGIN_PERCENT` (default 20%),
   because Monad bills the gas **limit**. A revert at estimation is decoded and nothing is sent.
-- A transaction can be sent without its receipt being read (timeout, RPC hiccup). That invoice or escalation is then
-  blocked until the receipt settles it, so a payment is never sent twice.
+- Every transaction is signed locally with the account's pending nonce, and its hash is computed **before** it is
+  broadcast. The signed transaction is written to the invoice / escalation state first (write-ahead), so even a crash
+  between signing and broadcasting leaves it pending rather than forgotten. If the broadcast call errors (timeout, `already known`, a retried request answered `nonce too low`) or
+  the receipt cannot be read, the invoice or escalation stays pending with the hash, nonce and signed bytes, and it is
+  never paid again with a new nonce. `settlePending()` resolves it: a receipt settles it (paid / reverted); with no
+  receipt, if the account's latest nonce shows the nonce was used by another transaction, the transaction was
+  dropped and the invoice is released; otherwise the **same** signed bytes are re-broadcast (same hash, same nonce,
+  at most every 15 s), which can never pay twice. A failed read never releases anything.
+- A funded vault that is not deployed yet (counterfactual address) makes every redemption revert
+  `InvalidEOASignature`. The agent checks the vault's code first and refuses (`lastError`: deploy the vault from the
+  companion's Vault page) without escalating and without marking the mandate dead.
+- `nonceUsed` read failures fail closed: no escalation without a checked nonce, no HUMAN redemption without the
+  replay check.
+- Token symbols from chain are untrusted: only printable ASCII of 1..16 characters is shown or put in a co-sign
+  request (keys 15 / 16); anything else is shown as `?` and the request goes without keys 15 / 16.
+- The HTTP API refuses any `Host` that is not localhost, an IP literal, `HOST` or in `AGENT_ALLOWED_HOSTS` (DNS
+  rebinding), and with `AGENT_API_TOKEN` it requires the token on every route except a reduced `/health`. See
+  [HTTP API](#http-api).
 
 ## Quick start
 
@@ -79,7 +95,8 @@ drives the whole story against it (device emulator + companion code), `bash scri
 | `MAX_PAYMENTS_PER_STEP` | 3 | `pay_invoice` calls per Qwen step (the scripted planner makes 1) |
 | `PORT`, `HOST` | 8787, 127.0.0.1 | HTTP API |
 | `COMPANION_ORIGIN` | `http://localhost:5173,http://127.0.0.1:5173` | CORS allow-list |
-| `AGENT_API_TOKEN` | | when set, every POST needs `Authorization: Bearer <token>` |
+| `AGENT_API_TOKEN` | | when set, every POST and every GET except `/health` needs `Authorization: Bearer <token>` (`GET /events` also takes `?token=<token>`); enables operator denies |
+| `AGENT_ALLOWED_HOSTS` | | extra `Host` names served (comma list, names only). localhost, IP literals and `HOST` are always accepted |
 | `DATA_DIR` | `./data` | state files (gitignored) |
 | `INVOICES` | `<DATA_DIR>/invoices.json` | copied from `data/invoices.example.json` on first start |
 | `COSIGN_TTL_SECONDS` | 3600 | co-sign expiry = chain time + TTL (at most 7 days: the device refuses more) |
@@ -157,20 +174,35 @@ The body is `{ur}` (the raw `ripar-cosign` UR), `{evidence12, salt16, r, s}` or 
 |---|---|
 | 200 | `{escalation, payment}`: the escalation is `executed`, and `result.attest` holds the attestApproval tx or its error |
 | 400 `bad_cosign` | the signature does not verify, or it is malformed or high-s. Nothing was sent |
-| 409 | `already_executed`, `denied`, `failed`, `in_progress`, `replayed` (the nonce is already used on chain), or `mandate_changed` |
+| 404 `unknown_escalation` | no such escalation (ids are `esc_` + 16 hex digits; anything else is refused before any lookup) |
+| 409 | `already_executed`, `denied`, `failed`, `in_progress`, `replayed` (the nonce is already used on chain), `mandate_changed`, or `vault_not_deployed` (nothing is sent until the vault has code) |
 | 410 `expired` | the co-sign expired. The invoice re-opens, and the next planner step escalates it again with a new nonce |
+| 413 `field_too_large` | `ur` longer than 16 KiB (refused before decoding) |
 | 502 `chain_revert` | a decoded revert. `CosignReplayed` or `BadCosign` fail the escalation; anything else (empty vault, paused manager) leaves it pending, so the same co-sign can be submitted again |
-| 504 `tx_pending` | sent but not confirmed. The escalation stays `submitting` until the receipt settles it |
+| 502 `chain_error` | an RPC error before sending (e.g. `nonceUsed` could not be read): nothing was sent, the escalation stays pending |
+| 504 `tx_pending` | signed and broadcast, outcome unknown (the broadcast errored or the receipt did not come). The escalation stays `submitting` with `submission.{txHash, nonce, raw}` until `settlePending()` settles it (receipt, dropped, or re-broadcast of the same bytes) |
 
 ### Deny (`POST /escalations/:id/deny`)
 
-The body is `{}` or `{ur}`, where `ur` is the device's `ripar-deny`, and optionally `{note}`. A deny can only
-restrict, so the escalation and its invoice are always marked `denied`. The agent never pays that invoice again.
+The body is `{ur?, note?, attestTx?, operator?}`:
 
-`deny.verified` is true when the deny's P-256 signature verifies in the relay domain and all of these match:
+- `ur`: the device's `ripar-deny` (at most 16 KiB). It must verify, otherwise the answer is 400 `bad_deny` and
+  **nothing changes**: the P-256 signature (low-s) against the mandate's device key in the relay's domain, the
+  escalation's requestHash, and the agentId (the mandate's, else `AGENT_ID`; not checked when neither is known).
+  A verified deny sets the escalation and its invoice to `denied` with
+  `deny = {at, verified: true, requestHash, note?, attestTx?}`. The agent never pays that invoice again.
+- no `ur`: 400 `deny_needs_device`, unless `operator: true` **and** `AGENT_API_TOKEN` is set (the request is then
+  authenticated by the token: an explicit operator action). That gives `deny = {at, verified: false, operator: true,
+  note?, attestTx?}`.
+- `attestTx`: the companion's `RiparReputationRelay.attestDenial` transaction, `0x` + 64 hex digits (else 400
+  `bad_request`).
+- `note`: a string, control characters replaced, cut to 200 characters.
 
-- the requestHash is the escalation's;
-- the agentId is the mandate's.
+A deny of an escalation that is already `denied` is idempotent (200, the escalation): the companion may POST the same
+deny twice, right after the device answered and again with `attestTx` after the relay transaction. With a `ur` it is
+verified again (400 `bad_deny` if it does not verify; a verified one also upgrades an operator deny); `attestTx` and
+`note` are recorded only when not set yet, and without a `ur` only on a verified deny. 409 `already_executed` /
+`in_progress` when the escalation was redeemed or is being redeemed.
 
 Relaying the deny on chain (`RiparReputationRelay.attestDenial`) is the companion's job.
 
@@ -180,7 +212,7 @@ node:http, no framework. JSON everywhere; bigints are decimal strings.
 
 | Route | |
 |---|---|
-| `GET /health` | `{ok, agent, planner, mandate, config}` (no secrets) |
+| `GET /health` | `{ok, service, agent, planner, mandate, config}` (no secrets; `config.rpcUrl` is the RPC origin only, `config.rpcUrlRedacted` says whether a path / query / userinfo was dropped). With `AGENT_API_TOKEN` set and no token in the request: only `{ok, service}` |
 | `GET /state` | mandate (terms, warnings, liveness), vault (deployed, owner, balances: native + metered token + MockUSD), AUTO budget (`autoBudget`), `laneOpen`, invoices, escalations, payments |
 | `GET /invoices` | invoices with status (`open`, `escalated`, `paid`, `denied`, `failed`) and `due` |
 | `GET /escalations`, `GET /escalations/:id` | escalations, newest first / one in full |
@@ -190,9 +222,22 @@ node:http, no framework. JSON everywhere; bigints are decimal strings.
 | `POST /run` | one planner step, `{instruction?}` (Qwen). Returns `{planner, actions: [{tool, args, result}], summary, error?}` |
 | `GET /events` | Server-Sent Events: `hello`, `log`, `mandate`, `escalation`, `payment`, `invoice`, `run` (`Last-Event-ID` replays up to 200 recent events) |
 
-CORS is restricted to `COMPANION_ORIGIN`. A POST must use `Content-Type: application/json`, so a foreign page cannot
-send a "simple" cross-site request, and a POST from a foreign `Origin` gets 403. Set `AGENT_API_TOKEN` whenever the
-port is reachable by anything other than the companion.
+Guards, in this order:
+
+1. **Host allow-list** on every request, OPTIONS and SSE included (DNS rebinding: a page on `attacker.example` whose
+   name is re-pointed at 127.0.0.1 would otherwise be same-origin with this API). Accepted: `localhost`, any IPv4 or
+   bracketed IPv6 literal (a literal cannot be re-pointed), `HOST` when it is a name, and the names in
+   `AGENT_ALLOWED_HOSTS`, any port. Anything else, or no Host header, gets 421 `{error: {code: "forbidden_host"}}`.
+2. **CORS** is restricted to `COMPANION_ORIGIN`. A POST must use `Content-Type: application/json`, so a foreign page
+   cannot send a "simple" cross-site request, and a POST from a foreign `Origin` gets 403.
+3. **`AGENT_API_TOKEN`** (when set): `Authorization: Bearer <token>` on every POST and every GET except `/health`
+   (401 `unauthorized`). `GET /events` also accepts `?token=<token>`, because EventSource cannot send headers. Tokens
+   are compared in constant time.
+4. `ur`, `request` and `signature` fields longer than 16 KiB are refused (413 `field_too_large`) before any decoder
+   sees them; bodies are capped at 256 KiB.
+
+The service binds to 127.0.0.1 by default. Any other `HOST` prints a start-up warning (with or without a token: the
+API is plain HTTP). Set `AGENT_API_TOKEN` whenever the port is reachable by anything other than the companion.
 
 ## Planners
 
@@ -254,8 +299,8 @@ Writes are atomic: a temporary file, then a rename. On start-up, an escalation l
 | Path | |
 |---|---|
 | `src/config.ts` | env parsing and validation, deployments JSON (`parseDeployment`), public config |
-| `src/signer.ts` | `Signer`, `LocalKeySigner`, `PrivySigner` stub |
-| `src/chain.ts` | `RiparChain` interface + `ViemChain`: balances, `autoBudget`, `periodSpent`, `laneOpen`, `isKnownPayee`, `nonceUsed`, mandate liveness, vault owner, `redeem(delegation, execution, args = '0x')`, `attestApproval`, `txStatus`; estimate + margin |
+| `src/signer.ts` | `Signer` (`signTransaction` signs offline with an explicit nonce and fees), `LocalKeySigner`, `PrivySigner` stub |
+| `src/chain.ts` | `RiparChain` interface + `ViemChain`: balances, `autoBudget`, `periodSpent`, `laneOpen`, `isKnownPayee`, `nonceUsed`, mandate liveness, vault owner, `redeem(delegation, execution, args = '0x')`, `attestApproval`, `txStatus`, `accountNonce`, `rebroadcast`; estimate + margin, sign locally, hash before broadcast (`TxPendingError` carries hash, nonce, raw) |
 | `src/errors.ts` | custom error ABI (Ripar + DelegationManager + DeleGator + OZ), `decodeRevert`, `ChainRevertError` (`escalate`, `mandateDead`), `ApiError` |
 | `src/mandate.ts` | mandate intake and validation |
 | `src/service.ts` | `AgentService`: payments, escalations, co-sign verification and HUMAN redemption, deny, settlement of pending transactions, state |
@@ -281,10 +326,14 @@ npm test                              # both
   `test/helpers/soft-device.ts`, a software device with **random keys per test**. They cover:
   - mandate validation, every refusal included;
   - escalation fields, and that the prebuilt request passes the device's own `aiMatches` and `tokenCheck`;
-  - local signature verification, HUMAN and AUTO redemptions, replay, expiry, deny (verified or not);
+  - local signature verification, HUMAN and AUTO redemptions, replay, expiry, deny (device-verified or operator);
   - prompt injection, dead mandates, network failures, unconfirmed transactions;
+  - the security review fixes (`test/security.test.ts`): prototype-safe ids, 16 KiB payload caps, broadcast errors
+    that never pay twice (accepted, dropped, re-broadcast), undeployed vaults, `nonceUsed` failing closed, hostile
+    token symbols, the deny contract; `test/chain.test.ts` runs `ViemChain.send` against a scripted JSON-RPC;
   - the Qwen tool loop with a fake OpenAI-compatible client, the scripted demo sequence;
-  - the HTTP API over a real socket (CORS, guards, SSE), config and revert decoding.
+  - the HTTP API over a real socket (Host allow-list, CORS, token on GET and POST, SSE `?token=`), config and revert
+    decoding.
 - **Integration test** (`test/integration.test.ts`):
   1. Starts `anvil --fork-url https://testnet-rpc.monad.xyz --chain-id 10143` on a free 127.0.0.1 port
      (`RIPAR_FORK_URL` overrides the fork URL).
@@ -313,7 +362,12 @@ npm test                              # both
 - The Qwen planner is tested against a fake client only. There is no live call in the test suite.
 - The `explain` tool only writes to the activity feed (SSE). It does not change the device's AI line.
 - The deny relay (`attestDenial`) is left to the companion.
-- If the RPC fails *while* a transaction is being broadcast, the transaction may or may not have been sent, and the
-  agent treats it as not sent. Only a failed receipt read is tracked as pending.
-- Without `AGENT_API_TOKEN`, anyone who can reach the port can trigger planner steps or deny escalations. It binds to
-  127.0.0.1 by default.
+- A transaction the node refused outright (e.g. insufficient funds for gas) stays pending and is re-broadcast (every
+  15 s at most, the error in `lastError`) until another transaction of the agent's account uses its nonce, which
+  marks it dropped. The agent's next transaction takes that nonce, so this clears itself as soon as it sends again.
+- A "dropped" verdict trusts the RPC: the account's latest nonce is above the transaction's nonce and, read twice,
+  there is no receipt. Behind a load balancer whose nodes lag each other, a mined transaction could look dropped for
+  a moment; point `RPC_URL` at one consistent endpoint.
+- Without `AGENT_API_TOKEN`, anyone who can reach the port can read the agent's state, trigger planner steps and
+  submit co-signs (a deny still needs the device's signed `ripar-deny`). It binds to 127.0.0.1 by default, and the Host
+  allow-list keeps browsers on other sites out.

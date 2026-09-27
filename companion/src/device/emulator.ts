@@ -173,6 +173,12 @@ export class EmulatorHost {
   }
 
   private publish(s: EmuState): void {
+    // the synthetic thumb is lifted once a round is over (the pulse screens were left for the answer QR, a message
+    // or Home), so the next review does not arm by itself as soon as its last page is passed
+    const was = this.state.screen;
+    if (this.finger.on && (was === 'pulse' || was === 'armed') && s.screen !== 'pulse' && s.screen !== 'armed') {
+      this.finger = this.emu.finger({ ...this.finger, on: false });
+    }
     this.state = s;
     for (const l of [...this.listeners]) l(s);
   }

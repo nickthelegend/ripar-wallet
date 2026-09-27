@@ -5,7 +5,7 @@ import { formatEther } from 'viem';
 import { AUSD_10143 } from '@ripar/protocol';
 import { PageHead } from '../App';
 import { TxAction } from '../components/TxAction';
-import { Button, Empty, Field, Hex, Mark, Note, Procedure, Spec, Step, type StepState } from '../components/ui';
+import { Button, Empty, Field, Hex, Mark, NextStep, Note, Procedure, Spec, Step, type StepState } from '../components/ui';
 import { FAUCET_MAX, deployVaultWrite, faucetWrite } from '../lib/chain';
 import { publicClientFor } from '../lib/clients';
 import { amountText, errorText, parseUnits } from '../lib/format';
@@ -22,6 +22,7 @@ export function Vault() {
   const [deriv, setDeriv] = useState<VaultDerivation | null>(null);
   const [derivErr, setDerivErr] = useState<string | null>(null);
   const [status, setStatus] = useState<VaultStatus | null>(null);
+  const [statusErr, setStatusErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [amount, setAmount] = useState('500');
 
@@ -37,6 +38,9 @@ export function Vault() {
     try {
       const tokens = [deployment?.mockUsd, settings.chainId === 10143 ? AUSD_10143 : undefined].filter(Boolean) as `0x${string}`[];
       setStatus(await readVaultStatus(publicClientFor(settings), deployment, deriv.address, tokens));
+      setStatusErr(null);
+    } catch (e) {
+      setStatusErr(errorText(e));
     } finally {
       setBusy(false);
     }
@@ -79,7 +83,12 @@ export function Vault() {
       />
       <Procedure>
         <Step n={1} title="Derive the address" state={s1} aside={deriv ? <Mark tone={deriv.matches ? 'good' : 'bad'}>{deriv.matches ? 'BOTH AGREE' : 'MISMATCH'}</Mark> : undefined}>
-          {derivErr && <Note kind="warning">{derivErr}</Note>}
+          {derivErr && (
+            <Note kind="warning" alert>
+              {derivErr}
+            </Note>
+          )}
+          {!deriv && !derivErr && <p className="small muted">Deriving the vault address from K1 (two independent derivations)...</p>}
           {deriv && (
             <Spec
               rows={[
@@ -104,6 +113,8 @@ export function Vault() {
                 { k: 'owner()', v: status.owner ? <Hex value={status.owner} /> : 'could not read' },
               ]}
             />
+          ) : status === null && deriv?.matches ? (
+            <p className="small muted">{statusErr ? `Could not read the vault's code: ${statusErr}` : 'Reading the vault...'}</p>
           ) : deriv?.matches ? (
             <>
               <p className="small muted">
@@ -143,29 +154,37 @@ export function Vault() {
             Refresh
           </Button>
         </div>
+        {statusErr && (
+          <Note kind="warning" alert>
+            Could not read the vault: {statusErr}
+          </Note>
+        )}
         {status ? (
           <div className="big-status" style={{ marginTop: 12 }}>
             <div>
               <div className="k">MON</div>
-              <div className="v">{status.native === null ? '?' : formatEther(status.native)}</div>
+              <div className={`v${status.native === null ? ' unknown' : ''}`}>{status.native === null ? 'could not read' : formatEther(status.native)}</div>
             </div>
             {status.tokens.map((t) => (
               <div key={t.address}>
                 <div className="k">{t.symbol ?? 'token'}</div>
-                <div className="v">{t.balance === null ? '?' : amountText(t.balance, t.decimals, '').trim()}</div>
+                <div className={`v${t.balance === null ? ' unknown' : ''}`}>{t.balance === null ? 'could not read' : amountText(t.balance, t.decimals, '').trim()}</div>
               </div>
             ))}
             <div>
               <div className="k">Agent lane (sentinel)</div>
               <div className={`v ${status.laneOpen === false ? 'bad' : status.laneOpen ? 'good' : ''}`}>
-                {status.laneOpen === null ? '?' : status.laneOpen ? 'Open' : 'Closed'}
+                {status.laneOpen === null ? 'could not read' : status.laneOpen ? 'Open' : 'Closed'}
               </div>
             </div>
           </div>
         ) : (
-          <p className="small muted">Reading...</p>
+          !statusErr && <p className="small muted">Reading...</p>
         )}
       </section>
+      {status?.deployed && (mock?.balance ?? 0n) > 0n && (
+        <NextStep to="mandate" label="Mandate">The vault is deployed and funded. Next, tell the agent what it may spend by itself.</NextStep>
+      )}
     </div>
   );
 }

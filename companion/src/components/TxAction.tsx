@@ -5,6 +5,7 @@ import { type WriteRequest, type WriteResult, type WriteStage, sendWrite } from 
 import { connectCourier, publicClientFor } from '../lib/clients';
 import { errorText } from '../lib/format';
 import { NETWORKS, explorerTxUrl } from '../lib/networks';
+import { refreshSetup } from '../lib/setup';
 import { useStore } from '../lib/store';
 import { Icon } from './Icon';
 import { Button, Hex, Spec } from './ui';
@@ -49,6 +50,7 @@ export function TxAction({
       });
       setDone(r);
       onDone?.(r);
+      void refreshSetup(); // a write may have registered the device, deployed or funded the vault
     } catch (e) {
       setError(errorText(e));
       setStage(null);

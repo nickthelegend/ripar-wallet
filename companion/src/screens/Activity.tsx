@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react';
 import { PageHead } from '../App';
 import { Button, Empty, Mark, Note } from '../components/ui';
-import { type ActivityItem, scanActivity } from '../lib/activity';
+import { type ActivityItem, anvilForkBlock, scanActivity } from '../lib/activity';
 import { publicClientFor } from '../lib/clients';
 import { amountText, errorText } from '../lib/format';
 import { NETWORKS, explorerTxUrl } from '../lib/networks';
@@ -38,12 +38,23 @@ export function Activity() {
     setBusy(true);
     setErrors([]);
     try {
-      const r = await scanActivity(publicClientFor(settings), deployment, {
+      const pc = publicClientFor(settings);
+      // on an anvil fork the Ripar contracts were deployed after the fork block: older blocks come from the public
+      // RPC through anvil (slow) and hold nothing of ours
+      const fork = settings.network === 'anvil-fork' ? await anvilForkBlock(pc) : null;
+      const prev = older && items ? items : [];
+      const r = await scanActivity(pc, deployment, {
         chunk: settings.logChunk,
         lookback: settings.logLookback,
         ...(older && range ? { before: range.from } : {}),
+        ...(fork !== null ? { floor: fork + 1n } : {}),
         signal: ac.signal,
         onProgress: (d, t) => setProgress(`${d} / ${t} block ranges`),
+        onItems: (found, from, to) => {
+          if (ac.signal.aborted) return;
+          setItems([...prev, ...found]);
+          setRange((rg) => ({ from, to: older && rg ? rg.to : to }));
+        },
       });
       setItems((xs) => (older && xs ? [...xs, ...r.items] : r.items));
       setRange((rg) => ({ from: r.fromBlock, to: older && rg ? rg.to : r.toBlock }));

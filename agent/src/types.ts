@@ -77,9 +77,24 @@ export interface InvoiceState {
   payments: string[];
   escalationId?: string;
   lastError?: string;
-  /** an AUTO redemption that was sent but not confirmed: the invoice is not paid again until it settles */
-  pendingTx?: { hash: Hash; gasLimit: string; to: Address; token: Address; amount: string; at: number };
+  /**
+   * an AUTO redemption that was signed and broadcast but not confirmed: the invoice is not paid again until it
+   * settles. `nonce` and `raw` (the signed transaction) let settlePending() tell a dropped transaction from a slow
+   * one and re-broadcast the SAME transaction (same hash, same nonce), which can never pay twice.
+   */
+  pendingTx?: PendingTx & { to: Address; token: Address; amount: string };
   updatedAt: number;
+}
+
+/** a transaction whose outcome is not known yet (TxPendingError); nonce / raw are absent in state written before v1.2 */
+export interface PendingTx {
+  hash: Hash;
+  gasLimit: string;
+  /** the account nonce the transaction was signed with */
+  nonce?: number;
+  /** the signed, serialized transaction (keccak256(raw) = hash) */
+  raw?: Hex;
+  at: number;
 }
 
 export type EscalationStatus = 'pending' | 'submitting' | 'executed' | 'failed' | 'denied' | 'expired';
@@ -124,7 +139,7 @@ export interface Escalation {
   display: { vendor?: string; payee: Address; amount: string; symbol: string; token: Address; memo?: string; redirectedFrom?: Address };
   planner?: string;
   /** the verified co-sign being redeemed (set before sending; txHash once sent) */
-  submission?: { approvalDigest: Hex; presenceHash: Hex; txHash?: Hash; gasLimit?: string; at: number };
+  submission?: { approvalDigest: Hex; presenceHash: Hex; txHash?: Hash; gasLimit?: string; nonce?: number; raw?: Hex; at: number };
   result?: {
     txHash: Hash;
     gasUsed: string;
@@ -136,7 +151,11 @@ export interface Escalation {
     attest?: { txHash?: Hash; error?: string };
   };
   error?: { name: string; message: string; at: number };
-  deny?: { at: number; verified: boolean; requestHash?: Hex; note?: string };
+  /**
+   * verified = the device's ripar-deny verified (signature, requestHash, agentId); operator = denied without a device
+   * answer by an explicit operator action (only with AGENT_API_TOKEN); attestTx = the companion's attestDenial tx
+   */
+  deny?: { at: number; verified: boolean; operator?: boolean; requestHash?: Hex; note?: string; attestTx?: Hash };
 }
 
 export interface PaymentRecord {

@@ -1,7 +1,9 @@
 // 1 Connect: the network (RPC URL), the courier wallet that pays gas, the Ripar deployments JSON, the agent service.
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { PageHead } from '../App';
-import { Button, Field, Hex, Note, Procedure, Spec, Step, type StepState } from '../components/ui';
+import { Button, Field, Hex, NextStep, Note, Procedure, Spec, Step, type StepState } from '../components/ui';
+import { devStackState, probeDevStack } from '../lib/devstack';
+import type { Settings } from '../lib/store';
 import { type AgentHealth, agentClientOf } from '../lib/agent';
 import { connectCourier, publicClientFor } from '../lib/clients';
 import { errorText } from '../lib/format';
@@ -29,6 +31,10 @@ export function Connect() {
   const [agent, setAgent] = useState<AgentHealth | null>(null);
   const [agentErr, setAgentErr] = useState<string | null>(null);
   const [agentBusy, setAgentBusy] = useState(false);
+  /** a dev stack found next to this companion (not applied yet) */
+  const [stack, setStack] = useState<Partial<Settings> | null>(null);
+  const [fromStack, setFromStack] = useState(devStackState.appliedAt !== null);
+  const autoChecked = useRef(false);
 
   const setNetwork = (id: NetworkId) => {
     const n = NETWORKS[id];
@@ -108,11 +114,50 @@ export function Connect() {
     }
   };
 
+  // a companion opened without ?devstack on this machine: offer the local dev stack when one is running
+  useEffect(() => {
+    if (fromStack) return;
+    let live = true;
+    void probeDevStack(window.location).then((x) => {
+      if (live && x && (x.rpcUrl !== settings.rpcUrl || x.deploymentsJson !== settings.deploymentsJson || x.agentUrl !== settings.agentUrl)) setStack(x);
+    });
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const useStack = () => {
+    if (!stack) return;
+    store.setSettings(stack);
+    if (stack.agentUrl) setAgentUrl(stack.agentUrl);
+    if (stack.deploymentsUrl !== undefined) setDepUrl(stack.deploymentsUrl);
+    setStack(null);
+    setRpc(null);
+    setCourier(null);
+    setAgent(null);
+    autoChecked.current = false;
+    setFromStack(true);
+  };
+
+  // settings that came from the dev stack are checked at once (RPC, courier, contracts, agent)
+  useEffect(() => {
+    if (!fromStack || autoChecked.current) return;
+    autoChecked.current = true;
+    void (async () => {
+      await checkRpc();
+      await connect();
+      await checkCode();
+      await checkAgent();
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromStack, settings.rpcUrl, settings.agentUrl]);
+
   const local = isLocalRpc(settings.rpcUrl);
   const states: StepState[] = [
     rpc?.ok ? 'done' : rpc ? 'error' : 'active',
     courier ? 'done' : courierErr ? 'error' : rpc?.ok ? 'active' : 'pending',
-    deployment ? 'done' : depError ? 'error' : 'active',
+    deployment ? 'done' : depError ? 'error' : rpc?.ok ? 'active' : 'pending',
     agent ? 'done' : agentErr ? 'error' : deployment ? 'active' : 'pending',
   ];
 
@@ -123,6 +168,37 @@ export function Connect() {
         title="Connect"
         lede="Point the companion at a network, a wallet that only pays gas, the Ripar contracts and your agent. Nothing here can sign for you: that is the device's job."
       />
+      {stack && (
+        <Note kind="caution" title="A local dev stack is running">
+          <p>
+            scripts/dev-stack.sh serves its settings next to this page: an anvil fork of Monad testnet at {stack.rpcUrl}, the
+            Ripar contracts deployed on it, the agent at {stack.agentUrl} and an unlocked anvil courier. The public network
+            selected below has no Ripar contracts to load.
+          </p>
+          <div className="row">
+            <Button variant="primary" icon="link" onClick={useStack}>
+              Use the local dev stack
+            </Button>
+          </div>
+        </Note>
+      )}
+      {fromStack && (
+        <Note kind="ok" title="Configured from the local dev stack">
+          <p>
+            RPC, courier, contracts and agent come from scripts/dev-stack.sh (an anvil fork: nothing here reaches a public
+            chain). The checks below run by themselves.
+          </p>
+        </Note>
+      )}
+      {!stack && !fromStack && !settings.deploymentsJson && (
+        <Note title="Where are the contracts?">
+          <p>
+            The companion needs a Ripar deployments JSON (step 3). For a local demo, start{' '}
+            <code>bash scripts/dev-stack.sh</code> and open the URL it prints (it ends in <code>?devstack</code>): it
+            fills this page for you.
+          </p>
+        </Note>
+      )}
       <Procedure>
         <Step n={1} title="Network" state={states[0]!}>
           <div className="segmented" role="radiogroup" aria-label="Network">
@@ -384,6 +460,10 @@ export function Connect() {
           </Field>
         </div>
       </details>
+
+      {deployment && agent && rpc?.ok && (
+        <NextStep to="device" label="Device">Network, contracts and agent answer. Choose the signer next.</NextStep>
+      )}
 
       {!local && settings.network === 'anvil-fork' && (
         <div className="section">

@@ -282,7 +282,7 @@ wait_for agent 60 health_ok || { tail_log "$LOGS/agent.log"; die "the agent did 
 # 4. the companion dev server
 COMPANION_URL=""
 if [ "$COMPANION" = 1 ]; then
-  say "companion dev server on http://127.0.0.1:$COMPANION_PORT"
+  say "companion dev server on http://127.0.0.1:$COMPANION_PORT (open http://127.0.0.1:$COMPANION_PORT/?devstack)"
   start_bg companion "$LOGS/companion.log" "$REPO/companion" - node "$REPO_N/node_modules/vite/bin/vite.js" \
     --host 127.0.0.1 --port "$COMPANION_PORT" --strictPort
   vite_ok() { curl -s --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$COMPANION_PORT/devstack/$CHAIN_ID.json" | grep -q 200; }
@@ -323,6 +323,11 @@ fs.writeFileSync(process.argv[2], JSON.stringify(pub, null, 2) + String.fromChar
 ' "$WORK_N/stack.json" "$(native "$PUBLIC_DIR")/stack.json" || die "could not write stack.json"
 FORWARDER=$(jget creForwarder)
 STARTED=1
+if [ -n "$COMPANION_URL" ]; then
+  COMPANION_LINE="OPEN ${COMPANION_URL}?devstack   (fills in the Connect page: RPC, courier, contracts, agent)"
+else
+  COMPANION_LINE="not started (--no-companion)"
+fi
 
 cat <<EOF
 
@@ -330,10 +335,10 @@ cat <<EOF
     RPC           $RPC_URL
     deployments   $DEPLOYMENTS_N
     agent         http://127.0.0.1:$AGENT_PORT   ($AGENT_ADDRESS, ERC-8004 agentId ${AGENT_ID:-none})
-    companion     ${COMPANION_URL:-not started (--no-companion)}
-                  Connect: "Local anvil fork", RPC $RPC_URL, courier "Anvil dev account" ($ANVIL_ACCOUNT0),
-                  deployments URL /devstack/$CHAIN_ID.json, agent http://127.0.0.1:$AGENT_PORT
-                  (or open ${COMPANION_URL:-http://127.0.0.1:$COMPANION_PORT/}?devstack to fill all of that in)
+    companion     $COMPANION_LINE
+                  by hand instead: Connect "Local anvil fork", RPC $RPC_URL, courier "Anvil dev account"
+                  ($ANVIL_ACCOUNT0), deployments URL /devstack/$CHAIN_ID.json, agent http://127.0.0.1:$AGENT_PORT
+                  then: Device (EMULATOR) -> Pair -> Vault (deploy, fund) -> Mandate -> Inbox ("Ask the agent to run now")
     CRE forwarder $FORWARDER (impersonate it on the fork to close a lane; workflow owner $ANVIL_ACCOUNT9)
     stack file    $WORK_N/stack.json      logs: $(native "$LOGS")
     end-to-end    node scripts/e2e.mjs --stack $WORK_N/stack.json

@@ -56,3 +56,29 @@ export async function loadDevStack(
   if (!r.ok) throw new Error(`?devstack: ${url.pathname} answered HTTP ${r.status} (is scripts/dev-stack.sh running?)`);
   return devStackSettings(await r.json());
 }
+
+/** set when this page load applied `?devstack` (Connect then runs its checks and says where the settings came from) */
+export const devStackState: { appliedAt: number | null } = { appliedAt: null };
+
+/** a companion served from this machine (the dev server), where a dev stack may be running next to it */
+export function isLocalOrigin(loc: Pick<Location, 'hostname'>): boolean {
+  return ['localhost', '127.0.0.1', '[::1]', '::1'].includes(loc.hostname) || loc.hostname.endsWith('.localhost');
+}
+
+/**
+ * Without `?devstack`: is a local dev stack running next to this companion? Returns its settings, or null (not a
+ * local origin, no stack.json, or a malformed one). Never throws.
+ */
+export async function probeDevStack(
+  loc: Pick<Location, 'origin' | 'hostname'>,
+  fetchImpl: typeof fetch = (...a) => globalThis.fetch(...a),
+): Promise<Partial<Settings> | null> {
+  if (!isLocalOrigin(loc)) return null;
+  try {
+    const r = await fetchImpl(new URL(DEVSTACK_PATH, loc.origin).href, { cache: 'no-store' });
+    if (!r.ok || !/json/i.test(r.headers.get('content-type') ?? '')) return null;
+    return devStackSettings(await r.json());
+  } catch {
+    return null;
+  }
+}

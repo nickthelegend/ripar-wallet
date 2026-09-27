@@ -59,17 +59,42 @@ export interface ScanResult {
   errors: string[];
 }
 
+const newestFirst = (a: ActivityItem, b: ActivityItem): number =>
+  a.blockNumber === b.blockNumber ? b.logIndex - a.logIndex : a.blockNumber < b.blockNumber ? 1 : -1;
+
+/** anvil's fork block (anvil_nodeInfo), or null on any other node */
+export async function anvilForkBlock(pc: PublicClient): Promise<bigint | null> {
+  try {
+    const info = (await pc.request({ method: 'anvil_nodeInfo' } as never)) as { forkConfig?: { forkBlockNumber?: number | string } } | null;
+    const b = info?.forkConfig?.forkBlockNumber;
+    return b === undefined || b === null ? null : BigInt(b);
+  } catch {
+    return null;
+  }
+}
+
 /** scans [head - lookback, head] (or below `before`) in `chunk`-block ranges, newest first */
 export async function scanActivity(
   pc: PublicClient,
   dep: RiparDeployment,
-  opts: { chunk: number; lookback: number; before?: bigint; signal?: AbortSignal; onProgress?: (done: number, total: number) => void },
+  opts: {
+    chunk: number;
+    lookback: number;
+    before?: bigint;
+    /** never below this block (an anvil fork: the Ripar contracts only exist after the fork block) */
+    floor?: bigint;
+    signal?: AbortSignal;
+    onProgress?: (done: number, total: number) => void;
+    /** the events found so far (newest first), after every range: results show while the scan goes on */
+    onItems?: (items: ActivityItem[], fromBlock: bigint, toBlock: bigint) => void;
+  },
 ): Promise<ScanResult> {
   // cacheTime 0: viem caches the block number for 4 s, which would hide the newest blocks (a write just confirmed)
   const head = opts.before !== undefined ? opts.before - 1n : await pc.getBlockNumber({ cacheTime: 0 });
   const chunk = BigInt(Math.max(1, Math.floor(opts.chunk)));
   const lookback = BigInt(Math.max(1, Math.floor(opts.lookback)));
-  const lowest = head - lookback + 1n > 0n ? head - lookback + 1n : 0n;
+  let lowest = head - lookback + 1n > 0n ? head - lookback + 1n : 0n;
+  if (opts.floor !== undefined && opts.floor > lowest) lowest = opts.floor <= head ? opts.floor : head;
   const addresses: Address[] = [dep.enforcer, dep.relay, dep.sentinel];
   const items: ActivityItem[] = [];
   const errors: string[] = [];
@@ -90,8 +115,12 @@ export async function scanActivity(
     }
     done++;
     opts.onProgress?.(done, total);
+    if (opts.onItems) {
+      items.sort(newestFirst);
+      opts.onItems([...items], from, head);
+    }
     if (from === 0n) break;
   }
-  items.sort((a, b) => (a.blockNumber === b.blockNumber ? b.logIndex - a.logIndex : a.blockNumber < b.blockNumber ? 1 : -1));
+  items.sort(newestFirst);
   return { items, fromBlock: lowest, toBlock: head, errors };
 }

@@ -3,7 +3,7 @@
 import { bytewordsDecode, bytewordsEncode, crc32 as crc32Of } from './bytewords.js';
 import { type CborValue, cborDecode } from './cbor.js';
 import { ProtoError } from './errors.js';
-import { FountainDecoder, FountainEncoder, type FountainPart } from './fountain.js';
+import { FountainDecoder, FountainEncoder, type FountainPart, checkPartLimits } from './fountain.js';
 
 /** default maximum fragment size of make_request build (bytes of CBOR per multipart part) */
 export const DEFAULT_FRAGMENT_LEN = 70;
@@ -39,13 +39,17 @@ export function decodePartCbor(b: Uint8Array): FountainPart {
     return Number(x);
   };
   if (!(frag instanceof Uint8Array)) throw new ProtoError('UR part: fragment must be a byte string');
-  return {
+  const part = {
     seqNum: u32(seq, 'seqNum'),
     seqLen: u32(slen, 'seqLen'),
     messageLen: u32(mlen, 'messageLen'),
     checksum: u32(crc, 'checksum'),
     data: frag,
   };
+  if (part.seqNum < 1) throw new ProtoError('UR part: bad seqNum');
+  // bounded before anything loops over seqLen (a 60-character part may claim seqLen 2^32-1)
+  checkPartLimits(part);
+  return part;
 }
 
 export interface UrContent {
@@ -92,7 +96,8 @@ export function urRead(text: string): UrContent {
   const missing: number[] = [];
   for (let i = 1; i <= slen; i++) if (!frags.has(i)) missing.push(i);
   if (missing.length) {
-    throw new ProtoError(`missing pure parts [${missing.join(', ')}] (mixed-part solving: use UrDecoder)`);
+    const list = missing.slice(0, 16).join(', ') + (missing.length > 16 ? `, ... (${missing.length} in all)` : '');
+    throw new ProtoError(`missing pure parts [${list}] (mixed-part solving: use UrDecoder)`);
   }
   let total = 0;
   for (let i = 1; i <= slen; i++) total += frags.get(i)!.length;

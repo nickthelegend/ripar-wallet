@@ -44,14 +44,14 @@ export class AgentStore {
   constructor(dataDir: string, private readonly invoicesPath: string, invoicesExamplePath?: string) {
     this.files = new JsonStore(dataDir);
     this.mandate = this.files.read<StoredMandate | null>('mandate.json', null);
-    this.escalations = this.files.read<Record<string, Escalation>>('escalations.json', {});
+    this.escalations = idRecord<Escalation>(this.files.read<unknown>('escalations.json', {}), 'escalations.json');
     this.payments = this.files.read<PaymentRecord[]>('payments.json', []);
     if (!existsSync(invoicesPath) && invoicesExamplePath && existsSync(invoicesExamplePath)) {
       mkdirSync(dirname(invoicesPath), { recursive: true });
       copyFileSync(invoicesExamplePath, invoicesPath);
     }
     this.invoices = existsSync(invoicesPath) ? parseInvoices(readFileSync(invoicesPath, 'utf8')) : [];
-    this.invoiceState = this.files.read<Record<string, InvoiceState>>('invoice-state.json', {});
+    this.invoiceState = idRecord<InvoiceState>(this.files.read<unknown>('invoice-state.json', {}), 'invoice-state.json');
   }
 
   saveMandate(): void {
@@ -75,6 +75,23 @@ export class AgentStore {
     this.invoices = parseInvoices(toJson({ invoices: list }));
     writeJsonAtomic(this.invoicesPath, { invoices: this.invoices });
   }
+}
+
+/**
+ * A prototype-less copy of a JSON object keyed by ids. Ids reach these records from URLs and files, and on a plain
+ * object `rec['__proto__']` or `rec['constructor']` would resolve to Object.prototype members: a write through such an
+ * entry would pollute every object in the process. With a null prototype only own entries exist.
+ */
+export function idRecord<T>(v: unknown, what = 'record'): Record<string, T> {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) throw new Error(`${what}: expected a JSON object`);
+  const out = Object.create(null) as Record<string, T>;
+  for (const [k, x] of Object.entries(v as Record<string, T>)) out[k] = x;
+  return out;
+}
+
+/** own entry of an id-keyed record (never an inherited Object.prototype member) */
+export function ownEntry<T>(rec: Record<string, T>, id: string): T | undefined {
+  return Object.hasOwn(rec, id) ? rec[id] : undefined;
 }
 
 /** validates an invoices file ({invoices: [...]} or a bare array) */

@@ -16,11 +16,23 @@ export interface TxRequest {
   gas: bigint;
 }
 
+/** fee fields: EIP-1559 when the chain reports a base fee, legacy gasPrice otherwise */
+export type TxFees = { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint } | { gasPrice: bigint };
+
+/** a fully specified transaction: signing it needs no RPC, so its hash is known before it is broadcast */
+export type SignableTx = TxRequest & { nonce: number; chainId: number } & TxFees;
+
 export interface Signer {
   readonly kind: 'local' | 'privy';
   /** the agent's address (the mandate's delegate) */
   readonly address: Address;
   sendTransaction(tx: TxRequest): Promise<Hash>;
+  /**
+   * Signs without broadcasting and returns the serialized transaction. ViemChain.send() computes the hash from it
+   * BEFORE broadcasting, so a broadcast that errors after the node accepted it is still tracked (and re-broadcast
+   * byte for byte) instead of being paid again with a new nonce.
+   */
+  signTransaction(tx: SignableTx): Promise<Hex>;
 }
 
 export function chainFor(chainId: number, rpcUrl: string): Chain {
@@ -52,6 +64,17 @@ export class LocalKeySigner implements Signer {
     return wallet.sendTransaction({ to: tx.to, data: tx.data, value: tx.value ?? 0n, gas: tx.gas, account: this.#account, chain: this.#chain });
   }
 
+  async signTransaction(tx: SignableTx): Promise<Hex> {
+    const base = { to: tx.to, data: tx.data, value: tx.value ?? 0n, gas: tx.gas, nonce: tx.nonce, chainId: tx.chainId };
+    if ('gasPrice' in tx) return this.#account.signTransaction({ ...base, type: 'legacy', gasPrice: tx.gasPrice });
+    return this.#account.signTransaction({
+      ...base,
+      type: 'eip1559',
+      maxFeePerGas: tx.maxFeePerGas,
+      maxPriorityFeePerGas: tx.maxPriorityFeePerGas,
+    });
+  }
+
   toJSON(): Record<string, string> {
     return { kind: this.kind, address: this.address };
   }
@@ -77,6 +100,10 @@ export class PrivySigner implements Signer {
   }
 
   async sendTransaction(_tx: TxRequest): Promise<Hash> {
+    throw new SignerNotConfiguredError('PrivySigner: not configured (Privy server wallets are the production signer; use AGENT_SIGNER=local for development)');
+  }
+
+  async signTransaction(_tx: SignableTx): Promise<Hex> {
     throw new SignerNotConfiguredError('PrivySigner: not configured (Privy server wallets are the production signer; use AGENT_SIGNER=local for development)');
   }
 

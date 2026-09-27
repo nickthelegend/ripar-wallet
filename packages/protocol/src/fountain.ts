@@ -5,6 +5,27 @@ import { cborEncode } from './cbor.js';
 import { ProtoError } from './errors.js';
 import { sha256 } from './hash.js';
 
+/**
+ * Decoder limits, the same as the firmware's (firmware/src/ur.cpp kMaxSeqLen / kMaxMessageLen): every Ripar message
+ * fits in them, and they keep a hostile part (seqLen up to 2^32-1 in its CBOR) from costing unbounded time or memory
+ * (fragment choice and the GF(2) rows are O(seqLen) per part, the reference shuffle O(seqLen^2)).
+ */
+export const UR_MAX_SEQ_LEN = 128;
+export const UR_MAX_MESSAGE_LEN = 8192;
+
+/** refuses part metadata outside the decoder limits or inconsistent with the fragment length (ProtoError) */
+export function checkPartLimits(p: { seqLen: number; messageLen: number; data: Uint8Array }): void {
+  if (!Number.isInteger(p.seqLen) || p.seqLen < 1 || p.seqLen > UR_MAX_SEQ_LEN) {
+    throw new ProtoError(`UR part: seqLen ${p.seqLen} outside 1..${UR_MAX_SEQ_LEN}`);
+  }
+  if (!Number.isInteger(p.messageLen) || p.messageLen < 1 || p.messageLen > UR_MAX_MESSAGE_LEN) {
+    throw new ProtoError(`UR part: messageLen ${p.messageLen} outside 1..${UR_MAX_MESSAGE_LEN}`);
+  }
+  if (p.data.length === 0 || Math.ceil(p.messageLen / p.data.length) !== p.seqLen) {
+    throw new ProtoError('UR part: seqLen, messageLen and fragment length are inconsistent');
+  }
+}
+
 const M64 = (1n << 64n) - 1n;
 const TWO64 = 18446744073709551616.0;
 
@@ -243,6 +264,7 @@ export class FountainDecoder {
     if (this.result) return false;
     if (!Number.isInteger(p.seqNum) || p.seqNum < 1) throw new ProtoError('fountain: bad seqNum');
     if (!Number.isInteger(p.seqLen) || p.seqLen < 1) throw new ProtoError('fountain: bad seqLen');
+    checkPartLimits(p);
     if (this.seqLen === 0) {
       if (p.data.length === 0 || p.messageLen < 1 || p.messageLen > p.seqLen * p.data.length) {
         throw new ProtoError('fountain: bad message length');

@@ -9,6 +9,16 @@ Vite + React 19 + TypeScript 5.9, viem, `@metamask/smart-accounts-kit` 2.0.0, `q
 `@ripar/protocol` (consumed from source through its `ripar-source` export condition). Hash router, no backend: the
 only servers it talks to are the RPC URL and the agent URL you configure.
 
+## Try it (5 minutes, nothing on a public chain)
+
+1. `bash scripts/dev-stack.sh` (repo root): an anvil fork of Monad testnet, the Ripar contracts, the agent and this app.
+2. Open the URL it prints, `http://127.0.0.1:5173/?devstack`: Connect fills itself in and checks RPC, courier,
+   contracts and agent. (Opened without `?devstack` on this machine, Connect offers "Use the local dev stack".)
+3. Device: EMULATOR. Pair: read the keys (hold SIGN 2 s, release), then pair (page through, Place thumb, SIGN) and
+   register. Vault: deploy, mint MockUSD. Mandate: prepare, sign on the emulated device.
+4. Inbox: "Ask the agent to run now" (or every 30 s). Escalations appear; build the co-sign request and answer it on
+   the device. The line "Next on the device" under each exchange says which key to press.
+
 ## Security model
 
 - **The device decides.** It parses every request strictly, checks it against the contracts it pinned at pairing,

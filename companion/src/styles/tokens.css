@@ -11,6 +11,8 @@
   --ink-3: #56626a;
   --rule: #c3cccd;
   --rule-2: #a3aeb1;
+  /* form control borders: >= 3:1 against every paper (WCAG 1.4.11) */
+  --rule-input: #76828a;
   --spot: #00685c;
   --spot-hover: #00544a;
   --spot-ink: #ffffff;
@@ -79,6 +81,7 @@
     --ink-3: #8e999d;
     --rule: #2b3337;
     --rule-2: #3e484d;
+    --rule-input: #66737a;
     --spot: #3cc9b1;
     --spot-hover: #62d8c4;
     --spot-ink: #03201b;
@@ -108,6 +111,7 @@
   --ink-3: #8e999d;
   --rule: #2b3337;
   --rule-2: #3e484d;
+  --rule-input: #66737a;
   --spot: #3cc9b1;
   --spot-hover: #62d8c4;
   --spot-ink: #03201b;

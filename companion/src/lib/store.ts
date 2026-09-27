@@ -30,6 +30,8 @@ export interface Settings {
   logChunk: number;
   logLookback: number;
   theme: Theme;
+  /** the Inbox / Mandate pages ask the agent to run a planner step every 30 s while open */
+  agentAutoRun: boolean;
 }
 
 /** the device keys as the keys-only pairing QR shows them (nothing signed, nothing pinned) */
@@ -105,7 +107,32 @@ export interface InboxOutcome {
   status: 'cosigned' | 'denied' | 'failed';
   at: number;
   detail: string;
+  /** the payment the agent made with the co-sign, or the attestDenial relay of a deny */
   tx?: `0x${string}`;
+  /** a deny: the on-chain relay (attestDenial) is still to be sent */
+  relayPending?: boolean;
+}
+
+/**
+ * One escalation in progress, persisted so a reload or a detour to another page resumes the same round: the request
+ * shown to the device (its nonce stays tied to this escalation, so it can be shown again) and the device's verified
+ * answer until the agent took it (co-sign) or the relay and the agent both have it (deny).
+ */
+export interface EscalationWork {
+  /** the single-part ripar-cosign-req the device was shown */
+  requestUr: string;
+  delegationHash: `0x${string}`;
+  nonce: string;
+  expiry: string;
+  /** true: the agent built the request (its nonce), false: this companion did */
+  agentBuilt: boolean;
+  builtAt: number;
+  answer?: { kind: 'cosign' | 'deny'; ur: string; at: number };
+  /** the agent accepted the answer */
+  agentAt?: number;
+  agentError?: string;
+  /** attestDenial transaction of a deny */
+  relayTx?: `0x${string}`;
 }
 
 export interface AppState {
@@ -117,6 +144,8 @@ export interface AppState {
   /** co-sign nonces handed out, per delegationHash (never reuse one: v1.2 single-use per mandate) */
   nonces: Record<string, string[]>;
   inbox: Record<string, InboxOutcome>;
+  /** escalations in progress (request shown, answer not delivered yet), by escalation id */
+  work: Record<string, EscalationWork>;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -134,6 +163,7 @@ export const DEFAULT_SETTINGS: Settings = {
   logChunk: 100,
   logLookback: 3000,
   theme: 'system',
+  agentAutoRun: false,
 };
 
 const INITIAL: AppState = {
@@ -144,6 +174,7 @@ const INITIAL: AppState = {
   mandates: [],
   nonces: {},
   inbox: {},
+  work: {},
 };
 
 const KEY = 'state.v1';
@@ -156,8 +187,21 @@ function load(): AppState {
     settings: { ...DEFAULT_SETTINGS, ...(s.settings ?? {}) },
     mandates: Array.isArray(s.mandates) ? s.mandates : [],
     nonces: s.nonces && typeof s.nonces === 'object' ? s.nonces : {},
-    inbox: s.inbox && typeof s.inbox === 'object' ? s.inbox : {},
+    inbox: recordOf<InboxOutcome>(s.inbox),
+    work: recordOf<EscalationWork>(s.work),
   };
+}
+
+/** a persisted id-keyed record as a prototype-less object (an id such as "__proto__" is only ever an own key) */
+function recordOf<T>(v: unknown): Record<string, T> {
+  const out = Object.create(null) as Record<string, T>;
+  if (v && typeof v === 'object' && !Array.isArray(v)) for (const [k, x] of Object.entries(v)) out[k] = x as T;
+  return out;
+}
+
+/** the own entry `k` of an id-keyed record (never an inherited Object.prototype member) */
+export function ownEntry<T>(rec: Record<string, T> | null | undefined, k: string): T | undefined {
+  return rec && Object.prototype.hasOwnProperty.call(rec, k) ? rec[k] : undefined;
 }
 
 type Listener = () => void;

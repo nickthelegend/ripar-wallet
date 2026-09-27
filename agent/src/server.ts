@@ -1,25 +1,35 @@
 // HTTP API (node:http, no framework) for the companion app:
-//   GET  /health                      liveness + public config
+//   GET  /health                      liveness; + agent, planner, mandate, public config (with a token set: only when authenticated)
 //   GET  /state                       mandate, vault balances, AUTO budget, lane, invoices, escalations, payments
 //   GET  /invoices                    invoices with their status
 //   GET  /escalations                 every escalation (newest first)
 //   GET  /escalations/:id             one escalation: the co-sign request fields + prebuilt UR / parts
 //   POST /escalations/:id/cosign      the device's ripar-cosign ({ur} or {evidence12, salt16, r, s}) -> HUMAN redemption
-//   POST /escalations/:id/deny        the human denied on the device ({ur?: ripar-deny}) -> marked denied
+//   POST /escalations/:id/deny        the device's verified ripar-deny ({ur, note?, attestTx?}) or an operator deny
+//                                     ({operator: true}, token required) -> marked denied; repeatable to add attestTx
 //   POST /mandate                     the device-signed delegation ({delegation} or {request, signature})
 //   POST /run                         one planner step ({instruction?} for the Qwen planner)
 //   GET  /events                      Server-Sent Events (log, mandate, escalation, payment, invoice, run)
-// CORS is limited to the companion origins; POST needs Content-Type: application/json (so a foreign page cannot send
-// a "simple" cross-site request) and, when AGENT_API_TOKEN is set, Authorization: Bearer <token>.
+// Guards, in order:
+//   - Host allow-list on EVERY request (DNS rebinding: a page on attacker.example whose name is re-pointed at
+//     127.0.0.1 would otherwise be same-origin with this API): localhost, IP literals, HOST when it is a name, and
+//     AGENT_ALLOWED_HOSTS. Anything else, or no Host header, gets 421 forbidden_host.
+//   - CORS limited to the companion origins; a POST needs Content-Type: application/json (a foreign page cannot send
+//     a "simple" cross-site request) and a POST from a foreign Origin gets 403.
+//   - With AGENT_API_TOKEN set: Authorization: Bearer <token> on every POST and every GET except /health (which then
+//     answers only {ok, service} unless authenticated). GET /events also takes ?token=<token> (EventSource cannot send
+//     headers).
+//   - Device payloads (ur, request, signature) longer than 16 KiB are refused (413) before any decoder sees them.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { isIPv4, isIPv6 } from 'node:net';
 import { ProtoError } from '@ripar/protocol';
 import { publicConfig, type AgentConfig } from './config.js';
-import { ApiError } from './errors.js';
+import { ApiError, capQrFields } from './errors.js';
 import type { AgentEvent } from './events.js';
 import type { Planner, StepResult } from './planner/index.js';
 import type { MandateInput } from './mandate.js';
-import type { AgentService, CosignSubmission } from './service.js';
+import { ESCALATION_ID, type AgentService, type CosignSubmission, type DenySubmission } from './service.js';
 import { errorMessage, Mutex, toJson } from './util.js';
 
 const MAX_BODY = 256 * 1024;
@@ -32,11 +42,32 @@ export interface ServerDeps {
   heartbeatMs?: number;
 }
 
+/** the host name of a Host header value, lower case ('[::1]' keeps its brackets); null when malformed */
+export function hostNameOf(host: string): string | null {
+  const h = host.trim().toLowerCase();
+  const m = /^(\[[0-9a-f:.]+\]|[a-z0-9.-]+)(?::\d{1,5})?$/.exec(h);
+  return m ? m[1]! : null;
+}
+
+/** the Host allow-list (see the header comment) */
+export function hostAllowed(host: string | undefined, names: ReadonlySet<string>): boolean {
+  if (typeof host !== 'string' || host === '') return false;
+  const h = hostNameOf(host);
+  if (h === null) return false;
+  if (h.startsWith('[')) return isIPv6(h.slice(1, -1));
+  // an IP literal cannot be re-pointed by DNS; localhost never leaves the machine
+  if (isIPv4(h) || h === 'localhost') return true;
+  return names.has(h);
+}
+
 export function createAgentServer(deps: ServerDeps): Server & { runStep: () => Promise<StepResult> } {
   const { svc, planner, config } = deps;
   const runLock = new Mutex();
   const heartbeatMs = deps.heartbeatMs ?? 15_000;
   const allowed = new Set(config.companionOrigins);
+  const hostNames = new Set(config.allowedHosts.map((h) => h.toLowerCase()));
+  // HOST=<name> (not an IP literal) is a name this server is meant to be reached by
+  if (!isIPv4(config.host) && !isIPv6(config.host.replace(/^\[(.*)\]$/, '$1'))) hostNames.add(config.host.toLowerCase());
 
   const runStep = (instruction?: string): Promise<StepResult> =>
     runLock.run(async () => {
@@ -94,14 +125,28 @@ export function createAgentServer(deps: ServerDeps): Server & { runStep: () => P
     return v as Record<string, unknown>;
   };
 
-  const checkPost = (req: IncomingMessage): void => {
+  // sha256 first: equal lengths for timingSafeEqual, and the token's length does not leak through timing either
+  const digest = (s: string): Buffer => createHash('sha256').update(s, 'utf8').digest();
+  const wantBearer = config.apiToken ? digest(`Bearer ${config.apiToken}`) : null;
+  const wantToken = config.apiToken ? digest(config.apiToken) : null;
+
+  /** no token configured, or the request carries it (Authorization header; ?token= only where allowed) */
+  const authenticated = (req: IncomingMessage, url: URL, queryToken = false): boolean => {
+    if (!wantBearer || !wantToken) return true;
+    const auth = req.headers.authorization;
+    if (typeof auth === 'string' && timingSafeEqual(digest(auth), wantBearer)) return true;
+    const q = queryToken ? url.searchParams.get('token') : null;
+    return q !== null && timingSafeEqual(digest(q), wantToken);
+  };
+
+  const requireAuth = (req: IncomingMessage, url: URL, queryToken = false): void => {
+    if (!authenticated(req, url, queryToken)) throw new ApiError(401, 'unauthorized', 'missing or wrong bearer token');
+  };
+
+  const checkPost = (req: IncomingMessage, url: URL): void => {
     const origin = req.headers.origin;
     if (origin && !allowed.has('*') && !allowed.has(origin)) throw new ApiError(403, 'forbidden_origin', `origin ${origin} is not allowed`);
-    if (config.apiToken) {
-      const got = Buffer.from(String(req.headers.authorization ?? ''));
-      const want = Buffer.from(`Bearer ${config.apiToken}`);
-      if (got.length !== want.length || !timingSafeEqual(got, want)) throw new ApiError(401, 'unauthorized', 'missing or wrong bearer token');
-    }
+    requireAuth(req, url);
   };
 
   const events = (req: IncomingMessage, res: ServerResponse): void => {
@@ -131,6 +176,9 @@ export function createAgentServer(deps: ServerDeps): Server & { runStep: () => P
   };
 
   const route = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    if (!hostAllowed(req.headers.host, hostNames)) {
+      throw new ApiError(421, 'forbidden_host', 'this Host is not served here (set AGENT_ALLOWED_HOSTS to add a name)');
+    }
     const url = new URL(req.url ?? '/', 'http://agent.local');
     const path = url.pathname.replace(/\/+$/, '') || '/';
     const method = req.method ?? 'GET';
@@ -139,10 +187,17 @@ export function createAgentServer(deps: ServerDeps): Server & { runStep: () => P
       res.end();
       return;
     }
-    const escMatch = /^\/escalations\/([A-Za-z0-9_-]{1,64})(?:\/(cosign|deny))?$/.exec(path);
+    const escMatch = /^\/escalations\/([^/]+)(?:\/(cosign|deny))?$/.exec(path);
+    // escalation ids are randomId('esc'); anything else ('__proto__', 'constructor', ...) never reaches a lookup
+    const escId = (): string => {
+      const id = escMatch![1]!;
+      if (!ESCALATION_ID.test(id)) throw new ApiError(404, 'unknown_escalation', 'no such escalation');
+      return id;
+    };
 
     if (method === 'GET') {
       if (path === '/health') {
+        if (!authenticated(req, url)) return send(req, res, 200, { ok: true, service: 'ripar-agent' });
         const m = svc.mandate();
         return send(req, res, 200, {
           ok: true,
@@ -153,23 +208,28 @@ export function createAgentServer(deps: ServerDeps): Server & { runStep: () => P
           config: publicConfig(config),
         });
       }
+      if (path === '/events') {
+        requireAuth(req, url, true);
+        return events(req, res);
+      }
+      requireAuth(req, url);
       if (path === '/state') return send(req, res, 200, await svc.state());
       if (path === '/invoices') return send(req, res, 200, { invoices: svc.invoiceViews() });
       if (path === '/escalations') return send(req, res, 200, { escalations: svc.escalations() });
-      if (escMatch && !escMatch[2]) return send(req, res, 200, svc.escalation(escMatch[1]!));
-      if (path === '/events') return events(req, res);
+      if (escMatch && !escMatch[2]) return send(req, res, 200, svc.escalation(escId()));
       throw new ApiError(404, 'not_found', `no route GET ${path}`);
     }
     if (method === 'POST') {
-      checkPost(req);
+      checkPost(req, url);
       const body = await readJson(req);
+      capQrFields(body);
       if (path === '/mandate') return send(req, res, 200, { mandate: svc.mandateSummary(await svc.acceptMandate(body as MandateInput)) });
       if (path === '/run') {
         const instruction = typeof body.instruction === 'string' ? body.instruction : undefined;
         return send(req, res, 200, await runStep(instruction));
       }
-      if (escMatch && escMatch[2] === 'cosign') return send(req, res, 200, await svc.submitCosign(escMatch[1]!, body as CosignSubmission));
-      if (escMatch && escMatch[2] === 'deny') return send(req, res, 200, { escalation: await svc.deny(escMatch[1]!, body as { ur?: string; note?: string }) });
+      if (escMatch && escMatch[2] === 'cosign') return send(req, res, 200, await svc.submitCosign(escId(), body as CosignSubmission));
+      if (escMatch && escMatch[2] === 'deny') return send(req, res, 200, { escalation: await svc.deny(escId(), body as DenySubmission) });
       throw new ApiError(404, 'not_found', `no route POST ${path}`);
     }
     throw new ApiError(405, 'method_not_allowed', `${method} is not supported`);

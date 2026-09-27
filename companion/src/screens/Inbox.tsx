@@ -1,22 +1,36 @@
-// Inbox: the agent's escalations (payments the AUTO path refused). Each one becomes a ripar-cosign-req with a fresh
-// single-use nonce; the device answers with a co-sign (HUMAN caveat args, posted back to the agent) or, after a 2 s
-// hold on its review, with a deny that the companion relays to the reputation relay.
-import { useCallback, useEffect, useMemo, useState } from 'react';
+// Inbox: the agent's escalations (payments the AUTO path refused). Each one becomes a ripar-cosign-req with a single-use
+// nonce; the device answers with a co-sign (HUMAN caveat args, posted back to the agent) or, from its DENY + REPORT
+// AGENT review (hold SIGN 2 s on the co-sign review), with a signed deny: handed to the agent at once and relayed to the
+// reputation relay. Every round is persisted (store.work), so a reload or a detour resumes it: the request shown to the
+// device keeps its nonce for this escalation, and an answer is retried until the agent and the relay have it.
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CosignNonceTracker, decodeErc20, firmwareToken, nativeCoin, toChecksumAddress } from '@ripar/protocol';
 import { PageHead } from '../App';
+import { AgentRun } from '../components/AgentRun';
 import { DeviceExchangePanel } from '../components/DeviceExchangePanel';
-import { ReviewPanel } from '../components/Review';
+import { DemoTokenNote, ReviewPanel } from '../components/Review';
 import { TxAction } from '../components/TxAction';
 import { Button, Empty, Figure, Hex, Mark, Note, Procedure, Spec, Step, type StepState } from '../components/ui';
 import { type AgentClient, type Escalation, agentClientOf } from '../lib/agent';
 import { attestDenialWrite } from '../lib/chain';
 import { publicClientFor } from '../lib/clients';
 import { amountText, ago, errorText, utcText } from '../lib/format';
-import { type CosignOutcome, type CosignPlan, acceptCosignAnswer, adoptAgentRequest, answersCosign, checkEscalation, planCosign } from '../lib/flows/cosign';
-import { NETWORKS } from '../lib/networks';
+import {
+  type CosignOutcome,
+  type CosignPlan,
+  acceptCosignAnswer,
+  adoptAgentRequest,
+  answersCosign,
+  checkEscalation,
+  nonceConflict,
+  planCosign,
+  resumePlan,
+} from '../lib/flows/cosign';
+import { NETWORKS, explorerTxUrl } from '../lib/networks';
 import { nonceUsed, readMandateStatus, readToken } from '../lib/reads';
 import { previewCosign } from '../lib/review-preview';
-import { type AppState, currentMandate, store, useStore } from '../lib/store';
+import { useSetupStatus } from '../lib/setup';
+import { type AppState, type EscalationWork, currentMandate, ownEntry, store, useStore } from '../lib/store';
 
 const REASON_TEXT: Record<string, string> = {
   'payee-redirect': 'the payee differs from the invoice of record',
@@ -48,15 +62,39 @@ function describe(e: Escalation, s: AppState): { amount: string; payee: string; 
   return { amount: amountText(c.amount, meta.d, meta.s), payee: toChecksumAddress(c.to), kind: c.kind };
 }
 
+const shortAddr = (a: string) => `${a.slice(0, 10)}...${a.slice(-6)}`;
+
+/** persist a change of one escalation's work record */
+function setWork(id: string, patch: Partial<EscalationWork> | null): void {
+  store.set((s) => {
+    const work = { ...s.work };
+    if (patch === null) delete work[id];
+    else {
+      const cur = ownEntry(s.work, id);
+      if (!cur && !('requestUr' in patch)) return {};
+      work[id] = { ...(cur as EscalationWork), ...patch };
+    }
+    return { work };
+  });
+}
+
+function setOutcome(id: string, o: AppState['inbox'][string]): void {
+  store.set((s) => ({ inbox: { ...s.inbox, [id]: o } }));
+}
+
 export function Inbox() {
   const state = useStore((s) => s);
-  const { settings, device, inbox } = state;
+  const { settings, device, inbox, work } = state;
+  const mandate = currentMandate(state);
+  const setup = useSetupStatus();
   const explorer = NETWORKS[settings.network]?.explorer ?? null;
   const [items, setItems] = useState<Escalation[]>([]);
   const [rejected, setRejected] = useState<{ raw: unknown; error: string }[]>([]);
   const [agentErr, setAgentErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [selId, setSelId] = useState<string | null>(null);
+  const detailRef = useRef<HTMLElement>(null);
 
   const client = useMemo(() => (settings.agentUrl ? agentClientOf(settings) : null), [settings.agentUrl, settings.agentToken]);
 
@@ -68,6 +106,7 @@ export function Inbox() {
       setItems(r.items);
       setRejected(r.rejected);
       setAgentErr(null);
+      setLoaded(true);
     } catch (e) {
       setAgentErr(errorText(e));
     } finally {
@@ -88,22 +127,77 @@ export function Inbox() {
     };
   }, [client, poll]);
 
-  const pending = items.filter((e) => !inbox[e.id] && (e.status === 'pending' || e.status === 'open'));
-  const handled = items.filter((e) => inbox[e.id] || !(e.status === 'pending' || e.status === 'open'));
-  // the agent lists newest first; keep that order, answered ones below
+  const select = (id: string | null) => {
+    setSelId(id);
+    if (id) {
+      // on a phone the detail replaces the list: bring its heading into view and focus
+      requestAnimationFrame(() => {
+        const h = detailRef.current?.querySelector('h2');
+        if (h instanceof HTMLElement) {
+          h.focus({ preventScroll: true });
+          h.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        }
+      });
+    }
+  };
+
+  const open = (e: Escalation) => e.status === 'pending' || e.status === 'open';
+  // waiting: open at the agent and not answered here, or answered here but not yet delivered (never lost from view)
+  const pending = items.filter((e) => {
+    const o = ownEntry(inbox, e.id);
+    const w = ownEntry(work, e.id);
+    return (open(e) && !o) || (w?.answer && (!w.agentAt || (w.answer.kind === 'deny' && !w.relayTx)));
+  });
+  const handled = items.filter((e) => !pending.includes(e));
   const sel = items.find((e) => e.id === selId) ?? null;
+
+  const statusMark = (e: Escalation) => {
+    const w = ownEntry(work, e.id);
+    const o = ownEntry(inbox, e.id);
+    if (w?.answer && !w.agentAt) return <Mark tone="bad">NOT DELIVERED</Mark>;
+    if (w?.answer?.kind === 'deny' && !w.relayTx) return <Mark tone="warn">DENIED, RELAY PENDING</Mark>;
+    if (o) return <Mark tone={o.status === 'cosigned' ? 'good' : o.status === 'denied' ? 'bad' : 'plain'}>{o.status.toUpperCase()}</Mark>;
+    if (!open(e)) return <Mark tone={e.status === 'executed' ? 'good' : e.status === 'denied' ? 'bad' : 'plain'}>{e.status.toUpperCase()}</Mark>;
+    if (w) return <Mark tone="warn">ON THE DEVICE</Mark>;
+    return <Mark tone="warn">{e.reason === 'other' ? 'ASK' : e.reason.toUpperCase()}</Mark>;
+  };
 
   return (
     <div className="page">
       <PageHead
         title="Inbox"
-        lede="Payments your agent could not make on its own. Each one waits for your thumb: approve it on the device, or hold SIGN for 2 s on the review to deny it and file that against the agent."
+        lede="Payments your agent could not make on its own. Each one waits for your thumb: approve it on the device, or hold SIGN 2 s on its review to open the device's DENY + REPORT AGENT review and sign a denial that is filed against the agent."
       />
       {!device && <Note kind="caution">Pair a device first: a co-sign names the device's pinned contracts.</Note>}
-      {agentErr && <Note kind="warning">{agentErr}</Note>}
+      {device && !mandate && (
+        <Note kind="caution" title="No mandate yet">
+          <p>
+            The agent pays nothing and asks nothing until it holds a mandate. <a href="#/mandate">Sign one on the Mandate page</a>.
+          </p>
+        </Note>
+      )}
+      {mandate && !mandate.sentToAgentAt && (
+        <Note kind="caution" title="The agent does not have the mandate">
+          <p>
+            It was signed but not delivered. <a href="#/mandate">Send it to the agent on the Mandate page</a>.
+          </p>
+        </Note>
+      )}
+      {device && setup.vaultDeployed === false && (
+        <Note kind="caution" title="Vault not deployed">
+          <p>
+            The agent cannot pay from a vault without code (neither AUTO nor co-signed). <a href="#/vault">Deploy and fund it</a>.
+          </p>
+        </Note>
+      )}
+      {agentErr && (
+        <Note kind="warning" alert>
+          {agentErr}
+        </Note>
+      )}
 
-      <div className="cols-wide" style={{ gridTemplateColumns: sel ? 'minmax(0, 0.8fr) minmax(0, 1.6fr)' : undefined }}>
-        <section aria-label="Escalations">
+      <div className={`cols-wide inbox-cols${sel ? ' has-detail' : ''}`}>
+        <section aria-label="Escalations" className="inbox-listcol">
           <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
             <h2 style={{ fontSize: 'var(--t-lg)' }}>Waiting ({pending.length})</h2>
             <Button size="small" icon="refresh" busy={loading} onClick={() => void poll()}>
@@ -111,28 +205,38 @@ export function Inbox() {
             </Button>
           </div>
           {pending.length === 0 ? (
-            <Empty title="Nothing waiting">
-              When the agent hits a cap, a new payee or a closed lane, the payment appears here. This page checks the
-              agent every 5 s.
+            <Empty title={loaded || !client ? 'Nothing waiting' : 'Reading the agent...'}>
+              <p>
+                The agent pays due invoices by itself inside the mandate's caps. When one hits a cap, a new payee or a
+                closed lane, it lands here. The agent only looks at its invoices when it runs a planner step: ask it now,
+                or every 30 s. This page checks the agent every 5 s.
+              </p>
+              <AgentRun onRan={() => void poll()} />
             </Empty>
           ) : (
-            <ul className="inbox-list">
-              {pending.map((e) => {
-                const d = describe(e, state);
-                return (
-                  <li key={e.id}>
-                    <button type="button" className="inbox-item" aria-current={selId === e.id} onClick={() => setSelId(e.id)}>
-                      <span className="amt">{d.amount}</span>
-                      <Mark tone="warn">{e.reason === 'other' ? 'ASK' : e.reason.toUpperCase()}</Mark>
-                      <span className="sub">
-                        to {d.payee.slice(0, 10)}...{d.payee.slice(-6)} · {REASON_TEXT[e.reason]}
-                        {e.createdAt ? ` · ${ago(e.createdAt)}` : ''}
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
+            <>
+              <ul className="inbox-list">
+                {pending.map((e) => {
+                  const d = describe(e, state);
+                  return (
+                    <li key={e.id}>
+                      <button type="button" className="inbox-item" aria-current={selId === e.id} onClick={() => select(e.id)}>
+                        <span className="amt">{d.amount}</span>
+                        {statusMark(e)}
+                        <span className="sub">
+                          to {shortAddr(d.payee)} · {REASON_TEXT[e.reason]}
+                          {e.createdAt ? ` · ${ago(e.createdAt)}` : ''}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              <details className="paste" style={{ marginTop: 12 }}>
+                <summary>Ask the agent to run</summary>
+                <AgentRun onRan={() => void poll()} />
+              </details>
+            </>
           )}
           {handled.length > 0 && (
             <>
@@ -140,15 +244,12 @@ export function Inbox() {
               <ul className="inbox-list">
                 {handled.slice(0, 30).map((e) => {
                   const d = describe(e, state);
-                  const o = inbox[e.id];
                   return (
                     <li key={e.id}>
-                      <button type="button" className="inbox-item" aria-current={selId === e.id} onClick={() => setSelId(e.id)}>
+                      <button type="button" className="inbox-item" aria-current={selId === e.id} onClick={() => select(e.id)}>
                         <span>{d.amount}</span>
-                        <Mark tone={o?.status === 'cosigned' ? 'good' : o?.status === 'denied' ? 'bad' : 'plain'}>
-                          {o?.status?.toUpperCase() ?? e.status.toUpperCase()}
-                        </Mark>
-                        <span className="sub">to {d.payee.slice(0, 10)}...{d.payee.slice(-6)}</span>
+                        {statusMark(e)}
+                        <span className="sub">to {shortAddr(d.payee)}</span>
                       </button>
                     </li>
                   );
@@ -163,10 +264,17 @@ export function Inbox() {
           )}
         </section>
 
-        {sel && device ? (
-          <EscalationDetail key={sel.id} e={sel} explorer={explorer} client={client} onDone={() => void poll()} />
-        ) : (
-          sel && <Empty title="Pair a device first" />
+        {sel && (
+          <section aria-label="Escalation" className="stack inbox-detail" ref={detailRef}>
+            <button type="button" className="btn quiet small back-narrow" onClick={() => setSelId(null)}>
+              Back to the inbox
+            </button>
+            {device ? (
+              <EscalationDetail key={sel.id} e={sel} explorer={explorer} client={client} onDone={() => void poll()} />
+            ) : (
+              <Empty title="Pair a device first" />
+            )}
+          </section>
         )}
       </div>
     </div>
@@ -187,51 +295,159 @@ function EscalationDetail({
   const state = useStore((s) => s);
   const { settings, device } = state;
   const mandate = currentMandate(state);
-  const outcomeRec = state.inbox[e.id];
+  const outcomeRec = ownEntry(state.inbox, e.id);
+  const work = ownEntry(state.work, e.id);
   const check = checkEscalation(e, device, mandate);
   const d = describe(e, state);
-  const [plan, setPlan] = useState<CosignPlan | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [outcome, setOutcome] = useState<CosignOutcome | null>(null);
   const [posting, setPosting] = useState(false);
+
+  // the persisted round: the request shown before (same req-id, same nonce) and the device's answer, if any
+  const resumed = useMemo((): { plan: CosignPlan | null; error: string | null } => {
+    if (!work || !device) return { plan: null, error: null };
+    try {
+      return { plan: resumePlan(work.requestUr, e, device, settings.fragLen), error: null };
+    } catch (x) {
+      return { plan: null, error: errorText(x) };
+    }
+  }, [work?.requestUr, e, device, settings.fragLen]);
+  const plan = resumed.plan;
+  const outcome = useMemo((): CosignOutcome | null => {
+    if (!plan || !work?.answer || !device) return null;
+    try {
+      return acceptCosignAnswer(work.answer.ur, plan, device, mandate);
+    } catch {
+      return null;
+    }
+  }, [plan, work?.answer?.ur, device, mandate]);
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const expired = !!plan && plan.expiry <= BigInt(nowSec) && !work?.answer;
+
+  const deliverCosign = useCallback(
+    async (o: Extract<CosignOutcome, { kind: 'cosign' }>) => {
+      if (!client) {
+        setErr('No agent configured (Connect page): the co-sign is kept here until it can be delivered.');
+        return;
+      }
+      setPosting(true);
+      try {
+        const r = await client.postCosign(e.id, o.answer);
+        setOutcome(e.id, { status: 'cosigned', at: Date.now(), detail: `pulse ${o.bpm} bpm`, ...(r.txHash ? { tx: r.txHash } : {}) });
+        setWork(e.id, null);
+        setErr(null);
+        onDone();
+      } catch (x) {
+        const msg = errorText(x);
+        if (/\((already_executed|tx_pending|in_progress)\)/.test(msg)) {
+          // the agent already has it (an earlier hand-over whose answer was lost): it redeems or redeemed it
+          setOutcome(e.id, { status: 'cosigned', at: Date.now(), detail: `pulse ${o.bpm} bpm; ${msg}` });
+          setWork(e.id, null);
+          setErr(null);
+          onDone();
+          return;
+        }
+        setWork(e.id, { agentError: msg });
+        setErr(`Co-signed on the device, but the agent did not take it yet: ${msg}. The co-sign is kept here; retry below.`);
+      } finally {
+        setPosting(false);
+      }
+    },
+    [client, e.id, onDone],
+  );
+
+  const deliverDeny = useCallback(
+    async (o: Extract<CosignOutcome, { kind: 'deny' }>, attestTx: `0x${string}` | null) => {
+      if (!client) return;
+      setPosting(true);
+      try {
+        await client.postDeny(e.id, { ...o.answer, attestTx });
+        const relayTx = attestTx ?? ownEntry(store.get().work, e.id)?.relayTx;
+        setOutcome(e.id, { status: 'denied', at: Date.now(), detail: 'device deny', ...(relayTx ? { tx: relayTx } : { relayPending: true }) });
+        // done once both the agent and the relay have it; until then the round stays open here
+        if (relayTx) setWork(e.id, null);
+        else setWork(e.id, { agentAt: Date.now(), agentError: undefined });
+        setErr(null);
+        onDone();
+      } catch (x) {
+        setWork(e.id, { agentError: errorText(x) });
+      } finally {
+        setPosting(false);
+      }
+    },
+    [client, e.id, onDone],
+  );
+
+  // an answer that was never delivered (the page was left, the agent was down): try again once on opening it
+  const retried = useRef(false);
+  useEffect(() => {
+    if (retried.current || !outcome || !work?.answer || work.agentAt) return;
+    retried.current = true;
+    if (outcome.kind === 'cosign') void deliverCosign(outcome);
+    else void deliverDeny(outcome, work.relayTx ?? null);
+  }, [outcome, work?.answer, work?.agentAt, work?.relayTx, deliverCosign, deliverDeny]);
 
   if (!device) return null;
 
-  const prepare = async () => {
+  const prepare = async (fresh = false) => {
     setBusy(true);
     setErr(null);
     try {
       const pc = publicClientFor(settings);
       const dh = e.delegationHash;
       const now = Math.floor(Date.now() / 1000);
-      const remember = (n: bigint) =>
-        store.set((s) => ({ nonces: { ...s.nonces, [dh.toLowerCase()]: [...(s.nonces[dh.toLowerCase()] ?? []), n.toString()] } }));
-      if (e.request) {
-        // the agent built the request (and verifies the device's answer against exactly it): check it, then relay it
-        const p = adoptAgentRequest(e, device, { now, fragLen: settings.fragLen });
-        const used = await nonceUsed(pc, device.pinned.enforcer, dh, p.nonce).catch(() => false);
-        if (used || (store.get().nonces[dh.toLowerCase()] ?? []).includes(p.nonce.toString())) {
-          throw new Error(`The agent reuses nonce ${p.nonce} for this mandate: the redemption would revert (CosignReplayed). Not shown to the device.`);
+      // fail closed: a nonce whose on-chain state cannot be read is never shown to the device
+      const usedOnChain = async (n: bigint): Promise<boolean> => {
+        try {
+          return await nonceUsed(pc, device.pinned.enforcer, dh, n);
+        } catch (x) {
+          throw new Error(`Cannot confirm on-chain that nonce ${n} is unused (${errorText(x)}). Nothing was shown to the device; retry when the RPC answers.`);
         }
-        remember(p.nonce);
-        setPlan(p);
+      };
+      const remember = (p: CosignPlan, agentBuilt: boolean) =>
+        store.set((s) => ({
+          nonces: { ...s.nonces, [dh.toLowerCase()]: [...new Set([...(s.nonces[dh.toLowerCase()] ?? []), p.nonce.toString()])] },
+          work: {
+            ...s.work,
+            [e.id]: {
+              requestUr: p.request.ur,
+              delegationHash: dh,
+              nonce: p.nonce.toString(),
+              expiry: p.expiry.toString(),
+              agentBuilt,
+              builtAt: Date.now(),
+            },
+          },
+        }));
+      if (e.request) {
+        // the agent built the request (and verifies the device's answer against exactly it): check it, then relay it.
+        // Showing it again for the SAME escalation is fine (after a reload or a detour): one nonce, one redemption.
+        const p = adoptAgentRequest(e, device, { now, fragLen: settings.fragLen });
+        if (await usedOnChain(p.nonce)) {
+          throw new Error(`Nonce ${p.nonce} was already used on-chain for this mandate: this request can only revert (CosignReplayed). Ask the agent to run again; it closes this escalation and asks with a new nonce.`);
+        }
+        const clash = nonceConflict(e.id, dh, p.nonce, store.get().work);
+        if (clash) throw new Error(`The agent reuses a nonce: ${clash}. Not shown to the device.`);
+        remember(p, true);
         return;
       }
-      // v1.2: a nonce is single-use per mandate. Never reuse one handed out before, and skip any the chain has seen.
+      // the companion builds it: a fresh single-use nonce, never one handed out before, never one the chain has seen
       const tracker = new CosignNonceTracker();
       for (const n of store.get().nonces[dh.toLowerCase()] ?? []) tracker.markUsed(dh, n);
-      const nonce = await tracker.nextUnused(dh, (n) => nonceUsed(pc, device.pinned.enforcer, dh, n).catch(() => false));
-      remember(nonce);
+      for (const w of Object.values(store.get().work)) if (w.delegationHash.toLowerCase() === dh.toLowerCase()) tracker.markUsed(dh, w.nonce);
+      if (fresh && work) tracker.markUsed(dh, work.nonce);
+      const nonce = await tracker.nextUnused(dh, usedOnChain);
       const budget =
         mandate && mandate.delegationHash.toLowerCase() === dh.toLowerCase()
           ? (await readMandateStatus(pc, device.pinned.enforcer, device.keyId, dh, mandate.pulseTerms)).budget
           : null;
       const call = decodeErc20(e.call.callData);
-      const tokenMeta = call.kind !== 'none' && call.kind !== 'unknown' && !firmwareToken(Number(e.chainId), e.call.target)
-        ? await readToken(pc, e.call.target, device.pinned.vault).then((t) => ({ decimals: t.decimals, symbol: t.symbol }))
-        : null;
-      setPlan(planCosign(e, { device, nonce, now, budget, tokenMeta, fragLen: settings.fragLen }));
+      const tokenMeta =
+        call.kind !== 'none' && call.kind !== 'unknown' && !firmwareToken(Number(e.chainId), e.call.target)
+          ? await readToken(pc, e.call.target, device.pinned.vault).then((t) => ({ decimals: t.decimals, symbol: t.symbol }))
+          : null;
+      remember(planCosign(e, { device, nonce, now, budget, tokenMeta, fragLen: settings.fragLen }), false);
     } catch (x) {
       setErr(errorText(x));
     } finally {
@@ -239,42 +455,26 @@ function EscalationDetail({
     }
   };
 
-  const onAnswer = async (ur: string) => {
+  const onAnswer = (ur: string) => {
     if (!plan) return;
     try {
       const o = acceptCosignAnswer(ur, plan, device, mandate);
-      setOutcome(o);
+      // persisted before anything else: a failed hand-over or a reload never loses the device's answer
+      setWork(e.id, { answer: { kind: o.kind, ur: ur.trim().toUpperCase(), at: Date.now() }, agentError: undefined });
       setErr(null);
-      if (o.kind === 'cosign') {
-        setPosting(true);
-        try {
-          const r = client ? await client.postCosign(e.id, o.answer) : { txHash: null };
-          store.set((s) => ({ inbox: { ...s.inbox, [e.id]: { status: 'cosigned', at: Date.now(), detail: `bpm ${o.bpm}`, ...(r.txHash ? { tx: r.txHash } : {}) } } }));
-          onDone();
-        } catch (x) {
-          setErr(`Co-signed on the device, but the agent did not take it: ${errorText(x)}. Retry below.`);
-        } finally {
-          setPosting(false);
-        }
-      }
+      retried.current = true;
+      if (o.kind === 'cosign') void deliverCosign(o);
+      else void deliverDeny(o, null);
     } catch (x) {
       setErr(errorText(x));
     }
   };
 
-  const retryPost = async () => {
-    if (outcome?.kind !== 'cosign' || !client) return;
-    setPosting(true);
-    try {
-      await client.postCosign(e.id, outcome.answer);
-      store.set((s) => ({ inbox: { ...s.inbox, [e.id]: { status: 'cosigned', at: Date.now(), detail: `bpm ${outcome.bpm}` } } }));
-      setErr(null);
-      onDone();
-    } catch (x) {
-      setErr(errorText(x));
-    } finally {
-      setPosting(false);
-    }
+  const onRelayed = async (hash: `0x${string}`) => {
+    if (outcome?.kind !== 'deny') return;
+    setWork(e.id, { relayTx: hash });
+    // the agent is told again, now with the relay transaction (it records it; the deny itself it has already)
+    await deliverDeny(outcome, hash);
   };
 
   const preview = plan
@@ -286,14 +486,17 @@ function EscalationDetail({
         lastDelegationHash: mandate?.delegationHash ?? null,
       })
     : null;
+  const call = decodeErc20(e.call.callData);
+  const txUrl = (h: string | undefined) => (h ? explorerTxUrl(explorer, h) : null);
 
   const s1: StepState = check.errors.length ? 'error' : 'done';
-  const s2: StepState = outcome ? 'done' : plan ? 'active' : check.errors.length ? 'pending' : 'active';
-  const s3: StepState = outcomeRec ? 'done' : outcome ? 'active' : 'pending';
+  const s2: StepState = outcome || outcomeRec ? 'done' : plan ? 'active' : check.errors.length ? 'pending' : 'active';
+  const delivered = outcomeRec && !work;
+  const s3: StepState = delivered ? 'done' : outcome ? (work?.agentError ? 'error' : 'active') : 'pending';
 
   return (
-    <section aria-label="Escalation" className="stack">
-      <h2 style={{ fontSize: 'var(--t-xl)' }}>
+    <>
+      <h2 style={{ fontSize: 'var(--t-xl)' }} tabIndex={-1}>
         {d.amount} <span className="muted small">{d.kind}</span>
       </h2>
       <Procedure>
@@ -325,88 +528,219 @@ function EscalationDetail({
           ))}
         </Step>
         <Step n={2} title="Review on the device" state={s2}>
-          {outcomeRec ? (
+          {delivered ? (
             <p className="small">
-              Answered: {outcomeRec.status} ({new Date(outcomeRec.at).toLocaleString()}).
+              Answered: {outcomeRec.status} ({utcText(Math.floor(outcomeRec.at / 1000))}).
+            </p>
+          ) : outcome ? (
+            <p className="small">
+              The device answered with a {outcome.kind === 'cosign' ? `co-sign (pulse ${outcome.bpm} bpm)` : 'signed DENY'} (
+              {utcText(Math.floor((work?.answer?.at ?? Date.now()) / 1000))}).
             </p>
           ) : !plan ? (
-            <div className="row">
-              <Button variant="primary" icon="qr" busy={busy} onClick={prepare} disabled={check.errors.length > 0}>
-                Build the co-sign request
-              </Button>
-              {err && <span className="small" style={{ color: 'var(--bad)' }}>{err}</span>}
-            </div>
+            <>
+              {resumed.error && (
+                <Note kind="caution">
+                  <p>The request shown earlier cannot be used again: {resumed.error}. Build it again.</p>
+                </Note>
+              )}
+              {!open(e) ? (
+                <p className="small muted">The agent closed this escalation ({e.status}).</p>
+              ) : (
+                <div className="row">
+                  <Button variant="primary" icon="qr" busy={busy} onClick={() => void prepare()} disabled={check.errors.length > 0}>
+                    Build the co-sign request
+                  </Button>
+                </div>
+              )}
+              {err && (
+                <Note kind="warning" alert>
+                  {err}
+                </Note>
+              )}
+            </>
           ) : (
             <>
-              <div className="cols">
-                {preview && (
-                  <Figure n="6.1" caption="What your device will show. Hold SIGN 2 s on it to deny instead.">
-                    <ReviewPanel preview={preview} footer="press = PULSE + SIGN   hold 2s = DENY" />
-                  </Figure>
-                )}
-                <Spec
-                  compact
-                  rows={[
-                    { k: 'Nonce', v: `${plan.nonce} (fresh, single-use)` },
-                    { k: 'Expires', v: utcText(plan.expiry) },
-                    { k: 'Deny would file', v: <Hex value={plan.denyRequestHash} /> },
-                  ]}
-                />
-              </div>
-              {!outcome && (
-                <DeviceExchangePanel
-                  parts={plan.request.parts}
-                  expect={['ripar-cosign', 'ripar-deny']}
-                  accept={(u) => answersCosign(u, plan.request)}
-                  onResponse={(u) => void onAnswer(u)}
-                  runKey={plan.request.reqId}
-                  figA="6.2"
-                  figB="6.3"
-                />
+              {expired ? (
+                <Note kind="caution" title="This request expired">
+                  <p>
+                    {work?.agentBuilt
+                      ? 'The agent closes an expired escalation and asks again with a fresh nonce: ask it to run.'
+                      : 'Build a new request: it gets a fresh single-use nonce.'}
+                  </p>
+                  {work?.agentBuilt ? (
+                    <AgentRun onRan={onDone} showAuto={false} />
+                  ) : (
+                    <Button icon="refresh" busy={busy} onClick={() => void prepare(true)}>
+                      New request, fresh nonce
+                    </Button>
+                  )}
+                </Note>
+              ) : (
+                <>
+                  <div className="cols">
+                    {preview && (
+                      <Figure n="6.1" caption="What your device will show. Hold SIGN 2 s on it to open the deny review instead.">
+                        <ReviewPanel preview={preview} footer="press = PULSE + SIGN   hold 2s = DENY" />
+                      </Figure>
+                    )}
+                    <div className="stack">
+                      <Spec
+                        compact
+                        rows={[
+                          { k: 'Nonce', v: `${plan.nonce} (single-use, kept for this escalation)` },
+                          { k: 'Expires', v: utcText(plan.expiry) },
+                          { k: 'Deny would file', v: <Hex value={plan.denyRequestHash} label="deny request hash" /> },
+                        ]}
+                      />
+                      {call.kind !== 'none' && call.kind !== 'unknown' && (
+                        <DemoTokenNote
+                          chainId={Number(e.chainId)}
+                          token={e.call.target}
+                          decimals={mandate?.token.toLowerCase() === e.call.target.toLowerCase() ? mandate.tokenDecimals : null}
+                          symbol={mandate?.token.toLowerCase() === e.call.target.toLowerCase() ? mandate.tokenSymbol : null}
+                          amounts={[call.amount]}
+                        />
+                      )}
+                    </div>
+                  </div>
+                  <DeviceExchangePanel
+                    parts={plan.request.parts}
+                    expect={['ripar-cosign', 'ripar-deny']}
+                    accept={(u) => answersCosign(u, plan.request)}
+                    onResponse={onAnswer}
+                    runKey={plan.request.reqId}
+                    figA="6.2"
+                    figB="6.3"
+                    round="cosign"
+                  />
+                  {!work?.agentBuilt && (
+                    <div className="row">
+                      <Button variant="quiet" size="small" icon="refresh" busy={busy} onClick={() => void prepare(true)}>
+                        Replace with a new request (fresh nonce)
+                      </Button>
+                    </div>
+                  )}
+                </>
               )}
-              {err && <Note kind="warning">{err}</Note>}
+              {err && (
+                <Note kind="warning" alert>
+                  {err}
+                </Note>
+              )}
             </>
           )}
         </Step>
-        <Step n={3} title={outcome?.kind === 'deny' ? 'Relay the denial' : 'Hand back to the agent'} state={s3}>
-          {outcome?.kind === 'cosign' && (
+        <Step n={3} title={outcome?.kind === 'deny' || outcomeRec?.status === 'denied' ? 'Deliver the denial' : 'Hand back to the agent'} state={s3}>
+          {delivered && outcomeRec.status === 'cosigned' && (
+            <Note kind="ok" title="Co-signed and handed to the agent">
+              <p>
+                {outcomeRec.tx ? (
+                  <>
+                    Paid by the agent on the HUMAN path:{' '}
+                    {txUrl(outcomeRec.tx) ? (
+                      <a href={txUrl(outcomeRec.tx)!} target="_blank" rel="noreferrer">
+                        transaction {outcomeRec.tx.slice(0, 10)}...
+                      </a>
+                    ) : (
+                      <Hex value={outcomeRec.tx} label="payment transaction" />
+                    )}
+                  </>
+                ) : (
+                  'The agent took the co-sign; its payment transaction shows on the Activity page.'
+                )}
+              </p>
+            </Note>
+          )}
+          {delivered && outcomeRec.status === 'denied' && (
+            <Note kind="ok" title="Denied">
+              <p>
+                The agent recorded the device's signed denial.{' '}
+                {outcomeRec.tx && (
+                  <>
+                    Relayed on-chain (attestDenial):{' '}
+                    {txUrl(outcomeRec.tx) ? (
+                      <a href={txUrl(outcomeRec.tx)!} target="_blank" rel="noreferrer">
+                        transaction {outcomeRec.tx.slice(0, 10)}...
+                      </a>
+                    ) : (
+                      <Hex value={outcomeRec.tx} label="relay transaction" />
+                    )}
+                  </>
+                )}
+              </p>
+            </Note>
+          )}
+          {outcome?.kind === 'cosign' && !delivered && (
             <>
-              <Note kind="ok" title="Co-signed">
+              <Note kind="ok" title="Co-signed on the device">
                 <p>
                   Pulse {outcome.bpm} bpm. The agent redeems with these caveat args (HUMAN path); the enforcer checks the
                   P-256 signature on-chain.
                 </p>
               </Note>
-              <Spec compact rows={[{ k: 'Caveat args', v: <Hex value={outcome.answer.caveatArgs} /> }]} />
-              {!outcomeRec && (
-                <Button busy={posting} icon="send" onClick={retryPost}>
-                  Send to the agent again
+              <Spec compact rows={[{ k: 'Caveat args', v: <Hex value={outcome.answer.caveatArgs} label="caveat args" /> }]} />
+              {work?.agentError && (
+                <Note kind="warning" alert>
+                  The agent has not taken it yet: {work.agentError}
+                </Note>
+              )}
+              <div className="row">
+                <Button busy={posting} icon="send" onClick={() => void deliverCosign(outcome)}>
+                  {work?.agentError ? 'Send to the agent again' : 'Sending to the agent...'}
                 </Button>
+                {work?.agentError && (
+                  <Button
+                    variant="quiet"
+                    onClick={() => {
+                      if (confirm('Discard this co-sign? The agent never received it; the escalation can be answered again with a new request.')) setWork(e.id, null);
+                    }}
+                  >
+                    Discard
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+          {outcome?.kind === 'deny' && !delivered && (
+            <>
+              {outcome.note && <Note kind="caution">{outcome.note}</Note>}
+              <Spec
+                compact
+                rows={[
+                  {
+                    k: 'Agent',
+                    v: work?.agentAt ? (
+                      'has the signed denial (verified by the agent)'
+                    ) : (
+                      <span className="row">
+                        <span style={{ color: work?.agentError ? 'var(--bad)' : undefined }}>{work?.agentError ?? 'sending...'}</span>
+                        <Button size="small" busy={posting} icon="send" onClick={() => void deliverDeny(outcome, work?.relayTx ?? null)}>
+                          Tell the agent again
+                        </Button>
+                      </span>
+                    ),
+                  },
+                  { k: 'On-chain relay', v: work?.relayTx ? `sent (${work.relayTx.slice(0, 10)}...)` : 'pending: relay it below (files the denial against the agent)' },
+                ]}
+              />
+              {!work?.relayTx && (
+                <TxAction
+                  variant="danger solid"
+                  write={attestDenialWrite(device.pinned.relay, { ...outcome.attest, px: device.px, py: device.py })}
+                  label="Relay the denial"
+                  onDone={(r) => void onRelayed(r.hash)}
+                />
               )}
             </>
           )}
-          {outcome?.kind === 'deny' && (
-            <>
-              {outcome.note && <Note kind="caution">{outcome.note}</Note>}
-              <TxAction
-                variant="danger solid"
-                write={attestDenialWrite(device.pinned.relay, { ...outcome.attest, px: device.px, py: device.py })}
-                label="Relay the denial"
-                onDone={async (r) => {
-                  try {
-                    await client?.postDeny(e.id, { ...outcome.answer, attestTx: r.hash });
-                  } catch {
-                    /* the agent learns it from the Verdict event too */
-                  }
-                  store.set((s) => ({ inbox: { ...s.inbox, [e.id]: { status: 'denied', at: Date.now(), detail: 'attestDenial', tx: r.hash } } }));
-                  onDone();
-                }}
-              />
-            </>
-          )}
-          {!outcome && !outcomeRec && <p className="small muted">After the device answers.</p>}
+          {!outcome && !delivered && <p className="small muted">After the device answers.</p>}
         </Step>
       </Procedure>
-    </section>
+    </>
   );
+
+  function open(x: Escalation) {
+    return x.status === 'pending' || x.status === 'open';
+  }
 }

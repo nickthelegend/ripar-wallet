@@ -542,6 +542,11 @@ code,
 .note.ok > svg {
   color: var(--good);
 }
+.note p,
+.step-content p,
+.empty p {
+  overflow-wrap: anywhere;
+}
 .note p + p {
   margin-top: var(--s-1);
 }
@@ -654,7 +659,7 @@ code,
   width: 100%;
   min-height: 40px;
   padding: 8px 10px;
-  border: 1px solid var(--rule-2);
+  border: 1px solid var(--rule-input);
   border-radius: var(--radius);
   background: var(--paper-2);
   color: var(--ink);
@@ -1104,6 +1109,14 @@ code,
   background: var(--bad);
   border-color: var(--bad);
 }
+.hold-meter i.lit.hold {
+  background: var(--warn);
+  border-color: var(--warn);
+}
+.hold-scale .panic {
+  color: var(--bad);
+  font-weight: 700;
+}
 .hold-scale {
   display: flex;
   justify-content: space-between;
@@ -1152,6 +1165,73 @@ code,
   display: flex;
   flex-wrap: wrap;
   gap: var(--s-2) var(--s-3);
+}
+.device-status .thumb-on {
+  color: var(--bad);
+  font-weight: 650;
+}
+
+/* the live "Next on the device" line and the per-round steps */
+.next-on-device {
+  margin: 0;
+  padding: var(--s-2) var(--s-3);
+  border-left: 3px solid var(--spot);
+  background: var(--spot-wash);
+  font-size: var(--t-sm);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.next-on-device.warn {
+  border-left-color: var(--warn);
+  background: var(--warn-wash);
+}
+.next-on-device.bad {
+  border-left-color: var(--bad);
+  background: var(--bad-wash);
+}
+.next-on-device.good {
+  border-left-color: var(--good);
+  background: var(--good-wash);
+}
+.round-steps {
+  margin: 0;
+  padding-left: 18px;
+}
+.round-steps li + li {
+  margin-top: 2px;
+}
+.next-step {
+  margin-top: var(--s-6);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--rule);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+.next-step p {
+  margin: 0;
+  max-width: 60ch;
+}
+.next-step .btn {
+  text-decoration: none;
+}
+.check.inline {
+  align-items: center;
+  font-size: var(--t-sm);
+}
+.keys-table th[scope='row'] {
+  text-align: left;
+  white-space: nowrap;
+}
+.keys-table .danger-cell {
+  color: var(--bad);
+  font-weight: 700;
+}
+.big-status .v.unknown {
+  color: var(--ink-3);
+  font-size: var(--t-md);
 }
 
 /* ------------------------------------------------------------------------------------------------ camera */
@@ -1269,6 +1349,7 @@ details.paste[open] summary {
   padding: var(--s-3) var(--s-4);
   border-bottom: 1px solid var(--rule);
   font-weight: 650;
+  overflow-wrap: anywhere;
 }
 .tx .spec {
   border-top: 0;
@@ -1361,6 +1442,9 @@ details.paste[open] summary {
   color: var(--ink-3);
 }
 
+.empty > p {
+  margin: var(--s-2) 0 var(--s-3);
+}
 .empty {
   padding: var(--s-6) var(--s-4);
   border: 1px dashed var(--rule-2);
@@ -1449,15 +1533,44 @@ details.paste[open] summary {
   color: var(--ink);
 }
 
+/* the header's EMULATOR chip: always shown, shorter on phones */
+.mark.emu.compact {
+  flex: none;
+  white-space: nowrap;
+}
+.mark.emu.compact .short {
+  display: none;
+}
+.toc-status {
+  display: none;
+}
+.inbox-cols.has-detail {
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.6fr);
+}
+.inbox-detail h2:focus {
+  outline: none;
+}
+.back-narrow {
+  display: none;
+  justify-self: start;
+}
+
 /* ------------------------------------------------------------------------------------------------ responsive */
 @media (max-width: 1080px) {
   .exchange,
   .cols,
-  .cols-wide {
+  .cols-wide,
+  .inbox-cols.has-detail {
     grid-template-columns: minmax(0, 1fr);
   }
   .exchange {
     max-width: 560px;
+  }
+  .inbox-cols.has-detail > .inbox-listcol {
+    display: none;
+  }
+  .back-narrow {
+    display: inline-flex;
   }
 }
 
@@ -1487,6 +1600,12 @@ details.paste[open] summary {
   .runhead {
     display: none;
   }
+  .toc-status {
+    display: block;
+    margin: 0 0 var(--s-4);
+    font-size: var(--t-xs);
+    color: var(--ink-3);
+  }
   .options {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1504,6 +1623,26 @@ details.paste[open] summary {
 @media (max-width: 480px) {
   .wordmark span {
     display: none;
+  }
+  .mark.emu.compact .full {
+    display: none;
+  }
+  .mark.emu.compact .short {
+    display: inline;
+  }
+  .topbar {
+    gap: var(--s-2);
+    padding: 0 var(--s-3);
+  }
+  .topbar .kill {
+    padding-left: var(--s-2);
+    padding-right: var(--s-2);
+  }
+  .topbar .kill .kill-text {
+    display: none;
+  }
+  .wordmark b {
+    letter-spacing: 0.08em;
   }
   .step {
     grid-template-columns: 28px minmax(0, 1fr);

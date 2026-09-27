@@ -73,3 +73,13 @@ export function errorMessage(e: unknown): string {
   if (e instanceof Error) return (e as { shortMessage?: string }).shortMessage ?? e.message;
   return String(e);
 }
+
+export const SAFE_SYMBOL = /^[\x20-\x7e]{1,16}$/;
+
+/**
+ * An on-chain token symbol as shown to people: printable ASCII of 1..16 characters, otherwise '?'. symbol() is
+ * attacker-controlled (control characters, bidi overrides, an emoji split in half by a slice).
+ */
+export function displaySymbol(s: unknown): string {
+  return typeof s === 'string' && SAFE_SYMBOL.test(s) ? s : '?';
+}

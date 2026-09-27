@@ -79,6 +79,20 @@ export function EmulatorDevice({ host, compact = false }: { host: EmulatorHost; 
   if (!s) return null;
   const fingerOn = host.fingerParams.on;
   const cells = Array.from({ length: 10 }, (_, i) => (i + 1) * 500 <= holdMs);
+  // what a hold does depends on the screen where it began (docs/FIRMWARE.md §5): only Home PANICs at 5 s
+  const onHome = s.screen === 'home' || s.screen === 'homeHold';
+  const hold2 = onHome
+    ? '2 s pairing QR'
+    : s.screen === 'review' && s.review?.job === 'cosign'
+      ? '2 s DENY'
+      : s.screen === 'pairQr'
+        ? '2 s menu'
+        : s.screen === 'menu'
+          ? '2 s select'
+          : s.screen === 'qr' || s.screen === 'message'
+            ? '2 s done'
+            : '2 s cancel';
+  const hold5 = onHome ? '5 s PANIC' : '';
 
   return (
     <div className="device">
@@ -132,13 +146,13 @@ export function EmulatorDevice({ host, compact = false }: { host: EmulatorHost; 
             </button>
             <div className="hold-meter" aria-hidden="true">
               {cells.map((lit, i) => (
-                <i key={i} className={lit ? (i >= 4 ? 'lit panic' : 'lit') : undefined} />
+                <i key={i} className={lit ? (onHome && i >= 4 ? 'lit panic' : i >= 3 && !onHome ? 'lit hold' : 'lit') : undefined} />
               ))}
             </div>
             <div className="hold-scale" id="sign-help">
               <span>press</span>
-              <span>2 s hold</span>
-              <span>5 s PANIC</span>
+              <span>{hold2}</span>
+              <span className={hold5 ? 'panic' : undefined}>{hold5}</span>
             </div>
           </div>
           <div className="finger">
@@ -175,6 +189,7 @@ export function EmulatorDevice({ host, compact = false }: { host: EmulatorHost; 
       <div className="device-status">
         <EmulatorMark />
         <span>Screen: {SCREEN_NAMES[s.screen] ?? s.screen}</span>
+        {fingerOn && <span className="thumb-on">Thumb on sensor</span>}
         <span>{s.paired ? `Paired to ${s.context.chain}` : 'Not paired'}</span>
         {s.pulse.sensorOn && <span>Pulse {s.pulse.finger ? `${Math.round(s.pulse.bpm)} bpm, ${s.pulse.beats}/${s.pulse.minBeats} beats` : 'no finger'}</span>}
       </div>
