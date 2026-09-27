@@ -378,7 +378,12 @@ h2, h3 { break-after: avoid; page-break-after: avoid; }
   <h2>Flash over USB-C</h2>
   <ol>
     <li>Plug the <b>board's</b> USB-C (the upper port on the left end) into the PC. Don't use the TP4056 port, and never plug both at once.</li>
-    <li>In the repo's <code>firmware</code> folder, run <code>pio run -e ripar -t upload</code>.</li>
+    <li>In the repo's <code>firmware</code> folder, pick a build:
+      <ul>
+        <li><code>pio run -e chk_device -t upload</code>: <b>hardware check first</b> (screen, SIGN key, buzzer, pulse sensor, camera, crypto self-test).</li>
+        <li><code>pio run -e ripar -t upload</code>: the wallet for <b>testing</b>, with QR, the Bluetooth fallback and a temporary Wi-Fi link.</li>
+        <li><code>pio run -e ripar-airgap -t upload</code>: the wallet with <b>no radio code at all</b>. Use this build for the pitch and the video.</li>
+      </ul></li>
     <li>Optional: <code>pio device monitor -b 115200</code> shows the self-test and the K1 address.</li>
     <li><b>If the upload can't connect:</b> hold BOOT (the SIGN pin), tap RST (the pinhole), release BOOT, upload again, then tap RST.</li>
     <li>Re-flashing keeps the keys and the pairing. <b><code>pio run -t erase</code> wipes the seed</b>, which means a new vault owner, and there is no seed backup yet. Only erase a unit that holds no funds.</li>
@@ -398,8 +403,8 @@ h2, h3 { break-after: avoid; page-break-after: avoid; }
   </ol>
   <div class="callout warn"><b>Known limitations</b>
     <ul style="margin-top:1.5mm">
-      <li><b>Not tested on hardware yet.</b> On your unit, check the screen rotation (<code>RIPAR_LCD_ROTATION</code>), the camera orientation and exposure, and the pulse thresholds.</li>
-      <li><b>Pulse thresholds.</b> The anti-spoof pulse checks were tuned on simulated signals. Test with your real thumb: at rest it should pass within about 15 s.</li>
+      <li><b>Partly tested on hardware.</b> The crypto self-test, screen, SIGN key, buzzer and pulse sensor work on a real board. Still to check: the camera (orientation and exposure), the full signing flow on the device, and the Bluetooth and Wi-Fi links.</li>
+      <li><b>Pulse gate.</b> On the first hardware test the sensor read a real thumb at 82&ndash;85 bpm, but the strict anti-spoof checks (tuned on simulated signals) rejected it. The device therefore uses the <b>standard gate</b>: finger present, 5 beats at 40&ndash;180 bpm, a steady rhythm, and the red and IR channels moving together. The strict checks return with <code>RIPAR_PULSE_STRICT=1</code> once they have been tuned on recorded thumb data (<code>tools/pulse_replay</code>).</li>
       <li><b>Prototype security.</b> The seed is stored in flash without encryption and there is no seed backup. The crypto isn't constant-time.</li>
     </ul>
   </div>
@@ -432,6 +437,34 @@ h2, h3 { break-after: avoid; page-break-after: avoid; }
     <tr><td>MockUSD (10143)</td><td><code>0xB5b7eaffbF9bf68cbcC1Ce8B5850b2ea9d6f9a2a</code></td></tr>
   </table></div>
   <p class="small">To deploy them on Monad testnet with your own key, follow <code>docs/DEPLOY.md</code>. The addresses are deterministic (CREATE2), so the deployed contracts land exactly where the firmware expects them. The contracts passed an adversarial review (25 findings, 12 confirmed and fixed) and 715 tests.</p>
+</section>
+
+<!-- ============================== 6c. APP ============================== -->
+<section class="chapter">
+  <div class="kicker">Chapter 6, continued</div>
+  <h1>The phone app and the three links</h1>
+  <p>The Android app (<code>companion-mobile/</code>) is a phone wallet for your Ripar:</p>
+  <ul>
+    <li><b>Home:</b> a big orange vault card with Send, Receive, Scan and Device.</li>
+    <li><b>Send:</b> a keypad sheet, then confirm, then the device (review, thumb, SIGN), then <i>Done.</i> Every payment from the vault needs the device.</li>
+    <li><b>Other tabs:</b> Activity, Device and Agents (optional).</li>
+  </ul>
+  <div class="keep"><table>
+    <tr><th>Link</th><th>How it works</th><th>Air-gapped?</th></tr>
+    <tr><td><b>QR codes</b> (default)</td><td>The phone shows an animated QR to the device camera, and reads the device's answer QR with its own camera.</td><td><b>Yes</b></td></tr>
+    <tr><td><b>Bluetooth fallback</b></td><td>For when the device camera cannot read. Turn it on from the device menu: <b>BLE LINK</b>, then pulse + SIGN. Pair with the 6-digit code shown on the device. <b>RADIO ON</b> shows while it is alive, and it turns off after 5 minutes idle, on PANIC and at power-off.</td><td>No, while it is on</td></tr>
+    <tr><td><b>Wi-Fi test link</b> (temporary)</td><td>The app sends your Wi-Fi network to the device over Bluetooth, and you confirm <b>JOIN WI-FI</b> with SIGN. Then choose <b>WI-FI ON</b> in the device menu. The app connects to the IP address with the 8-digit code shown on the device's Home screen.</td><td>No: for testing only</td></tr>
+  </table></div>
+  <p class="small">Whichever link carries a request, the device parses it, reviews it and needs pulse + SIGN exactly as for a QR code. The links only carry bytes. The phone never holds the vault keys.</p>
+  <h2>Your first hardware test (28 Sep)</h2>
+  <ul>
+    <li><b>Crypto self-test on the chip:</b> all pass, including every cross-check with mbedTLS.</li>
+    <li><b>Screen, SIGN key and buzzer:</b> working.</li>
+    <li><b>Pulse sensor:</b> found at I2C address 0x57 (chip ID 0x15), and it read a thumb at 82&ndash;85 bpm.
+      <ul><li><b>Wiring lesson:</b> use the sensor's <b>VIN/SDA/SCL/GND</b> row, with <b>SDA &rarr; GPIO48</b> and <b>SCL &rarr; GPIO47</b>. Its GND/RD/IRD/INT row stays empty.</li></ul></li>
+    <li><b>Camera:</b> not tested yet (not inserted).</li>
+    <li><b>USB:</b> if the board shows as <i>Unknown USB Device</i>, plug it straight into a laptop port rather than a hub, then do BOOT + RST.</li>
+  </ul>
 </section>
 
 <!-- ============================== 7. HACKATHON ============================== -->
@@ -470,6 +503,7 @@ h2, h3 { break-after: avoid; page-break-after: avoid; }
     <tr><td><code>docs/FIRMWARE.md</code></td><td>Firmware: build, flash, screens and keys, walkthrough, security model</td></tr>
     <tr><td><code>contracts/</code>, <code>docs/DEPLOY.md</code></td><td>Solidity contracts (Foundry), <code>SPEC.md</code>, deploy guide</td></tr>
     <tr><td><code>agent/</code>, <code>companion/</code>, <code>packages/protocol/</code></td><td>AI agent service, companion web app, TypeScript protocol library</td></tr>
+    <tr><td><code>companion-mobile/</code>, <code>docs/BLE_LINK.md</code>, <code>docs/WIFI_LINK.md</code></td><td>Android app; Bluetooth fallback and Wi-Fi test link protocols</td></tr>
     <tr><td><code>firmware/emu/</code>, <code>scripts/dev-stack.sh</code></td><td>Browser emulator of the device; one-command local stack</td></tr>
     <tr><td><code>firmware/</code></td><td>ESP32-S3 firmware (PlatformIO): <code>src/</code>, <code>include/</code>, host tests in <code>test/host/</code>, companion tools in <code>tools/</code></td></tr>
     <tr><td><code>model/RiparWallet.SLDASM</code>, <code>model/parts/</code></td><td>SolidWorks 2026 assembly and native parts</td></tr>
