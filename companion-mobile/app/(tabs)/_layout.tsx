@@ -1,11 +1,12 @@
 import { Tabs } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { type LayoutChangeEvent, Pressable, StyleSheet, View } from 'react-native';
-import Animated, { interpolateColor, useAnimatedStyle, useDerivedValue, useSharedValue, withSpring, type SharedValue } from 'react-native-reanimated';
+import Animated, { useAnimatedStyle, useSharedValue, withSpring, type SharedValue } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Icon, type IconName } from '../../src/components';
 import { tap } from '../../src/lib/haptics';
-import { font, ink, palette, space } from '../../src/theme';
+import { ink, palette, space } from '../../src/theme';
 
 const TABS: { name: string; label: string; icon: IconName }[] = [
   { name: 'index', label: 'Home', icon: 'home' },
@@ -36,8 +37,6 @@ function TabButton({
   icon: IconName;
   onPress: () => void;
 }) {
-  const near = useDerivedValue(() => Math.max(0, 1 - Math.abs(pos.value - index)));
-  const labelStyle = useAnimatedStyle(() => ({ color: interpolateColor(near.value, [0, 1], [ink.soft, palette.primaryForeground]) }));
   return (
     <Pressable
       style={styles.tab}
@@ -48,10 +47,7 @@ function TabButton({
       onPress={onPress}
       hitSlop={4}
     >
-      <Icon name={icon} size={21} color={focused ? palette.primaryForeground : ink.soft} strokeWidth={focused ? 2.1 : 1.7} />
-      <Animated.Text style={[styles.label, labelStyle]} numberOfLines={1}>
-        {label}
-      </Animated.Text>
+      <Icon name={icon} size={23} color={focused ? palette.primaryForeground : ink.soft} strokeWidth={focused ? 2.2 : 1.8} />
     </Pressable>
   );
 }
@@ -70,8 +66,16 @@ function RiparTabBar({ state, navigation }: { state: { index: number; routes: { 
 
   return (
     <View style={[styles.wrap, { paddingBottom: Math.max(insets.bottom, space.md) }]} pointerEvents="box-none">
-      <View style={styles.bar} onLayout={(e: LayoutChangeEvent) => setW(e.nativeEvent.layout.width - 12)}>
-        {w > 0 && <Animated.View style={[styles.pill, { width: slot }, pill]} />}
+      {/* content fades out under the bar instead of showing through it */}
+      <LinearGradient
+        pointerEvents="none"
+        colors={['rgba(11,12,14,0)', 'rgba(11,12,14,0.92)', palette.background]}
+        locations={[0, 0.45, 1]}
+        style={styles.scrim}
+      />
+      <View style={styles.bar}>
+        <View style={styles.row} onLayout={(e: LayoutChangeEvent) => setW(e.nativeEvent.layout.width)}>
+          {w > 0 && <Animated.View style={[styles.pill, { width: slot }, pill]} />}
         {state.routes.map((route, i) => {
           const tab = TABS.find((t) => t.name === route.name);
           if (!tab) return null;
@@ -90,6 +94,7 @@ function RiparTabBar({ state, navigation }: { state: { index: number; routes: { 
             />
           );
         })}
+        </View>
       </View>
     </View>
   );
@@ -109,29 +114,34 @@ export default function TabsLayout() {
   );
 }
 
+const BAR_H = 62;
+const INSET = 6;
+
 const styles = StyleSheet.create({
   wrap: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: space.lg, alignItems: 'center' },
+  scrim: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 150 },
   bar: {
-    flexDirection: 'row',
     width: '100%',
     maxWidth: 520,
-    padding: 6,
-    borderRadius: 34,
-    backgroundColor: '#15171AF2',
+    height: BAR_H,
+    padding: INSET,
+    borderRadius: BAR_H / 2,
+    backgroundColor: '#16181C',
     borderWidth: 1,
     borderColor: ink.hairlineStrong,
-    boxShadow: '0px 14px 30px rgba(0,0,0,0.6)',
+    overflow: 'hidden',
+    boxShadow: '0px 12px 28px rgba(0,0,0,0.55)',
     elevation: 18,
   },
+  // the tabs and the pill share this box, so the pill is exactly one slot tall and wide
+  row: { flex: 1, flexDirection: 'row' },
   pill: {
     position: 'absolute',
-    top: 6,
-    bottom: 6,
-    left: 6,
-    borderRadius: 28,
+    top: 0,
+    bottom: 0,
+    left: 0,
+    borderRadius: (BAR_H - 2 * INSET) / 2,
     backgroundColor: palette.primary,
-    boxShadow: '0px 6px 16px rgba(255,107,26,0.35)',
   },
-  tab: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 9, gap: 3 },
-  label: { fontFamily: font.bodyMedium, fontSize: 10, lineHeight: 12, letterSpacing: 0.3 },
+  tab: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 });

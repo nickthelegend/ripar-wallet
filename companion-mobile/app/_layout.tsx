@@ -3,11 +3,12 @@
 import '../src/polyfills';
 
 // the five faces the app uses, by subpath: the packages' index would bundle every weight (about 1.5 MB of fonts)
-import { JetBrainsMono_400Regular } from '@expo-google-fonts/jetbrains-mono/400Regular';
-import { JetBrainsMono_500Medium } from '@expo-google-fonts/jetbrains-mono/500Medium';
-import { SpaceGrotesk_400Regular } from '@expo-google-fonts/space-grotesk/400Regular';
-import { SpaceGrotesk_500Medium } from '@expo-google-fonts/space-grotesk/500Medium';
-import { SpaceGrotesk_700Bold } from '@expo-google-fonts/space-grotesk/700Bold';
+import { Geist_400Regular } from '@expo-google-fonts/geist/400Regular';
+import { Geist_500Medium } from '@expo-google-fonts/geist/500Medium';
+import { Geist_600SemiBold } from '@expo-google-fonts/geist/600SemiBold';
+import { Geist_700Bold } from '@expo-google-fonts/geist/700Bold';
+import { GeistMono_400Regular } from '@expo-google-fonts/geist-mono/400Regular';
+import { GeistMono_500Medium } from '@expo-google-fonts/geist-mono/500Medium';
 import { useFonts } from 'expo-font';
 import { DarkTheme, Stack, ThemeProvider, type Theme } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
@@ -52,11 +53,12 @@ function Emulator() {
 
 export default function RootLayout() {
   const [loaded, error] = useFonts({
-    SpaceGrotesk_400Regular,
-    SpaceGrotesk_500Medium,
-    SpaceGrotesk_700Bold,
-    JetBrainsMono_400Regular,
-    JetBrainsMono_500Medium,
+    Geist_400Regular,
+    Geist_500Medium,
+    Geist_600SemiBold,
+    Geist_700Bold,
+    GeistMono_400Regular,
+    GeistMono_500Medium,
   });
   const [grace, setGrace] = useState(false);
   const [hydrated, setHydrated] = useState(store.loaded);

@@ -29,7 +29,7 @@ function DeviceBody({ screen }: { screen: ReactNode }) {
       <Circle cx={130} cy={208} r={7} fill="rgba(255,255,255,0.08)" />
       {/* the SIGN key */}
       <Rect x={186} y={258} width={28} height={12} rx={6} fill="#2A2E34" />
-      <SvgText fontFamily="JetBrainsMono_500Medium, monospace" x={70} y={270} fontSize={10} fill="rgba(242,236,225,0.55)" fontWeight="600" letterSpacing={1.4}>
+      <SvgText fontFamily="GeistMono_500Medium, monospace" x={70} y={270} fontSize={10} fill="rgba(242,236,225,0.55)" fontWeight="600" letterSpacing={1.4}>
         RIPAR
       </SvgText>
     </G>
@@ -80,17 +80,17 @@ export function HeroArt({ scene, size }: { scene: HeroScene; size: number }) {
           <DeviceBody
             screen={
               <G>
-                <SvgText fontFamily="JetBrainsMono_500Medium, monospace" x={82} y={80} fontSize={9} fill="#8FA3B8" letterSpacing={1}>
+                <SvgText fontFamily="GeistMono_500Medium, monospace" x={82} y={80} fontSize={9} fill="#8FA3B8" letterSpacing={1}>
                   RIPAR · K1 0x7534…24Eb
                 </SvgText>
-                <SvgText fontFamily="JetBrainsMono_500Medium, monospace" x={82} y={104} fontSize={15} fill="#E8EEF4" fontWeight="700">
+                <SvgText fontFamily="GeistMono_500Medium, monospace" x={82} y={104} fontSize={15} fill="#E8EEF4" fontWeight="700">
                   PAIRED
                 </SvgText>
                 <Rect x={82} y={116} width={70} height={16} rx={8} fill="rgba(107,212,154,0.18)" />
-                <SvgText fontFamily="JetBrainsMono_500Medium, monospace" x={90} y={128} fontSize={9} fill={palette.success} fontWeight="700" letterSpacing={0.8}>
+                <SvgText fontFamily="GeistMono_500Medium, monospace" x={90} y={128} fontSize={9} fill={palette.success} fontWeight="700" letterSpacing={0.8}>
                   NO RADIO
                 </SvgText>
-                <SvgText fontFamily="JetBrainsMono_500Medium, monospace" x={82} y={148} fontSize={8} fill="#8FA3B8">
+                <SvgText fontFamily="GeistMono_500Medium, monospace" x={82} y={148} fontSize={8} fill="#8FA3B8">
                   press SIGN = scan
                 </SvgText>
               </G>
@@ -101,7 +101,7 @@ export function HeroArt({ scene, size }: { scene: HeroScene; size: number }) {
           <DeviceBody
             screen={
               <G>
-                <SvgText fontFamily="JetBrainsMono_500Medium, monospace" x={80} y={74} fontSize={9} fill="#E8EEF4" fontWeight="700" letterSpacing={0.8}>
+                <SvgText fontFamily="GeistMono_500Medium, monospace" x={80} y={74} fontSize={9} fill="#E8EEF4" fontWeight="700" letterSpacing={0.8}>
                   CO-SIGN PAYMENT
                 </SvgText>
                 {[
@@ -111,15 +111,15 @@ export function HeroArt({ scene, size }: { scene: HeroScene; size: number }) {
                   ['Expires', '09:21 UTC', '#E8EEF4'],
                 ].map(([k, v, c], i) => (
                   <G key={k}>
-                    <SvgText fontFamily="JetBrainsMono_500Medium, monospace" x={80} y={92 + i * 15} fontSize={8} fill="#8FA3B8">
+                    <SvgText fontFamily="GeistMono_500Medium, monospace" x={80} y={92 + i * 15} fontSize={8} fill="#8FA3B8">
                       {k}
                     </SvgText>
-                    <SvgText fontFamily="JetBrainsMono_500Medium, monospace" x={118} y={92 + i * 15} fontSize={8.5} fill={c} fontWeight="600">
+                    <SvgText fontFamily="GeistMono_500Medium, monospace" x={118} y={92 + i * 15} fontSize={8.5} fill={c} fontWeight="600">
                       {v}
                     </SvgText>
                   </G>
                 ))}
-                <SvgText fontFamily="JetBrainsMono_500Medium, monospace" x={80} y={152} fontSize={8} fill="#FFB067">
+                <SvgText fontFamily="GeistMono_500Medium, monospace" x={80} y={152} fontSize={8} fill="#FFB067">
                   press = PULSE + SIGN
                 </SvgText>
               </G>
@@ -131,10 +131,10 @@ export function HeroArt({ scene, size }: { scene: HeroScene; size: number }) {
             screen={
               <G>
                 <Path d="M126 92c0-9 12-12 16-3 4-9 16-6 16 3 0 10-16 18-16 18s-16-8-16-18z" fill={palette.danger} />
-                <SvgText fontFamily="JetBrainsMono_500Medium, monospace" x={116} y={132} fontSize={16} fill="#E8EEF4" fontWeight="700">
+                <SvgText fontFamily="GeistMono_500Medium, monospace" x={116} y={132} fontSize={16} fill="#E8EEF4" fontWeight="700">
                   72 bpm
                 </SvgText>
-                <SvgText fontFamily="JetBrainsMono_500Medium, monospace" x={104} y={150} fontSize={8.5} fill={palette.success} fontWeight="700" letterSpacing={0.6}>
+                <SvgText fontFamily="GeistMono_500Medium, monospace" x={104} y={150} fontSize={8.5} fill={palette.success} fontWeight="700" letterSpacing={0.6}>
                   PULSE OK · press SIGN
                 </SvgText>
               </G>
@@ -163,7 +163,7 @@ export function HeroArt({ scene, size }: { scene: HeroScene; size: number }) {
         <G>
           <Path d="M18 60h40l10-22 16 48 12-30 8 14h40" stroke={palette.primary} strokeWidth={4} fill="none" strokeLinecap="round" strokeLinejoin="round" />
           <Circle cx={250} cy={250} r={28} fill={palette.primary} />
-          <SvgText fontFamily="JetBrainsMono_500Medium, monospace" x={234} y={255} fontSize={12} fill={palette.primaryForeground} fontWeight="800">
+          <SvgText fontFamily="GeistMono_500Medium, monospace" x={234} y={255} fontSize={12} fill={palette.primaryForeground} fontWeight="800">
             SIGN
           </SvgText>
         </G>

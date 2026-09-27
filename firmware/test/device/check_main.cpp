@@ -101,7 +101,11 @@ void setup() {
   ui_message(ok ? "SELFTEST PASS" : "SELFTEST FAIL", report, ok ? 0x07E0 : 0xF800);
   ok ? buzz_ok() : buzz_err();
   delay(1500);
+#ifdef RIPAR_CHECK_START_PULSE
+  enter(kPulse);  // bench option: start on the pulse screen
+#else
   enter(kHome);
+#endif
 }
 
 void loop() {
@@ -157,6 +161,13 @@ void loop() {
       if (now - g_lastDraw >= 50) {
         ui_pulse(p, g_pulseOk ? "PULSE CHECK" : "NO PULSE SENSOR");
         g_lastDraw = now;
+      }
+      static uint32_t lastLog = 0;
+      if (p.beatNow || now - lastLog >= 1000) {  // serial pulse log for bench checks
+        Serial.printf("pulse: finger=%d beat=%d bpm=%.1f beats=%d jitter=%.3f ir=%lu red=%lu t=%lums regular=%.2f window=%d passed=%d\n",
+                      p.finger, p.beatNow, p.bpm, p.beats, p.jitter, (unsigned long)p.irDC, (unsigned long)p.redDC,
+                      (unsigned long)p.elapsedMs, p.regular, p.windowOk, p.passed);
+        lastLog = now;
       }
       if (p.passed) {
         uint8_t ev[12];

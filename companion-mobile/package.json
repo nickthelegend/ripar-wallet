@@ -17,8 +17,8 @@
     "icons": "node scripts/make-icons.mjs"
   },
   "dependencies": {
-    "@expo-google-fonts/jetbrains-mono": "^0.4.1",
-    "@expo-google-fonts/space-grotesk": "^0.4.1",
+    "@expo-google-fonts/geist": "^0.4.2",
+    "@expo-google-fonts/geist-mono": "^0.4.3",
     "@expo/metro-runtime": "~57.0.13",
     "@noble/curves": "~1.9.7",
     "@noble/hashes": "~1.8.0",

@@ -250,7 +250,7 @@ const styles = StyleSheet.create({
     borderColor: ink.hairline,
     paddingHorizontal: space.md,
     paddingVertical: 10,
-    fontFamily: 'JetBrainsMono_400Regular',
+    fontFamily: 'GeistMono_400Regular',
     fontSize: 12,
   },
   switchRow: { flexDirection: 'row', alignItems: 'center', gap: space.md },

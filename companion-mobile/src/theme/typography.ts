@@ -1,13 +1,16 @@
 import { Platform, TextStyle } from 'react-native';
 
-/** Space Grotesk for what a person reads, JetBrains Mono for what a machine produced (addresses, URs, hashes). */
+/**
+ * Geist for everything a person reads: a precise, neutral grotesk drawn for interfaces, with true tabular figures
+ * for money. Geist Mono for what a machine produced (addresses, URs, hashes).
+ */
 export const font = {
-  display: 'SpaceGrotesk_500Medium',
-  displayBold: 'SpaceGrotesk_700Bold',
-  body: 'SpaceGrotesk_400Regular',
-  bodyMedium: 'SpaceGrotesk_500Medium',
-  mono: 'JetBrainsMono_400Regular',
-  monoMedium: 'JetBrainsMono_500Medium',
+  display: 'Geist_600SemiBold',
+  displayBold: 'Geist_700Bold',
+  body: 'Geist_400Regular',
+  bodyMedium: 'Geist_500Medium',
+  mono: 'GeistMono_400Regular',
+  monoMedium: 'GeistMono_500Medium',
 } as const;
 
 /**

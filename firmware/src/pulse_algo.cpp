@@ -617,7 +617,9 @@ const PulseResult& PulseDetector::add(uint32_t ir, uint32_t red, uint32_t t_ms) 
     const float ageMs = float(tk - lastBeat_) / float(kTicksPerMs);
     ok = ageMs <= limitMs;
   }
-  if (ok) ok = windowOk(el);
+  r_.regular = regular_;
+  r_.windowOk = windowOk(el);
+  if (ok) ok = r_.windowOk;
   r_.passed = ok;
   if (ok) live_ = true;
 

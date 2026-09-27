@@ -14,6 +14,9 @@ struct PulseResult {
   float progress = 0;      // 0..1 toward passing (for the UI)
   bool beatNow = false;    // true on the sample where a beat was detected (UI heartbeat blink)
   uint32_t elapsedMs = 0;  // since finger placed
+  // diagnostics (bench logs only): the spoof score (pass needs >= 1) and the window-level checks
+  float regular = 0;
+  bool windowOk = false;
 };
 
 struct PulseConfig {
