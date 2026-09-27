@@ -47,10 +47,10 @@ function build(specs) {
 
 const NOW = 1790500000;
 const REQ = build([{ name: 'pair', kind: 'pair', reqid: '01'.repeat(16), fields: {
-  chainId: 10143, registry: '0x5FbDB2315678afecb367f032d93F642f64180aa3',
-  manager: '0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3', enforcer: '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512',
-  sentinel: '0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0', relay: '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9',
-  vault: '0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9', now: NOW } }]);
+  chainId: 10143, registry: '0xA08a47c9d645926615CF04D69b7a048133F68c9f',
+  manager: '0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3', enforcer: '0x64d61fe5438981DC803ED61250FEf024617ae7eE',
+  sentinel: '0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0', relay: '0xE433dCA75CA6cd730b1006F51A26208B000eA9E2',
+  now: NOW } }]); // firmware v1.2: the compiled-in contracts; no key 8 (the device pins the vault derived from K1)
 
 const STEP = 5;
 function until(e, pred, maxMs) {

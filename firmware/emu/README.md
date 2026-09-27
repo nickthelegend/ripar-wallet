@@ -2,12 +2,19 @@
 
 The Ripar Wallet firmware compiled to WebAssembly, so the web companion can offer a faithful signer without the
 hardware. It runs the **same portable C++ modules** as the ESP32-S3 (unchanged: `hashes util cbor ur eip712 abi crypto
-protocol enforcers json_strict tokens policy review respond context fsm pulse_algo`), driven by
+protocol enforcers json_strict tokens policy review respond context fsm pulse_algo vault`), driven by
 `src/emu_core.cpp`, a function-by-function port of the device driver `src/flows.cpp`. Every screen, key rule, refusal,
 review line, signature and context change comes from the same code path as on the device.
 
 The emulated device always says so: `state().emulator === true`, and the firmware id in every `ripar-pair` response
 (key 6) is the first 8 bytes of `sha256("ripar-emulator v1")` = `7bc44601d30720f1`, never an app-image hash.
+
+It emulates **firmware v1.2** (`docs/PROTOCOL.md` section 7): the Ripar contracts compiled in (a pairing may only name
+them), the vault derived from K1 (`state().vault`, `src/vault.cpp`), the context layout v3 (the remembered mandate's
+pulse terms and the PANIC FIRST flag), PANIC FIRST instead of REVOKE FIRST, the co-sign "becomes an AUTO payee" line (and,
+for a mandate the device does not remember, "may become an AUTO payee"), the RiparReputationRelay compiled in on both
+chains, and the v1.2 pulse gate (spoof statistics on foot-independent fiducials plus the IR / red cross-channel test,
+`src/pulse_algo.cpp`).
 
 ## Files
 
@@ -23,20 +30,21 @@ The emulated device always says so: `state().emulator === true`, and the firmwar
 | `build.sh` | reproducible build → `dist/` |
 | `dist/` | **commit this**: `ripar-emu.mjs` (wrapper), `ripar-emu-core.mjs` + `ripar-emu-core.wasm`, `ripar-emu.d.ts` |
 | `test/run_tests.mjs`, `test/oracle.py` | end-to-end tests against `tools/make_request.py` |
-| `test/run_wasm_host_tests.sh` | the firmware host tests (`test_fsm`, `test_pulse`, ...) compiled to wasm and run under Node |
+| `test/run_wasm_host_tests.sh` | the firmware host tests (`test_fsm`, `test_pulse`, `test_vault`, ...) compiled to wasm and run under Node |
 
 ## Build
 
 ```bash
 cd firmware
 bash emu/build.sh                     # EMSDK defaults to F:/tools/emsdk (Emscripten 6.0.10)
-EMU_SINGLE_FILE=1 bash emu/build.sh   # optional: the wasm embedded in ripar-emu-core.mjs (~545 KB, one file)
+EMU_SINGLE_FILE=1 bash emu/build.sh   # optional: the wasm embedded in ripar-emu-core.mjs (~567 KB, one file)
 ```
 
 Flags: `-std=c++14 -O2 -sMODULARIZE -sEXPORT_ES6 -sENVIRONMENT=web,node -sALLOW_MEMORY_GROWTH -sINITIAL_MEMORY=8MB
 -sSTACK_SIZE=1MB -sFILESYSTEM=0`, only the 11 `emu_*` functions and `cwrap` / `UTF8ToString` exported. Two builds of
-the same sources give byte-identical `dist/` files. Output: `ripar-emu-core.wasm` about 485 KB (about 195 KB gzipped),
-`ripar-emu-core.mjs` 12 KB, `ripar-emu.mjs` 10 KB. The core finds its `.wasm` next to itself
+the same sources give byte-identical `dist/` files. Output (firmware v1.2): `ripar-emu-core.wasm` about 505 KB (about
+200 KB gzipped), `ripar-emu-core.mjs` 12 KB, `ripar-emu.mjs` 12 KB; with `EMU_SINGLE_FILE=1` one `ripar-emu-core.mjs` of
+about 567 KB. The core finds its `.wasm` next to itself
 (`new URL(..., import.meta.url)`), so serve both files from the same directory, or build with `EMU_SINGLE_FILE=1`.
 
 ## JavaScript API
@@ -88,7 +96,10 @@ const responseUr = emu.state().qr.text;           // the upper-cased UR the devi
   - `message`: `title`, `color`, `lines` (9 rows max, as `ui_message()`)
 - `review` (all lines, ok, refusal, allSeen), `menu`, `pulse` (`finger`, `passed`, `bpm`, `beats`, `progress`, ...,
   and `sensor`: `fault`, `sampling`, FIFO level `fifo`, `ovf`, `lastRead`, `lastLost`, `reads`), `qr`, `message`, `scan`
-- `k1`, `k1Short`, `p1`, `paired`, `context` (pinned contracts, counters, `notBefore`), `store` (`saves`, `contextHex`)
+- `k1`, `k1Short`, `p1`, `vault` (the vault derived from K1: MetaMask SimpleFactory CREATE2, salt 0, of the
+  HybridDeleGator proxy owned by K1, `docs/PROTOCOL.md` 2.1; the companion deploys and funds exactly this account),
+  `paired`, `context` (pinned contracts, counters, `notBefore`, and the layout v3 fields `pulseToken`, `perTxAutoCap`,
+  `periodAutoCap`, `period`, `newPayeeNeedsHuman`, `unpanickedMandates`), `store` (`saves`, `contextHex`)
 - `battery`, `buzz` (ok / err / beat counters: the buzzer), `serial` (the device's serial log lines)
 - `emulator: true`, `emulatorId`, `firmwareId`, `testMode`, `hardware`, `selftest` (`passed`, `report`)
 
@@ -127,6 +138,9 @@ Identical to the device, because it is the device's code:
   the evidence of the signature is read from it. No samples for 250 ms (`setPulseFault('stall' | 'unplug')`) means
   not passed, so ARMED falls back to PULSE; after a stall the timestamp gap restarts the measurement.
 - **Self-test** before anything else; a failure is terminal (`Screen::Fail`, nothing is signed).
+- **Boot** (`app_setup()`): the vault is derived from K1; a stored context that is not layout v3 (v1 / v2 of older
+  firmware), fails its CRC or flag bytes, or pins another vault than the derived one (e.g. an `exportNvs()` context
+  restored with another seed) is dropped: **PAIRING LOST**, unpaired.
 
 Checked by the tests: every signed response verifies with `make_request.py parse` and is byte-identical to
 `make_request.py`'s `simulate()` for the same request, seed and salt / evidence (and to the `simulate` CLI itself for
@@ -160,17 +174,28 @@ node emu/test/run_tests.mjs              # needs python (stdlib) on PATH or RIPA
 node emu/test/audit_key_window.mjs       # parity audits (also run by run_tests.mjs): the key window around a screen
 node emu/test/audit_scan_repeat.mjs      #   change, the camera repeat filter, sensor stall / unplug / FIFO quirk,
 node emu/test/audit_pulse_faults.mjs     #   a stalled loop and the key event age
-bash emu/test/run_wasm_host_tests.sh     # test_fsm + test_pulse compiled with Emscripten, run under Node
+bash emu/test/run_wasm_host_tests.sh     # test_fsm + test_pulse + test_vault compiled with Emscripten, run under Node
 ```
 
-`run_tests.mjs` builds every request with `make_request.py build`, drives one deterministic device through pair
-(multipart) → pairing QR → device menu → mandate → co-sign (ERC-20 transfer + native) → deny from a co-sign review →
-companion deny request → Privy → revoke → PANIC → reopen, plus the refusals (unpaired co-sign, wrong chain, MANDATE
-WITHOUT PULSE CO-SIGN, UNKNOWN CALLDATA, stale epoch, expiry too far, REVOKE FIRST re-pairing, wrong agent, unpaired
-PANIC), key semantics (a hold that began on another screen never panics, a hold carried into a co-sign review never
-denies, a SIGN press that began on PULSE never signs whether it began 300, 20 or 5 ms before ARMED was drawn, while a
-press that begins as ARMED is drawn signs, release between 1 and 2 s does nothing, 120 s timeouts), the camera repeat
-filter, the pulse gate (square / sine spoofs, lifted thumb), NVS failures, persistence / PAIRING LOST, a failed
-self-test, missing hardware, and a non-test device. Then `oracle.py verify` checks every response with
+`run_tests.mjs` builds every request with `make_request.py build` (the Ripar contracts compiled into firmware v1.2,
+the demo K1's derived vault `0xc36F625D426eBa8f1e0129276B284a939CD3A57D`), drives one deterministic device through pair
+(multipart, no key 8) → pairing QR → device menu → mandate → co-sign (ERC-20 transfer + native) → deny from a co-sign
+review → companion deny request → Privy → revoke → PANIC → reopen, plus the refusals (unpaired co-sign; a pairing with a
+wrong key 8 vault, registry, DelegationManager, PulseCosignEnforcer or relay; a mandate / co-sign for another vault;
+wrong chain, MANDATE WITHOUT PULSE CO-SIGN, UNKNOWN CALLDATA, stale epoch, expiry too far, PANIC FIRST re-pairing to
+another chain (also after a revoke, and after a restart that lost an unsaved panic), wrong agent, unpaired PANIC), the
+co-sign "becomes an AUTO payee" line against the v1.2 predicate (transfer of the mandate token, native send under native
+terms with a lifetime cap, and none for approve, transferFrom, another token, a 0 amount, the zero payee, an unknown
+mandate, a mandate without `newPayeeNeedsHuman`, a refused co-sign), the "may become an AUTO payee" line for an unknown or
+revoked mandate, the review lines of v1.2 (derived vault, firmware table, agent id, AUTO period, FORGETS mandate ... killed
+once the PANIC is relayed, the red PANIC line on a chain move after a panic), a second device with a minimal pairing that is refused PANIC FIRST until
+it panics and then pairs to Monad (143), key semantics (a hold that began on another screen never panics, a hold carried
+into a co-sign review never denies, a SIGN press that began on PULSE never signs whether it began 300, 20 or 5 ms before
+ARMED was drawn, while a press that begins as ARMED is drawn signs, release between 1 and 2 s does nothing, 120 s
+timeouts), the camera repeat filter, the pulse gate (square / sine spoofs, lifted thumb, and spoofs switched with the
+thumb kept on: square 66 → sine 72 at 5 s on three PPG seeds, which the v1.1 detector armed about 6.5 s after the
+switch, flat → sine, sine 60 → 72, sine → square), NVS failures, persistence / PAIRING LOST (corrupt, v2 layout,
+version 2, a bad flag byte, another device's context), a failed self-test, missing hardware, and a non-test device
+(its own derived vault, checked against `make_request.py`). Then `oracle.py verify` checks every response with
 `make_request.py`, and the three `audit_*.mjs` parity audits run (each check there states the device outcome derived
 from `flows.cpp` / `io.cpp` / `qrscan.cpp` / `pulse.cpp`; a `GAP` line is the emulator deviating from it).

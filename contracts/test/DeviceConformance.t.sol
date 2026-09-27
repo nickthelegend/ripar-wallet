@@ -6,15 +6,12 @@ import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/Mes
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import { Vm } from "forge-std/Vm.sol";
-// imported only so that its artifact exists for deployCodeTo
-// forge-lint: disable-next-line(unused-import)
-import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
-import { IEntryPoint } from "@account-abstraction/interfaces/IEntryPoint.sol";
+import { ERC1967Utils } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Utils.sol";
 import { ModeLib, ModeCode } from "@erc7579/lib/ModeLib.sol";
 import { ExecutionLib } from "@erc7579/lib/ExecutionLib.sol";
 import { DelegationManager } from "@delegation-framework/DelegationManager.sol";
 import { HybridDeleGator } from "@delegation-framework/HybridDeleGator.sol";
-import { IDelegationManager } from "@delegation-framework/interfaces/IDelegationManager.sol";
+import { SimpleFactory } from "@delegation-framework/utils/SimpleFactory.sol";
 import { ICaveatEnforcer } from "@delegation-framework/interfaces/ICaveatEnforcer.sol";
 import { Delegation } from "@delegation-framework/utils/Types.sol";
 import { TimestampEnforcer } from "@delegation-framework/enforcers/TimestampEnforcer.sol";
@@ -25,7 +22,7 @@ import { IRiparSentinel } from "../src/interfaces/IRiparSentinel.sol";
 import { IRiparReputationRelay } from "../src/interfaces/IRiparReputationRelay.sol";
 import { P256TestUtils } from "./utils/P256TestUtils.sol";
 import { DeviceVectors } from "./utils/conformance/DeviceVectors.sol";
-import { MockERC8004Identity, MockERC8004Reputation, MockOwnedVault } from "./utils/conformance/ConformanceMocks.sol";
+import { MockERC8004Identity, MockERC8004Reputation } from "./utils/conformance/ConformanceMocks.sol";
 
 /// @dev SPEC.md MockUSD: a public faucet, at most 1_000e6 per call.
 interface IMockUSDFaucet {
@@ -36,9 +33,16 @@ interface IMockUSDFaucet {
 /// @notice Checks the Ripar contracts against what the device firmware actually produces. The vectors
 ///         (test/vectors/device_vectors.json) come from test/vectors/gen_device_vectors.py, which drives the firmware's
 ///         own protocol reference firmware/tools/make_request.py (demo device, DEMO_SEED = sha256("ripar demo seed"))
-///         through request -> CBOR/UR -> simulate -> parse. Every contract is deployed at the vector's fixed address on
-///         chain 10143 (the real MetaMask DelegationManager v1.3.0 bytecode at its real address), so every EIP-712
-///         domain matches the one the device signed under.
+///         through request -> CBOR/UR -> simulate -> parse. Every contract is deployed at the vector's address on chain
+///         10143, so every EIP-712 domain matches the one the device signed under. Firmware v1.2 refuses every Ripar
+///         contract but the ones compiled into it and derives its vault from K1, so the vectors name the real pinned
+///         PulseCosignEnforcer, RiparDeviceRegistry, RiparReputationRelay and MockUSD addresses, and the MetaMask
+///         DelegationManager, SimpleFactory and HybridDeleGator implementation v1.3.0 are deployed from their real
+///         sources at their canonical addresses (the implementation's immutable DelegationManager is the canonical
+///         one). The vault is created in setUp THROUGH SimpleFactory.deploy with the kit's init code (the MetaMask
+///         ERC1967Proxy creation code || abi.encode(implementation, initialize(K1, [], [], []))) and must land exactly
+///         at the vault the firmware derives from the demo K1 (0xc36F...A57D, docs/PROTOCOL.md 2.1); every mandate,
+///         co-sign and reopen of the vectors names that vault.
 ///         Every check runs twice: with OpenZeppelin P256's Solidity fallback (no precompile, as in a plain local EVM)
 ///         and with the RIP-7212 / EIP-7951 precompile at 0x0100 (mocked, as on Monad).
 ///         Covered: pairing, the mandate (one caveat, and pulse + MetaMask TimestampEnforcer after a lost-context
@@ -55,15 +59,33 @@ interface IMockUSDFaucet {
 ///         nonce is single-use per (DelegationManager, mandate); the relay credits an approval only when the device key
 ///         is registered to the vault's owner() (so the device is paired before every attestation) and records denials
 ///         of a shielded agent without feedback; the sentinel (deployed, like the v1.2 deploy config, with a CRE
-///         workflow owner) reopens only a closed lane. The vectors are unchanged: the few v1.2 scenarios that need a
-///         signature the device vectors do not carry (the same request re-signed with the same nonce, the decode table
-///         under other terms) are signed in the test with the demo P1 key, like the existing decode table.
+///         workflow owner) reopens only a closed lane. The few v1.2 scenarios that need a signature the device vectors
+///         do not carry (the same request re-signed with the same nonce, the decode table under other terms) are signed
+///         in the test with the demo P1 key, like the existing decode table.
 contract DeviceConformanceTest is P256TestUtils, DeviceVectors {
     bytes10 internal constant WORKFLOW_NAME = "ripar-risk";
     /// @dev firmware Erc20Call::Kind (erc20Decode.kinds in the vectors)
     uint256 internal constant KIND_NONE = 0;
     uint256 internal constant KIND_TRANSFER = 1;
     uint256 internal constant KIND_UNKNOWN = 4;
+
+    // firmware v1.2 (docs/PROTOCOL.md 2.1 and 4, firmware/src/enforcers.cpp + vault.cpp), typed here from the docs:
+    // the vectors must name exactly these
+    address internal constant FW_PULSE_ENFORCER = 0x64d61fe5438981DC803ED61250FEf024617ae7eE;
+    address internal constant FW_REGISTRY = 0xA08a47c9d645926615CF04D69b7a048133F68c9f;
+    address internal constant FW_RELAY_10143 = 0xE433dCA75CA6cd730b1006F51A26208B000eA9E2;
+    address internal constant FW_MUSD_10143 = 0xB5b7eaffbF9bf68cbcC1Ce8B5850b2ea9d6f9a2a;
+    address internal constant MM_DELEGATION_MANAGER = 0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3;
+    address internal constant MM_SIMPLE_FACTORY = 0x69Aa2f9fe1572F1B640E1bbc512f5c3a734fc77c;
+    address internal constant MM_HYBRID_IMPL = 0x48dBe696A4D990079e039489bA2053B36E8FFEC4;
+    address internal constant ENTRY_POINT_V07 = 0x0000000071727De22E5E9d8BAf0edAc6f37da032;
+    /// @dev the demo K1's vault, checked on Monad testnet with SimpleFactory.computeAddress and an eth_call of deploy
+    address internal constant DEMO_VAULT = 0xc36F625D426eBa8f1e0129276B284a939CD3A57D;
+    bytes32 internal constant DEMO_VAULT_INIT_CODE_HASH =
+        0x9694a6959734c65d55361f8f8d333c8534d1e808dbfbb2694fab6c7c8cbd60ce;
+    /// @dev keccak256 of the 1008-byte ERC1967Proxy creation code of @metamask/delegation-abis@2.0.0
+    bytes32 internal constant PROXY_CREATION_KECCAK =
+        0xc8fb9314d27cddb08b374dd2bf47cd06c6fb879756ddfbedf522a8c58756a8e0;
 
     Addrs internal A;
     Demo internal D;
@@ -102,6 +124,10 @@ contract DeviceConformanceTest is P256TestUtils, DeviceVectors {
         identity.setOperator(agentId, A.agent, true); // the agent's redeemer key acts for the agent
 
         deployCodeTo("DelegationManager.sol:DelegationManager", abi.encode(makeAddr("dmOwner")), A.dm);
+        // the canonical MetaMask v1.3.0 account contracts, from their real sources, at their canonical addresses: the
+        // SimpleFactory, and the HybridDeleGator implementation whose immutable DelegationManager is the canonical one
+        deployCodeTo("SimpleFactory.sol:SimpleFactory", A.simpleFactory);
+        deployCodeTo("HybridDeleGator.sol:HybridDeleGator", abi.encode(A.dm, A.entryPoint), A.hybridImpl);
         deployCodeTo("RiparDeviceRegistry.sol:RiparDeviceRegistry", A.registry);
         deployCodeTo("PulseCosignEnforcer.sol:PulseCosignEnforcer", A.enforcer);
         // v1.2 deploy config: the sentinel requires the CRE workflow owner (the EIP-712 domain only depends on the
@@ -115,7 +141,14 @@ contract DeviceConformanceTest is P256TestUtils, DeviceVectors {
             A.relay
         );
         deployCodeTo("MockUSD.sol:MockUSD", A.token);
-        deployCodeTo("ConformanceMocks.sol:MockOwnedVault", abi.encode(D.k1), A.vault);
+        // the vault, created the way the companion does (the kit's SimpleFactory.deploy, salt 0): it must land at the
+        // address the firmware derives from the demo K1, the only vault the device pins
+        VaultV memory v = _loadVault(j);
+        assertEq(A.vault, DEMO_VAULT, "the vectors' vault is the demo K1's derived vault");
+        assertEq(
+            SimpleFactory(A.simpleFactory).deploy(v.initCode, v.salt), A.vault, "SimpleFactory.deploy -> derived vault"
+        );
+        assertEq(HybridDeleGator(payable(A.vault)).owner(), D.k1, "vault owner = the demo K1");
         // the MetaMask v1.3.0 enforcer the re-paired mandate adds, at its real (pinned) address
         deployCodeTo("TimestampEnforcer.sol:TimestampEnforcer", A.timestampEnforcer);
 
@@ -138,11 +171,17 @@ contract DeviceConformanceTest is P256TestUtils, DeviceVectors {
         vm.label(A.holder, "holder");
         vm.label(A.payee2, "payee2");
         vm.label(A.timestampEnforcer, "TimestampEnforcer");
+        vm.label(A.simpleFactory, "SimpleFactory");
+        vm.label(A.hybridImpl, "HybridDeleGatorImpl");
     }
 
     // ================================================================================================ test matrix
     // *_Solidity: OZ P256 Solidity fallback (no code at 0x0100). *_Precompile: mocked precompile at 0x0100, and the
     // test also asserts the precompile was actually called.
+
+    function test_VaultDerivation() public {
+        _checkVaultDerivation();
+    }
 
     function test_DomainsAndKeys_Solidity() public view {
         _checkDomainsAndKeys();
@@ -316,6 +355,93 @@ contract DeviceConformanceTest is P256TestUtils, DeviceVectors {
     }
 
     // ================================================================================================ checks
+    /// @dev Firmware v1.2: the vectors name the compiled-in contracts, and the vault the device derives from K1 is
+    ///      exactly what the real SimpleFactory deploys for the kit's init code (setUp created it that way). The init
+    ///      code is rebuilt here in Solidity (abi.encodeCall of HybridDeleGator.initialize), and every entry of the
+    ///      firmware's own derivation table is checked against SimpleFactory.computeAddress and deployed through it.
+    function _checkVaultDerivation() internal {
+        VaultV memory v = _loadVault(_json());
+        // the vectors name the addresses compiled into firmware v1.2 (docs/PROTOCOL.md section 4) and the canonical
+        // MetaMask v1.3.0 ones
+        assertEq(A.enforcer, FW_PULSE_ENFORCER, "PulseCosignEnforcer = firmware table");
+        assertEq(A.registry, FW_REGISTRY, "RiparDeviceRegistry = firmware table");
+        assertEq(A.relay, FW_RELAY_10143, "RiparReputationRelay = firmware table (10143)");
+        assertEq(A.token, FW_MUSD_10143, "MockUSD = firmware token table (10143)");
+        assertEq(A.dm, MM_DELEGATION_MANAGER, "canonical DelegationManager");
+        assertEq(A.simpleFactory, MM_SIMPLE_FACTORY, "canonical SimpleFactory");
+        assertEq(A.hybridImpl, MM_HYBRID_IMPL, "canonical HybridDeleGator implementation");
+        assertEq(A.entryPoint, ENTRY_POINT_V07, "EntryPoint v0.7");
+        assertEq(v.factory, A.simpleFactory, "vault.factory");
+        assertEq(v.implementation, A.hybridImpl, "vault.implementation");
+        assertEq(v.entryPoint, A.entryPoint, "vault.entryPoint");
+        assertEq(v.owner, D.k1, "vault owner = demo K1");
+        assertEq(v.salt, bytes32(0), "salt 0");
+        assertEq(v.vault, A.vault, "vault.address = the vectors' vault");
+        assertEq(A.vault, DEMO_VAULT, "= the demo vault of docs/PROTOCOL.md 2.1");
+
+        // the kit's init code, rebuilt here: MetaMask ERC1967Proxy creation code || abi.encode(impl, initialize(..))
+        assertEq(v.proxyCreationCode.length, 1008, "ERC1967Proxy creation code: 1008 bytes");
+        assertEq(keccak256(v.proxyCreationCode), PROXY_CREATION_KECCAK, "ERC1967Proxy creation code keccak");
+        assertEq(v.proxyCreationCodeHash, PROXY_CREATION_KECCAK, "vault.proxyCreationCodeHash");
+        bytes memory init = _vaultInitialize(D.k1);
+        assertEq(init, v.initializeCalldata, "initialize(K1, [], [], []) calldata");
+        assertEq(HybridDeleGator.initialize.selector, bytes4(0x8ebf9533), "initialize selector");
+        assertEq(init.length, 228, "initialize calldata: 228 bytes");
+        assertEq(abi.encode(A.hybridImpl, init), v.constructorArgs, "proxy constructor args");
+        bytes memory initCode = _vaultInitCode(v.proxyCreationCode, D.k1);
+        assertEq(initCode, v.initCode, "init code == vectors");
+        assertEq(keccak256(initCode), v.initCodeHash, "initCodeHash");
+        assertEq(v.initCodeHash, DEMO_VAULT_INIT_CODE_HASH, "initCodeHash == docs/PROTOCOL.md 2.1");
+        assertEq(
+            vm.computeCreate2Address(v.salt, v.initCodeHash, A.simpleFactory), A.vault, "CREATE2(factory, 0, hash)"
+        );
+        SimpleFactory factory = SimpleFactory(A.simpleFactory);
+        assertEq(factory.computeAddress(v.initCodeHash, v.salt), A.vault, "SimpleFactory.computeAddress");
+        assertTrue(
+            factory.computeAddress(v.initCodeHash, bytes32(uint256(1))) != A.vault, "another salt, another vault"
+        );
+
+        // the vault setUp created through SimpleFactory.deploy: a HybridDeleGator proxy of the canonical implementation
+        HybridDeleGator hv = HybridDeleGator(payable(A.vault));
+        assertEq(hv.owner(), D.k1, "vault owner = K1");
+        assertEq(address(hv.delegationManager()), A.dm, "vault's DelegationManager = canonical");
+        assertEq(address(hv.entryPoint()), A.entryPoint, "vault's EntryPoint");
+        assertEq(
+            address(uint160(uint256(vm.load(A.vault, ERC1967Utils.IMPLEMENTATION_SLOT)))),
+            A.hybridImpl,
+            "ERC-1967 implementation slot = canonical HybridDeleGator"
+        );
+        assertEq(hv.VERSION(), "1.3.0", "HybridDeleGator 1.3.0");
+        // the implementation itself: canonical DelegationManager immutable, never initializable
+        HybridDeleGator impl = HybridDeleGator(payable(A.hybridImpl));
+        assertEq(address(impl.delegationManager()), A.dm, "implementation's immutable DelegationManager = canonical");
+        vm.expectRevert();
+        impl.initialize(D.k1, new string[](0), new uint256[](0), new uint256[](0));
+        // the vault cannot be initialized again
+        vm.expectRevert();
+        hv.initialize(makeAddr("thief"), new string[](0), new uint256[](0), new uint256[](0));
+        assertEq(hv.owner(), D.k1, "still owned by K1");
+
+        // the firmware's own derivation table (vectors_protocol.h VAULT[], the C++ vault.cpp known answers): every
+        // owner's vault is SimpleFactory's CREATE2 address of the kit's init code, and deploying it lands there
+        assertGe(v.owners.length, 8, "firmware table loaded");
+        assertEq(v.owners[0], D.k1, "the demo K1 first");
+        assertEq(v.vaults[0], A.vault, "the demo K1's vault");
+        for (uint256 i; i < v.owners.length; ++i) {
+            bytes memory ic = _vaultInitCode(v.proxyCreationCode, v.owners[i]);
+            assertEq(keccak256(ic), v.initCodeHashes[i], "firmware table: initCodeHash");
+            assertEq(factory.computeAddress(v.initCodeHashes[i], v.salt), v.vaults[i], "firmware table: vault");
+            if (i == 0 || v.owners[i] == address(0)) continue; // deployed in setUp / no owner
+            assertEq(v.vaults[i].code.length, 0, "not deployed yet");
+            assertEq(factory.deploy(ic, v.salt), v.vaults[i], "firmware table: SimpleFactory.deploy");
+            assertEq(HybridDeleGator(payable(v.vaults[i])).owner(), v.owners[i], "firmware table: owner");
+        }
+        // the vault exists: the same init code cannot be deployed again (a CREATE2 collision burns the gas it is given)
+        vm.expectRevert();
+        factory.deploy{ gas: 5_000_000 }(v.initCode, v.salt);
+        assertEq(hv.owner(), D.k1, "the vault is unchanged");
+    }
+
     /// @dev Demo keys (Foundry's secp256k1 / P-256 agree with the firmware derivation), keyId, every EIP-712 domain.
     function _checkDomainsAndKeys() internal view {
         assertEq(vm.addr(D.k1PrivateKey), D.k1, "demo K1 address");
@@ -513,7 +639,7 @@ contract DeviceConformanceTest is P256TestUtils, DeviceVectors {
         vm.prank(c.redeemer);
         relay.attestApproval(m.agentId, c.digest);
         _registerDevice();
-        assertEq(MockOwnedVault(A.vault).owner(), D.k1, "vault owner = the registered key's owner");
+        assertEq(HybridDeleGator(payable(A.vault)).owner(), D.k1, "vault owner = the registered key's owner");
         vm.expectEmit(true, true, false, true, A.relay);
         emit IRiparReputationRelay.Verdict(m.agentId, D.keyId, c.digest, true);
         vm.prank(c.redeemer);
@@ -791,7 +917,7 @@ contract DeviceConformanceTest is P256TestUtils, DeviceVectors {
         assertEq(v.vault, A.vault, "pinned vault");
         assertEq(v.nonce, 1, "first reopen of a new device");
         assertEq(sentinel.reopenDigest(v.vault, v.nonce), v.digest, "reopenDigest == device digest");
-        assertEq(MockOwnedVault(v.vault).owner(), D.k1, "vault owner = K1");
+        assertEq(HybridDeleGator(payable(v.vault)).owner(), D.k1, "vault owner = K1");
 
         vm.expectRevert(IRiparSentinel.NoDeviceForVault.selector);
         sentinel.reopen(v.vault, v.nonce, v.r, v.s);
@@ -833,7 +959,7 @@ contract DeviceConformanceTest is P256TestUtils, DeviceVectors {
         MandateV memory m = _loadMandate(j);
         CosignV memory c20 = _loadCosign(j, ".cosignErc20");
         CosignV memory cn = _loadCosign(j, ".cosignNative");
-        _installHybridVault();
+        _fundVault();
         _registerDevice(); // v1.2: the relay credits co-signs of the vault owner's registered device only
         assertEq(HybridDeleGator(payable(A.vault)).owner(), _loadPair(j).owner, "vault owner = registered owner");
         IERC20Metadata usd = IERC20Metadata(A.token);
@@ -897,7 +1023,7 @@ contract DeviceConformanceTest is P256TestUtils, DeviceVectors {
         string memory j = _json();
         MandateV memory m = _loadMandate(j);
         CosignV memory c20 = _loadCosign(j, ".cosignErc20");
-        _installHybridVault();
+        _fundVault();
         _registerDevice();
         uint256 cap = m.t.perTxAutoCap;
 
@@ -952,7 +1078,7 @@ contract DeviceConformanceTest is P256TestUtils, DeviceVectors {
         MandateV memory m = _loadMandate(j);
         CosignV memory ca = _loadCosign(j, ".cosignApprove");
         CosignV memory ct = _loadCosign(j, ".cosignTransferFrom");
-        _installHybridVault();
+        _fundVault();
         IERC20 usd = IERC20(A.token);
         assertEq(ca.payee, A.spender, "approve: the payee the device showed is the spender");
         assertEq(ct.payee, A.payee2, "transferFrom: the payee the device showed is `to`");
@@ -1026,7 +1152,7 @@ contract DeviceConformanceTest is P256TestUtils, DeviceVectors {
         PanicV memory p2 = _loadPanic(j, ".repair.panic");
         ReopenV memory r2 = _loadReopen(j, ".repair.reopen");
         PairV memory pair2 = _loadPair(j, ".repair.pair");
-        _installHybridVault();
+        _fundVault();
         _registerDevice();
         uint256 cap = m2.t.perTxAutoCap;
 
@@ -1246,16 +1372,23 @@ contract DeviceConformanceTest is P256TestUtils, DeviceVectors {
         sentinel.onReport(metadata, abi.encode(vault, false, uint8(1), uint64(block.number - 1)));
     }
 
-    /// @dev Replace the owner()-only mock at the vault address with a real HybridDeleGator proxy owned by the demo K1
-    ///      (the pairing's "vault" key 8), funded with 1_000 mUSD and 1 MON.
-    function _installHybridVault() internal {
-        HybridDeleGator impl = new HybridDeleGator(IDelegationManager(A.dm), IEntryPoint(makeAddr("entryPoint")));
-        bytes memory init =
-            abi.encodeCall(HybridDeleGator.initialize, (D.k1, new string[](0), new uint256[](0), new uint256[](0)));
-        deployCodeTo("ERC1967Proxy.sol:ERC1967Proxy", abi.encode(address(impl), init), A.vault);
+    /// @dev Fund the vault setUp created through SimpleFactory (a HybridDeleGator proxy owned by the demo K1, at the
+    ///      address the firmware derives from K1) with 1_000 mUSD and 1 MON.
+    function _fundVault() internal {
         assertEq(HybridDeleGator(payable(A.vault)).owner(), D.k1, "HybridDeleGator owner = K1");
         IMockUSDFaucet(A.token).faucet(A.vault, 1_000e6);
         vm.deal(A.vault, 1 ether);
+    }
+
+    /// @dev HybridDeleGator.initialize(owner, [], [], []): what the kit's proxy calls on deployment.
+    function _vaultInitialize(address owner) internal pure returns (bytes memory) {
+        return abi.encodeCall(HybridDeleGator.initialize, (owner, new string[](0), new uint256[](0), new uint256[](0)));
+    }
+
+    /// @dev The kit's init code for `owner`: MetaMask ERC1967Proxy creation code || abi.encode(implementation,
+    ///      initialize(owner, [], [], [])), built from the vectors' creation code and the canonical implementation.
+    function _vaultInitCode(bytes memory proxyCreationCode, address owner) internal view returns (bytes memory) {
+        return abi.encodePacked(proxyCreationCode, abi.encode(A.hybridImpl, _vaultInitialize(owner)));
     }
 
     function _redeem(MandateV memory m, bytes memory args, CosignV memory c) internal {
@@ -1294,5 +1427,53 @@ contract DeviceConformanceTest is P256TestUtils, DeviceVectors {
         assertEq(f.endpoint, "", "endpoint");
         assertEq(f.feedbackURI, "", "feedbackURI");
         assertEq(f.feedbackHash, feedbackHash, "feedbackHash");
+    }
+}
+
+/// @notice OPT-IN: the firmware v1.2 vault derivation against the canonical contracts ON Monad testnet: the on-chain
+///         SimpleFactory, HybridDeleGator implementation and DelegationManager bytecode (read-only fork; the vault is
+///         deployed locally on top of the fork when it is not deployed yet, nothing is broadcast). Skipped unless
+///         MONAD_TESTNET_RPC_URL is set, e.g.
+///           MONAD_TESTNET_RPC_URL=https://testnet-rpc.monad.xyz forge test --mc DeviceConformanceForkTest
+contract DeviceConformanceForkTest is DeviceVectors {
+    function setUp() public {
+        string memory rpc = vm.envOr("MONAD_TESTNET_RPC_URL", string(""));
+        if (bytes(rpc).length == 0) {
+            vm.skip(true);
+            return;
+        }
+        vm.createSelectFork(rpc);
+    }
+
+    function test_fork_vaultDerivation_onChainFactory() public {
+        string memory j = _json();
+        Addrs memory a = _loadAddrs(j);
+        VaultV memory v = _loadVault(j);
+        Demo memory d = _loadDemo(j);
+        assertEq(block.chainid, _u(j, ".chainId"), "Monad testnet");
+        assertGt(a.simpleFactory.code.length, 0, "SimpleFactory deployed on chain");
+        assertGt(a.hybridImpl.code.length, 0, "HybridDeleGator implementation deployed on chain");
+        assertGt(a.dm.code.length, 0, "DelegationManager deployed on chain");
+        HybridDeleGator impl = HybridDeleGator(payable(a.hybridImpl));
+        assertEq(address(impl.delegationManager()), a.dm, "on-chain implementation: DelegationManager = canonical");
+        assertEq(address(impl.entryPoint()), a.entryPoint, "on-chain implementation: EntryPoint v0.7");
+        assertEq(impl.VERSION(), "1.3.0", "on-chain implementation: 1.3.0");
+
+        SimpleFactory factory = SimpleFactory(a.simpleFactory);
+        assertEq(factory.computeAddress(v.initCodeHash, v.salt), a.vault, "on-chain SimpleFactory.computeAddress");
+        for (uint256 i; i < v.owners.length; ++i) {
+            assertEq(factory.computeAddress(v.initCodeHashes[i], v.salt), v.vaults[i], "firmware table on chain");
+        }
+        if (a.vault.code.length == 0) {
+            assertEq(factory.deploy(v.initCode, v.salt), a.vault, "on-chain SimpleFactory.deploy -> derived vault");
+        }
+        HybridDeleGator vault = HybridDeleGator(payable(a.vault));
+        assertEq(vault.owner(), d.k1, "vault owner = demo K1");
+        assertEq(address(vault.delegationManager()), a.dm, "vault DelegationManager = canonical");
+        assertEq(
+            address(uint160(uint256(vm.load(a.vault, ERC1967Utils.IMPLEMENTATION_SLOT)))),
+            a.hybridImpl,
+            "vault implementation = canonical HybridDeleGator"
+        );
     }
 }

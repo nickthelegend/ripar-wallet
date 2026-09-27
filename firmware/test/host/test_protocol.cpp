@@ -1,4 +1,4 @@
-// DEPS: hashes util cbor ur eip712 abi crypto protocol enforcers json_strict tokens policy review
+// DEPS: hashes util cbor ur eip712 abi crypto protocol enforcers json_strict tokens policy review vault
 // Host tests for src/protocol.cpp, src/json_strict.cpp, src/enforcers.cpp (tables) and the token checks of the parser.
 // (The pinned-context policy, review lines and caveat decoders are tested in test_policy.cpp.)
 //   - every request type parsed from CBOR built by tools/make_request.py (Python, ref_ur.cbor), field by field
@@ -723,7 +723,7 @@ static void test_multipart() {
 static void test_enforcers() {
   CHECK_SECTION("enforcer + pinned-contract tables");
   std::set<std::string> seen;
-  size_t decoded = 0, refused = 0, placeholders = 0, managers = 0;
+  size_t decoded = 0, refused = 0, placeholders = 0, managers = 0, ripar = 0;
   for (size_t i = 0; i < enforcers_test::count(); i++) {
     int table = -1;
     uint64_t chain = 0;
@@ -732,10 +732,9 @@ static void test_enforcers() {
     CHECK(name && std::strlen(name) > 0 && std::strlen(name) <= 40);
     for (const char* p = name; p && *p; p++) CHECK(*p >= 0x20 && *p < 0x7F);
     if (!addr || !*addr) {
-      CHECK_EQ(table, 0);  // only the Ripar PulseCosignEnforcer may still be a placeholder
+      // firmware v1.2 (since its review): every Ripar contract but the sentinel is compiled in on both chains
       placeholders++;
-      Addr x;
-      CHECK(!compiled_cosign_enforcer(chain, x));
+      CHECK(false);
       continue;
     }
     Addr a = A(addr);
@@ -743,8 +742,19 @@ static void test_enforcers() {
     Addr x;
     switch (table) {
       case 0:
+        ripar++;
         CHECK(compiled_cosign_enforcer(chain, x) && x == a);
         CHECK(enforcer_name(chain, a) != nullptr);
+        break;
+      case 4:
+        ripar++;
+        CHECK(compiled_registry(chain, x) && x == a);
+        CHECK(enforcer_name(chain, a) == nullptr);  // not an enforcer
+        break;
+      case 5:
+        ripar++;
+        CHECK(compiled_relay(chain, x) && x == a);
+        CHECK(enforcer_name(chain, a) == nullptr);  // not an enforcer
         break;
       case 1:
         managers++;
@@ -775,9 +785,26 @@ static void test_enforcers() {
   CHECK_EQ(decoded, size_t(8));
   CHECK_EQ(refused, size_t(25));
   CHECK_EQ(managers, size_t(2));
+  CHECK_EQ(ripar, size_t(6));         // enforcer, registry and relay on 10143 + 143
+  CHECK_EQ(placeholders, size_t(0));  // (v1.2 before its review: the relay on 143 was a placeholder)
   CHECK(!enforcers_test::row(enforcers_test::count(), nullptr, nullptr, nullptr, nullptr));
-  std::printf("   %u decoded + %u refused MetaMask v1.3.0 enforcers, %u Ripar PulseCosignEnforcer placeholder(s) (TODO)\n",
-              unsigned(decoded), unsigned(refused), unsigned(placeholders));
+  std::printf("   %u decoded + %u refused MetaMask v1.3.0 enforcers, %u Ripar contracts compiled in, %u placeholders\n",
+              unsigned(decoded), unsigned(refused), unsigned(ripar), unsigned(placeholders));
+
+  // independent copy of the firmware v1.2 Ripar addresses (CREATE2 from the bytecode frozen at main 5cea7cf)
+  {
+    Addr x;
+    CHECK(compiled_cosign_enforcer(10143, x) && addr_checksum(x) == "0x64d61fe5438981DC803ED61250FEf024617ae7eE");
+    CHECK(compiled_cosign_enforcer(143, x) && addr_checksum(x) == "0x64d61fe5438981DC803ED61250FEf024617ae7eE");
+    CHECK(compiled_registry(10143, x) && addr_checksum(x) == "0xA08a47c9d645926615CF04D69b7a048133F68c9f");
+    CHECK(compiled_registry(143, x) && addr_checksum(x) == "0xA08a47c9d645926615CF04D69b7a048133F68c9f");
+    CHECK(compiled_relay(10143, x) && addr_checksum(x) == "0xE433dCA75CA6cd730b1006F51A26208B000eA9E2");
+    // 143: other constructor arguments (the chain's ERC-8004 registries), all public constants of the deploy config
+    CHECK(compiled_relay(143, x) && addr_checksum(x) == "0x108BA102F7D0915f51c93F128b96Bd24F647f06d");
+    CHECK(x == A(pv::RELAY_143));  // == tools/make_request.py RIPAR_RELAY[143]
+    CHECK(!compiled_cosign_enforcer(1, x) && !compiled_registry(1, x) && !compiled_relay(1, x));
+    CHECK_EQ(std::string(enforcer_name(10143, A(pv::PULSE_ENFORCER))), std::string("Pulse co-sign + spend caps"));
+  }
 
   struct Known {
     const char* addr;

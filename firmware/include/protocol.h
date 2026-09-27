@@ -65,7 +65,9 @@ struct PairReq {
   uint64_t chainId = 0;
   Addr registry;
   // optional contracts to pin (keys 4..8; zero = not given): DelegationManager, PulseCosignEnforcer,
-  // RiparSentinel, RiparReputationRelay, vault (HybridDeleGator owned by K1)
+  // RiparSentinel, RiparReputationRelay, vault (HybridDeleGator owned by K1). Firmware v1.2 (policy.h check_pair):
+  // the registry and keys 4 / 5 / 7 must equal the addresses compiled in for the chain (an absent key pins them), and
+  // key 8 must equal vault.h vault_address(K1), the vault the device derives itself (absent = that vault is pinned)
   Addr manager, enforcer, sentinel, relay, vault;
   // (appended) key 9: the companion's clock (unix s, < 2^40), shown as UTC and confirmed with the pairing; it
   // advances the device's monotonic "not before" time (policy.h expiry_check)

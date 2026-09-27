@@ -16,6 +16,7 @@
 #include "hashes.h"
 #include "policy.h"
 #include "respond.h"
+#include "vault.h"
 
 namespace ripar {
 namespace emu {
@@ -848,21 +849,28 @@ void Device::app_setup() {
   }
   if (!keys_.init()) return enter_fail("cannot load the device keys");
   k1_ = keys_.k1_address();
+  vault_ = vault_address(k1_);
   keys_.p1_pubkey(p1xy_);
   bool lost = false;
-  if (!store_.load_context(ctx_)) {  // none / old layout / corrupt: unpaired
+  if (!store_.load_context(ctx_)) {  // none / older layout (v1, v2 before firmware v1.2) / corrupt: unpaired
     ctx_ = Context();
     lost = store_.has_context();  // something was stored but cannot be read: the counters restart at 0
+  } else if (ctx_.paired() && ctx_.vault != vault_) {
+    // a context pinned for another K1 (cannot happen without writing NVS behind the firmware's back): fail closed.
+    // EMULATOR: reachable here by restoring an exportNvs() context with another device's seed
+    ctx_ = Context();
+    lost = true;
   }
-  serial("ripar: K1 " + addr_checksum(k1_) + ", " +
+  serial("ripar: K1 " + addr_checksum(k1_) + ", vault " + addr_checksum(vault_) + ", " +
          (ctx_.paired() ? chain_text(ctx_.chainId) : lost ? std::string("PAIRING LOST") : std::string("not paired")));
   io_.buzz_ok(now_);
   go(Screen::Home);  // drains the key queue, draws the home screen
   if (lost) {
     io_.buzz_err(now_);
     show_message("PAIRING LOST",
-                 "Stored pairing unreadable (old layout or corrupt). Panic epoch and reopen nonce restart at 0: pair "
-                 "again with the on-chain floors (pair keys 10 / 11: minEpoch, reopenNonce) before PANIC or REOPEN.",
+                 "Stored pairing unreadable (older firmware layout, or corrupt). Panic epoch and reopen nonce restart "
+                 "at 0: pair again with the on-chain floors (pair keys 10 / 11: minEpoch, reopenNonce) before PANIC or "
+                 "REOPEN.",
                  UiColor::Warn);
   }
   // EMULATOR: the device draws in its first app_loop() pass; draw now so state() has a screen right after power-on

@@ -14,38 +14,48 @@ tools/ref_eip712.py). Independent of the C++ firmware; also generates test/host/
                                      [--chain N] [--contract ADDR]
       REQ = the request as UR, multipart parts file, CBOR hex or @file. Exit 0 = every signature verified,
       1 = a check failed, 3 = parsed but a signature could not be checked (key / request missing).
+      --contract defaults to the firmware's PulseCosignEnforcer (revoke / panic) or relay (deny) for the chain.
+      With --pair (or --k1) the vault a mandate / co-sign / reopen names is checked against the one derived from K1.
   python tools/make_request.py simulate <REQ> [--seed HEX]     demo device: prints the response UR (no pulse check!)
-  python tools/make_request.py demo-keys [--seed HEX]           K1 address / P1 public key of the demo device
+  python tools/make_request.py demo-keys [--seed HEX]           K1 address, its derived vault, P1 key of the demo device
+  python tools/make_request.py vault <K1_ADDRESS>               the vault a device with this K1 pins (firmware v1.2)
   python tools/make_request.py gen-vectors | check-vectors      test/host/vectors_protocol.h (deterministic)
   python tools/make_request.py selftest                        build -> simulate -> parse/verify, tamper tests
 
 Field names (JSON; addresses / bytes as 0x-hex, integers as numbers or "0x.." / decimal strings):
-  pair:    chainId, registry, and the contracts to pin: manager (DelegationManager), enforcer (PulseCosignEnforcer),
-           sentinel, relay, vault; now (companion clock, unix s; `build` adds the current time unless --no-now);
-           minEpoch, reopenNonce (optional floors < 2^63 for the device counters, e.g. the on-chain minEpoch of the
-           device key and the sentinel's last reopen nonce after the device lost its context; they only raise them)
-  cosign:  chainId, enforcer, delegationHash, delegator, redeemer, target, value, nonce, expiry,
+  pair:    chainId, registry (default: the RiparDeviceRegistry compiled into the firmware for the chain), and the
+           contracts to pin: manager (DelegationManager), enforcer (PulseCosignEnforcer), sentinel, relay, vault;
+           now (companion clock, unix s; `build` adds the current time unless --no-now); minEpoch, reopenNonce
+           (optional floors < 2^63 for the device counters, e.g. the on-chain minEpoch of the device key and the
+           sentinel's last reopen nonce after the device lost its context; they only raise them).
+           Firmware v1.2 pins registry / manager / enforcer / relay (10143 and 143): a request naming any
+           other is refused, an absent key 4 / 5 / 7 pins the firmware's. The vault is DERIVED by the device from its
+           K1 (see `vault`): leave it out (the device pins its own), or give exactly that address.
+  cosign:  chainId, enforcer (default: the firmware's PulseCosignEnforcer), delegationHash, delegator (= the device's
+           derived vault), redeemer, target, value, nonce, expiry,
            calldata (hex) | transfer {to, amount} | approve {spender, amount} | transferFrom {from, to, amount},
            risk {src, category, label, ageDays}, ai {text, claims {to, token, amount}}, budgetLeft, decimals, symbol
-           (a token in the firmware table - AUSD on 10143 - must not carry other decimals / symbol: refused)
-  mandate: chainId, manager, delegate, delegator, authority (default ROOT), salt, label, agentId, caveats:
+           (a token in the firmware table - AUSD and mUSD on 10143 - must not carry other decimals / symbol: refused)
+  mandate: chainId, manager, delegate, delegator (= the device's derived vault), authority (default ROOT), salt,
+           label, agentId, caveats:
            [[enforcer, termsHex], ...] or [{enforcer, terms}] or typed [{kind, ...}] with kind (terms encoded here):
              pulse {enforcer, p1Key | px+py, token, perTxAutoCap, periodAutoCap, period, epoch, newPayeeNeedsHuman,
-                    sentinel}   (enforcer = the PulseCosignEnforcer pinned at pairing; epoch = EXACTLY the device's
+                    sentinel}   (enforcer = the firmware's PulseCosignEnforcer (the default); epoch = EXACTLY the device's
                     panic floor, i.e. the last panic epoch it signed (0 before any panic); sentinel = the pinned one,
                     or the zero address when none was pinned)
              erc20TransferAmount {token, amount}   nativeTokenTransferAmount {amount}   valueLte {amount}
              limitedCalls {amount}   erc20PeriodTransfer {token, amount, duration, start}
              timestamp {after, before}   allowedTargets {addresses}   redeemer {addresses}
            The device signs only a mandate with EXACTLY ONE pulse caveat (its own key) and decodable caveats.
-  deny:    chainId, relay, agentId, requestHash
+  deny:    chainId, relay (default: the firmware's RiparReputationRelay for the chain), agentId, requestHash
   privy:   json (a string = the exact bytes, or an object = canonicalised: sorted keys, no whitespace). The device
            signs only PATCH https://api.privy.io/v1/wallets/<id> {policy_ids, additional_signers} and
            PATCH https://api.privy.io/v1/key_quorums/<id> {public_keys, authorization_threshold, display_name,
            user_ids, key_quorum_ids} with headers privy-app-id (+ privy-idempotency-key) - see docs/PROTOCOL.md
-Example:
-  python tools/make_request.py build cosign chainId=10143 enforcer=0x11..11 delegationHash=0x22..22 \
-      delegator=0x33..33 redeemer=0x44..44 target=0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC value=0 nonce=7 \
+Example (the demo device's vault; a real device's is `parse @pair.txt` -> vault):
+  python tools/make_request.py build cosign chainId=10143 delegationHash=0x22..22 \
+      delegator=0xc36F625D426eBa8f1e0129276B284a939CD3A57D redeemer=0x44..44 \
+      target=0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC value=0 nonce=7 \
       expiry=1790000000 'transfer={"to":"0x55..55","amount":25000000}' decimals=6 symbol=AUSD
 
 Wire rules implemented here (the device parser in src/protocol.cpp is stricter and is the reference):
@@ -357,12 +367,119 @@ def ai_matches(q):
 
 
 # ================================================================================================ firmware tables (mirror)
-# src/tokens.cpp (security review B3). "" placeholders of the C++ table (MockUSD, AUSD on 143) never match: omitted.
+# src/tokens.cpp (security review B3). "" placeholders of the C++ table (AUSD on 143) never match: omitted.
 AUSD_10143 = unhex("0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC")
-TOKENS = {(10143, AUSD_10143): (6, "AUSD", "Agora USD")}
+MUSD_10143 = unhex("0xB5b7eaffbF9bf68cbcC1Ce8B5850b2ea9d6f9a2a")  # MockUSD (contracts/src/MockUSD.sol), CREATE2
+TOKENS = {(10143, AUSD_10143): (6, "AUSD", "Agora USD"), (10143, MUSD_10143): (6, "mUSD", "MockUSD (Ripar demo)")}
 NATIVE = {10143: (18, "MON", "Monad testnet"), 143: (18, "MON", "Monad")}
 DELEGATION_MANAGER = unhex("0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3")  # MetaMask v1.3.0 on 10143 and 143
 ZERO20 = b"\x00" * 20
+# src/enforcers.cpp (firmware v1.2): Ripar contracts deployed with CREATE2 from the bytecode frozen at main 5cea7cf.
+# A chain missing from a table = not compiled in (the address confirmed at pairing is used).
+PULSE_ENFORCER = unhex("0x64d61fe5438981DC803ED61250FEf024617ae7eE")
+RIPAR_COSIGN = {10143: PULSE_ENFORCER, 143: PULSE_ENFORCER}
+RIPAR_REGISTRY = {10143: unhex("0xA08a47c9d645926615CF04D69b7a048133F68c9f"),
+                  143: unhex("0xA08a47c9d645926615CF04D69b7a048133F68c9f")}
+# RiparReputationRelay: other constructor arguments per chain (the ERC-8004 registries), all public constants, so both
+# addresses are known (contracts/test/FirmwarePins.t.sol recomputes them from the deploy script)
+RIPAR_RELAY = {10143: unhex("0xE433dCA75CA6cd730b1006F51A26208B000eA9E2"),
+               143: unhex("0x108BA102F7D0915f51c93F128b96Bd24F647f06d")}
+COMPILED_MANAGER = {10143: DELEGATION_MANAGER, 143: DELEGATION_MANAGER}
+
+# ---- canonical vault (firmware v1.2, src/vault.cpp; contracts/.work/vault-derivation.md). Independent of the C++:
+# the proxy creation code is copied from the same source, everything else is recomputed here.
+VAULT_FACTORY = unhex("0x69Aa2f9fe1572F1B640E1bbc512f5c3a734fc77c")  # MetaMask SimpleFactory v1.3.0 (10143, 143)
+VAULT_IMPL = unhex("0x48dBe696A4D990079e039489bA2053B36E8FFEC4")  # HybridDeleGator implementation v1.3.0
+VAULT_INIT_SIG = b"initialize(address,string[],uint256[],uint256[])"
+ERC1967_PROXY_CREATION = bytes.fromhex(  # @metamask/delegation-abis@2.0.0 dist/bytecode/ERC1967Proxy, 1008 bytes
+    "60806040526040516103f03803806103f08339810160408190526100229161025e565b61002c8282610033565b505061"
+    "0341565b61003c82610091565b6040516001600160a01b038316907fbc7cd75a20ee27fd9adebab32041f755214dbc6b"
+    "ffa90cc0225b39da2e5c2d3b905f90a280511561008557610080828261010c565b505050565b61008d61017f565b5050"
+    "565b806001600160a01b03163b5f036100cb57604051634c9c8ce360e01b81526001600160a01b038216600482015260"
+    "24015b60405180910390fd5b7f360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc805460"
+    "01600160a01b0319166001600160a01b0392909216919091179055565b60605f80846001600160a01b03168460405161"
+    "01289190610326565b5f60405180830381855af49150503d805f8114610160576040519150601f19603f3d0116820160"
+    "40523d82523d5f602084013e610165565b606091505b5090925090506101768583836101a0565b95945050505050565b"
+    "341561019e5760405163b398979f60e01b815260040160405180910390fd5b565b6060826101b5576101b0826101ff56"
+    "5b6101f8565b81511580156101cc57506001600160a01b0384163b155b156101f557604051639996b31560e01b815260"
+    "01600160a01b03851660048201526024016100c2565b50805b9392505050565b80511561020f5780518082602001fd5b"
+    "604051630a12f52160e11b815260040160405180910390fd5b634e487b7160e01b5f52604160045260245ffd5b5f5b83"
+    "81101561025657818101518382015260200161023e565b50505f910152565b5f806040838503121561026f575f80fd5b"
+    "82516001600160a01b0381168114610285575f80fd5b60208401519092506001600160401b03808211156102a1575f80"
+    "fd5b818501915085601f8301126102b4575f80fd5b8151818111156102c6576102c6610228565b604051601f8201601f"
+    "19908116603f011681019083821181831017156102ee576102ee610228565b8160405282815288602084870101111561"
+    "0306575f80fd5b61031783602083016020880161023c565b80955050505050509250929050565b5f8251610337818460"
+    "20870161023c565b9190910192915050565b60a38061034d5f395ff3fe6080604052600a600c565b005b60186014601a"
+    "565b6050565b565b5f604b7f360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc54600160"
+    "0160a01b031690565b905090565b365f80375f80365f845af43d5f803e8080156069573d5ff35b3d5ffdfea264697066"
+    "7358221220fd2cc92935c943d341edacaf5318a0b9ab0185ce62ef72e95ab393ef358730c464736f6c63430008170033"
+)
+assert len(ERC1967_PROXY_CREATION) == 1008
+
+
+def _abi_word(x):
+    return int(x).to_bytes(32, "big")
+
+
+def vault_initcode(owner):
+    """abi.encodeWithSignature("initialize(address,string[],uint256[],uint256[])", owner, [], [], []) (228 bytes)"""
+    head = [b"\x00" * 12 + to_addr(owner, "owner"), _abi_word(4 * 32), _abi_word(5 * 32), _abi_word(6 * 32)]
+    tails = [_abi_word(0)] * 3  # three empty dynamic arrays: just their length word
+    return keccak256(VAULT_INIT_SIG)[:4] + b"".join(head) + b"".join(tails)
+
+
+def vault_constructor_args(owner):
+    """abi.encode(address HybridDeleGatorImpl, bytes initcode) (352 bytes)"""
+    init = vault_initcode(owner)
+    padded = init + b"\x00" * (-len(init) % 32)
+    return b"\x00" * 12 + VAULT_IMPL + _abi_word(64) + _abi_word(len(init)) + padded
+
+
+def vault_init_code_hash(owner):
+    return keccak256(ERC1967_PROXY_CREATION + vault_constructor_args(owner))
+
+
+def vault_address(owner):
+    """CREATE2 address of the HybridDeleGator proxy owned by `owner` (K1), deployed by SimpleFactory with salt 0"""
+    return keccak256(b"\xff" + VAULT_FACTORY + b"\x00" * 32 + vault_init_code_hash(owner))[12:]
+
+
+DEMO_VAULT_KAT = ("0x753454832754c071704be47915d4DeC6339624Eb",  # demo K1 (DEMO_SEED)
+                  "0x9694a6959734c65d55361f8f8d333c8534d1e808dbfbb2694fab6c7c8cbd60ce",  # initCodeHash
+                  "0xc36F625D426eBa8f1e0129276B284a939CD3A57D")  # vault, checked on Monad testnet 2026-09-27
+
+
+def firmware_refusal(kind, q, k1addr):
+    """What the device refuses whatever it has pinned at pairing (firmware v1.2): contracts that differ from the
+    compiled-in tables, and a vault / delegator that is not the vault derived from its K1. None = not refused here
+    (the rest of the pinned-context policy, e.g. the chain and the sentinel pinned at pairing, is not simulated)."""
+    chain = q.get("chainId")
+    vault = vault_address(k1addr) if k1addr is not None else None
+    if kind == "pair":
+        if chain not in NATIVE:
+            return "UNSUPPORTED CHAIN %s" % chain
+        for name, table, label in (("registry", RIPAR_REGISTRY, "REGISTRY"), ("manager", COMPILED_MANAGER, "DELEGATION MANAGER"),
+                                   ("enforcer", RIPAR_COSIGN, "PULSE CO-SIGN ENFORCER"), ("relay", RIPAR_RELAY, "REPUTATION RELAY")):
+            v = q.get(name)
+            if chain in table and v is not None and bytes(v) != table[chain]:
+                return "WRONG %s: %s (firmware: %s)" % (label, eip55("0x" + h(v)), eip55("0x" + h(table[chain])))
+        if vault is not None and q.get("vault") is not None and bytes(q["vault"]) != vault:
+            return "VAULT IS NOT THIS DEVICE'S VAULT: key 8 = %s, K1 owns %s" % (eip55("0x" + h(q["vault"])),
+                                                                                eip55("0x" + h(vault)))
+    elif kind == "cosign":
+        if chain in RIPAR_COSIGN and bytes(q["enforcer"]) != RIPAR_COSIGN[chain]:
+            return "ENFORCER NOT PINNED: %s" % eip55("0x" + h(q["enforcer"]))
+        if vault is not None and bytes(q["delegator"]) != vault:
+            return "NOT THIS DEVICE'S VAULT: delegator %s (vault %s)" % (eip55("0x" + h(q["delegator"])), eip55("0x" + h(vault)))
+    elif kind == "mandate":
+        if chain in COMPILED_MANAGER and bytes(q["manager"]) != COMPILED_MANAGER[chain]:
+            return "WRONG DELEGATION MANAGER: %s" % eip55("0x" + h(q["manager"]))
+        if vault is not None and bytes(q["delegator"]) != vault:
+            return "NOT THIS DEVICE'S VAULT: delegator %s (vault %s)" % (eip55("0x" + h(q["delegator"])), eip55("0x" + h(vault)))
+    elif kind == "deny":
+        if chain in RIPAR_RELAY and bytes(q["relay"]) != RIPAR_RELAY[chain]:
+            return "RELAY NOT PINNED: %s" % eip55("0x" + h(q["relay"]))
+    return None
 
 
 def token_check(q):
@@ -444,14 +561,14 @@ def caveat_terms(kind, c):
     raise ProtoError("unknown caveat kind " + kind)
 
 
-def caveat_from_spec(c):
+def caveat_from_spec(c, chain=None):
     """[enforcer, terms] from [enforcer, termsHex] / {enforcer, terms} / {kind, ...}"""
     if isinstance(c, dict) and "kind" in c:
         k = c["kind"]
         if k == "pulse":
-            if "enforcer" not in c:
+            if "enforcer" not in c and chain not in RIPAR_COSIGN:
                 raise ProtoError("pulse caveat: give the PulseCosignEnforcer address (enforcer)")
-            enf = c["enforcer"]
+            enf = c["enforcer"] if "enforcer" in c else RIPAR_COSIGN[chain]
         else:
             enf = c.get("enforcer") or MM_ENF[KIND_ENF[k]]
         return [to_addr(enf, "caveat.enforcer"), caveat_terms(k, c)]
@@ -522,8 +639,12 @@ PAIR_FLOORS = [(10, "minEpoch"), (11, "reopenNonce")]  # optional, each < 2^63; 
 
 
 def build_pair_req(f):
-    _need(f, "chainId", "registry")
-    m = {1: _rid(f), 2: to_int(f["chainId"]), 3: to_addr(f["registry"], "registry")}
+    _need(f, "chainId")
+    chain = to_int(f["chainId"])
+    if "registry" not in f and chain not in RIPAR_REGISTRY:
+        raise ProtoError("missing field: registry (no RiparDeviceRegistry is compiled in for chain %d)" % chain)
+    reg = f["registry"] if "registry" in f else RIPAR_REGISTRY[chain]
+    m = {1: _rid(f), 2: chain, 3: to_addr(reg, "registry")}  # key 8 (vault) only when given: the device derives it
     for k, name in PAIR_OPT:
         if f.get(name) is not None:
             m[k] = to_addr(f[name], name)
@@ -555,8 +676,12 @@ def cosign_calldata(f):
 
 
 def build_cosign_req(f):
-    _need(f, "chainId", "enforcer", "delegationHash", "delegator", "redeemer", "target", "nonce", "expiry")
-    m = {1: _rid(f), 2: to_int(f["chainId"]), 3: to_addr(f["enforcer"], "enforcer"),
+    _need(f, "chainId", "delegationHash", "delegator", "redeemer", "target", "nonce", "expiry")
+    chain = to_int(f["chainId"])
+    if "enforcer" not in f and chain not in RIPAR_COSIGN:
+        raise ProtoError("missing field: enforcer (no PulseCosignEnforcer is compiled in for chain %d)" % chain)
+    enf = f["enforcer"] if "enforcer" in f else RIPAR_COSIGN[chain]
+    m = {1: _rid(f), 2: chain, 3: to_addr(enf, "enforcer"),
          4: to_bytes(f["delegationHash"], 32, "delegationHash"), 5: to_addr(f["delegator"], "delegator"),
          6: to_addr(f["redeemer"], "redeemer"), 7: to_addr(f["target"], "target"), 8: u256_min(f.get("value", 0)),
          9: cosign_calldata(f), 10: u256_min(f["nonce"]), 11: to_int(f["expiry"])}
@@ -583,7 +708,7 @@ def build_cosign_req(f):
 
 def build_mandate_req(f):
     _need(f, "chainId", "manager", "delegate", "delegator", "caveats", "salt")
-    cav = [caveat_from_spec(c) for c in f["caveats"]]
+    cav = [caveat_from_spec(c, to_int(f["chainId"])) for c in f["caveats"]]
     m = {1: _rid(f), 2: to_int(f["chainId"]), 3: to_addr(f["manager"], "manager"),
          4: to_addr(f["delegate"], "delegate"), 5: to_addr(f["delegator"], "delegator"),
          6: to_bytes(f.get("authority", ROOT), 32, "authority"), 7: cav, 8: u256_min(f["salt"])}
@@ -595,8 +720,12 @@ def build_mandate_req(f):
 
 
 def build_deny_req(f):
-    _need(f, "chainId", "relay", "agentId", "requestHash")
-    return {1: _rid(f), 2: to_int(f["chainId"]), 3: to_addr(f["relay"], "relay"), 4: to_int(f["agentId"]),
+    _need(f, "chainId", "agentId", "requestHash")
+    chain = to_int(f["chainId"])
+    if "relay" not in f and chain not in RIPAR_RELAY:
+        raise ProtoError("missing field: relay (no RiparReputationRelay is compiled in for chain %d)" % chain)
+    relay = f["relay"] if "relay" in f else RIPAR_RELAY[chain]
+    return {1: _rid(f), 2: chain, 3: to_addr(relay, "relay"), 4: to_int(f["agentId"]),
             5: to_bytes(f["requestHash"], 32, "requestHash")}
 
 
@@ -877,7 +1006,8 @@ def demo_keys(seed=DEMO_SEED):
     p1 = rc.derive_path(rc.P1, seed, rc.PATH_P1)
     k1pub = rc.pubkey(rc.K1, k1)
     p1pub = rc.pubkey(rc.P1, p1)
-    return {"k1": k1, "p1": p1, "k1addr": rc.eth_address(k1pub), "p1xy": rc.xy64(p1pub)}
+    k1addr = rc.eth_address(k1pub)
+    return {"k1": k1, "p1": p1, "k1addr": k1addr, "p1xy": rc.xy64(p1pub), "vault": vault_address(k1addr)}
 
 
 def sign_p1(keys, digest):
@@ -906,10 +1036,14 @@ def simulate_deny_from_cosign(q, keys, chain, relay, agent_id, ev12=None, salt16
 
 
 def simulate(kind, q, keys, ev12=None, salt16=None, fwid=None):
-    """-> response CBOR bytes, as the device builds it (the pulse gate and the pinned-context policy are NOT
-    simulated; token-table and Privy allow-list refusals are)."""
+    """-> response CBOR bytes, as the device builds it. The pulse gate and the pinned-context policy (chain, sentinel,
+    epoch, ... pinned at pairing) are NOT simulated; the refusals that do not depend on the pairing are: the compiled-in
+    contracts and the vault derived from K1 (firmware_refusal), the token table and the Privy allow-list."""
     ev12 = demo_evidence() if ev12 is None else ev12
     salt16 = os.urandom(16) if salt16 is None else salt16
+    why = firmware_refusal(kind, q, keys["k1addr"])
+    if why:
+        raise ProtoError("device refuses: " + why)
     if kind == "pair":
         fwid = hashlib.sha256(b"ripar demo firmware").digest()[:8] if fwid is None else fwid
         d = pair_digest(q["chainId"], q["registry"], keys["k1addr"], keys["p1xy"])
@@ -1000,6 +1134,10 @@ def parse_response(ur_text, req=None, p1xy=None, k1addr=None, chain=None, contra
         raise ProtoError("response is not a map")
     q = read_fields(req[0], cbor_decode(req[1])) if req else None
 
+    def pinned_or(table, ch):
+        """the contract given with --contract, else the one compiled into the firmware for chain `ch` (or None)"""
+        return contract if contract is not None else (table.get(ch) if ch is not None else None)
+
     def need_bytes(k, n):
         v = m.get(k)
         if not isinstance(v, bytes) or (n is not None and len(v) != n):
@@ -1021,9 +1159,16 @@ def parse_response(ur_text, req=None, p1xy=None, k1addr=None, chain=None, contra
         keys_only(1, 2, 3, 4, 5, 6)
         k1 = need_bytes(2, 20)
         xy = need_bytes(3, 64)
-        rep.fields.update(k1Address=eip55("0x" + h(k1)), p1Key=h(xy), firmwareId=h(need_bytes(6, 8)))
+        vault = vault_address(k1)
+        rep.fields.update(k1Address=eip55("0x" + h(k1)), vault=eip55("0x" + h(vault)), p1Key=h(xy),
+                          firmwareId=h(need_bytes(6, 8)))
         if 1 in m:
             check_reqid()
+        if q and q["kind"] == "pair":
+            # firmware v1.2: the device pins the vault it derives from K1 and only the compiled-in contracts
+            if q["vault"] is not None:
+                rep.check("key 8 vault is the vault derived from K1", bytes(q["vault"]) == vault)
+            rep.check("pair request names only the firmware's pinned contracts", firmware_refusal("pair", q, k1) is None)
         if 4 in m or 5 in m:
             if not q or q["kind"] != "pair":
                 rep.unverified.append("BindDevice signatures (give --req with the pair request)")
@@ -1048,6 +1193,8 @@ def parse_response(ur_text, req=None, p1xy=None, k1addr=None, chain=None, contra
             d = cosign_digest(q, ph)
             rep.fields["digest"] = h(d)
             _p256_check(rep, "cosign", p1xy, d, rs)
+        if q and q["kind"] == "cosign" and k1addr is not None:
+            rep.check("delegator is the vault derived from the paired K1", bytes(q["delegator"]) == vault_address(k1addr))
         if q and q["kind"] == "cosign":
             # what the companion relays as caveat args: abi.encode(nonce, expiry, presenceHash, r, s)
             args = (q["nonce"].to_bytes(32, "big") + q["expiry"].to_bytes(32, "big") + ph + rs[:32] + rs[32:])
@@ -1069,13 +1216,14 @@ def parse_response(ur_text, req=None, p1xy=None, k1addr=None, chain=None, contra
             dq = q
         elif q and q["kind"] == "cosign":  # deny from a co-sign review: requestHash computed by the device
             rep.check("requestHash = hashStruct(HumanApproval) of the co-sign request", rh == cosign_request_hash(q))
-            if contract is None:
+            dchain = chain if chain is not None else q["chainId"]
+            relay = pinned_or(RIPAR_RELAY, dchain)
+            if relay is None:
                 rep.unverified.append("deny signature (give --contract RELAY; chain = --chain or the request's)")
             else:
-                dq = {"chainId": chain if chain is not None else q["chainId"], "relay": contract, "agentId": agent,
-                      "requestHash": rh}
-        elif chain is not None and contract is not None:
-            dq = {"chainId": chain, "relay": contract, "agentId": agent, "requestHash": rh}
+                dq = {"chainId": dchain, "relay": relay, "agentId": agent, "requestHash": rh}
+        elif chain is not None and pinned_or(RIPAR_RELAY, chain) is not None:
+            dq = {"chainId": chain, "relay": pinned_or(RIPAR_RELAY, chain), "agentId": agent, "requestHash": rh}
         else:
             rep.unverified.append("deny signature (give --req, or --chain and --contract RELAY)")
         if dq is not None:
@@ -1102,6 +1250,8 @@ def parse_response(ur_text, req=None, p1xy=None, k1addr=None, chain=None, contra
                 rep.unverified.append("mandate signer identity (give --k1 or --pair)")
             else:
                 rep.check("mandate signed by the paired K1", who == k1addr)
+                rep.check("mandate delegator is the vault derived from the paired K1",
+                          bytes(q["delegator"]) == vault_address(k1addr))
     elif utype == "ripar-der-sig":
         keys_only(1, 2)
         check_reqid()
@@ -1120,6 +1270,7 @@ def parse_response(ur_text, req=None, p1xy=None, k1addr=None, chain=None, contra
             keys_only(1, 2)
             dh, rs = need_bytes(1, 32), need_bytes(2, 64)
             rep.fields.update(delegationHash=h(dh), rs=h(rs))
+            contract = pinned_or(RIPAR_COSIGN, chain)
             dig = (lambda: revoke_digest(chain, contract, dh))
         elif utype == "ripar-panic":
             keys_only(1, 2)
@@ -1127,6 +1278,7 @@ def parse_response(ur_text, req=None, p1xy=None, k1addr=None, chain=None, contra
                 raise ProtoError("key 1 must be uint")
             me, rs = m[1], need_bytes(2, 64)
             rep.fields.update(minEpoch=me, rs=h(rs))
+            contract = pinned_or(RIPAR_COSIGN, chain)
             dig = (lambda: panic_digest(chain, contract, me))
         else:
             keys_only(1, 2, 3)
@@ -1135,6 +1287,8 @@ def parse_response(ur_text, req=None, p1xy=None, k1addr=None, chain=None, contra
                 raise ProtoError("nonce longer than 32 bytes")
             nonce = int.from_bytes(nb, "big")
             rep.fields.update(vault=eip55("0x" + h(vault)), nonce=nonce, rs=h(rs))
+            if k1addr is not None:
+                rep.check("reopen vault is the vault derived from the paired K1", vault == vault_address(k1addr))
             dig = (lambda: reopen_digest(chain, contract, vault, nonce))
         if chain is None or contract is None:
             rep.unverified.append("%s signature (give --chain and --contract)" % utype)
@@ -1376,11 +1530,22 @@ JSON_INVALID_EXTRA = [b"[" * 17 + b"]" * 17, b"-", b"1e", b"1e+", b"01", b"[1 2]
                       b"[[,,1]", b"[,1]", b"[,]", b'{"a":[,,"b"]}', b"{\"a\":1,}", b"-01", b"0x10", b"1.5.2"]
 
 
+_DEMO_CACHE = {}
+
+
+def demo_vault():
+    """vault derived from the demo K1 (cached: the demo keys cost a few EC multiplications)"""
+    if "vault" not in _DEMO_CACHE:
+        _DEMO_CACHE["vault"] = demo_keys()["vault"]
+    return _DEMO_CACHE["vault"]
+
+
 def _mk_cosign(rng, variant):
     target = raddr(rng)
     to = raddr(rng)
-    f = {"reqId": rb(rng, 16), "chainId": 10143, "enforcer": raddr(rng), "delegationHash": rb(rng, 32),
-         "delegator": raddr(rng), "redeemer": raddr(rng), "target": target, "value": 0, "nonce": rng.getrandbits(64),
+    # firmware v1.2: the compiled-in PulseCosignEnforcer and the demo device's derived vault
+    f = {"reqId": rb(rng, 16), "chainId": 10143, "enforcer": PULSE_ENFORCER, "delegationHash": rb(rng, 32),
+         "delegator": demo_vault(), "redeemer": raddr(rng), "target": target, "value": 0, "nonce": rng.getrandbits(64),
          "expiry": 1790000000 + rng.randrange(100000)}
     z20 = b"\x00" * 20
     if variant == 0:  # minimal native transfer
@@ -1460,12 +1625,18 @@ def _mk_cosign(rng, variant):
         f["target"] = AUSD_10143
         f["approve"] = {"spender": to, "amount": MAX256}
         f["ai"] = {"text": "approve router", "claims": {"to": to, "token": AUSD_10143, "amount": MAX256}}
+    elif variant == 18:  # MockUSD (mUSD, 6 decimals) from the firmware table, keys 15/16 agree with it
+        f["target"] = MUSD_10143
+        f["transfer"] = {"to": to, "amount": 1234567}
+        f["decimals"] = 6
+        f["symbol"] = "mUSD"
+        f["ai"] = {"text": "demo payment", "claims": {"to": to, "token": MUSD_10143, "amount": 1234567}}
     return f
 
 
 def _mk_mandate(rng, variant, p1xy=None):
     f = {"reqId": rb(rng, 16), "chainId": 10143, "manager": E.unhex("0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3"),
-         "delegate": raddr(rng), "delegator": raddr(rng), "salt": rng.getrandbits(64)}
+         "delegate": raddr(rng), "delegator": demo_vault(), "salt": rng.getrandbits(64)}
     if variant == 0:
         f["caveats"] = [[raddr(rng), rb(rng, 32 * 7)]]
     elif variant == 1:
@@ -1487,7 +1658,7 @@ def _mk_mandate(rng, variant, p1xy=None):
         f["caveats"] = [[raddr(rng), rb(rng, 700)], [raddr(rng), rb(rng, 1)]]
         f["salt"] = MAX256
     elif variant == 5:  # signable with a pinned context: one pulse caveat (demo P1 key) + every other decoder
-        pulse, vault, sentinel = raddr(rng), raddr(rng), raddr(rng)
+        pulse, vault, sentinel = PULSE_ENFORCER, demo_vault(), raddr(rng)  # firmware v1.2: compiled / derived
         f["delegator"] = vault
         f["caveats"] = [
             {"kind": "pulse", "enforcer": pulse, "p1Key": p1xy, "token": AUSD_10143, "perTxAutoCap": 25 * 10 ** 6,
@@ -1510,8 +1681,11 @@ def _mk_mandate(rng, variant, p1xy=None):
 
 
 def _mk_deny(rng, variant):
-    return {"reqId": rb(rng, 16), "chainId": [10143, 143, MAX64][variant % 3], "relay": raddr(rng),
-            "agentId": [7, 0, MAX64][variant % 3], "requestHash": rb(rng, 32), "uuidTag": variant == 1}
+    chain = [10143, 143, MAX64][variant % 3]
+    rid = rb(rng, 16)
+    relay = RIPAR_RELAY[chain] if chain in RIPAR_RELAY else raddr(rng)  # the firmware's relay where one is compiled in
+    return {"reqId": rid, "chainId": chain, "relay": relay, "agentId": [7, 0, MAX64][variant % 3],
+            "requestHash": rb(rng, 32), "uuidTag": variant == 1}
 
 
 def _mutations(kind, base):
@@ -1636,7 +1810,7 @@ def _mutations(kind, base):
     return out
 
 
-def _token_mutations(ausd, native):
+def _token_mutations(ausd, native, musd=None):
     """co-sign requests whose optional keys 15 / 16 contradict the firmware token table (security review B3)"""
     out = []
 
@@ -1651,6 +1825,9 @@ def _token_mutations(ausd, native):
     mut("AUSD no decimals, symbol USDT", ausd, lambda m: (m.pop(15), m.__setitem__(16, "USDT")))
     mut("native MON decimals 6", native, lambda m: m.__setitem__(15, 6))
     mut("native MON symbol ETH", native, lambda m: m.__setitem__(16, "ETH"))
+    if musd is not None:
+        mut("mUSD decimals 18 (table: 6)", musd, lambda m: m.__setitem__(15, 18))
+        mut("mUSD symbol MUSD (table: mUSD)", musd, lambda m: m.__setitem__(16, "MUSD"))
     return out
 
 
@@ -1679,6 +1856,13 @@ def generate_vectors():
     w("static const char DEMO_K1_ADDR[] = %s;" % hx(keys["k1addr"]))
     w("static const char DEMO_P1_PRIV[] = %s;" % hx(rc.i2b(keys["p1"])))
     w("static const char DEMO_P1_XY[] = %s;" % hx(keys["p1xy"]))
+    w("static const char DEMO_VAULT[] = %s;  // vault_address(DEMO_K1_ADDR), firmware v1.2" % hx(keys["vault"]))
+    w("// firmware v1.2 compiled-in contracts (src/enforcers.cpp, src/tokens.cpp)")
+    w("static const char PULSE_ENFORCER[] = %s;" % hx(PULSE_ENFORCER))
+    w("static const char REGISTRY[] = %s;" % hx(RIPAR_REGISTRY[10143]))
+    w("static const char RELAY_10143[] = %s;" % hx(RIPAR_RELAY[10143]))
+    w("static const char RELAY_143[] = %s;" % hx(RIPAR_RELAY[143]))
+    w("static const char MUSD_10143[] = %s;" % hx(MUSD_10143))
     w("")
 
     # ---------------------------------------------------------------- cosign
@@ -1698,7 +1882,7 @@ def generate_vectors():
     w("};")
     w("static const Cosign COSIGN[] = {")
     cosign_cbors = []
-    for variant in range(18):
+    for variant in range(19):
         f = _mk_cosign(rng, variant)
         m = build_cosign_req(f)
         if variant == 8:  # insertion order shuffled (the device accepts any key order)
@@ -1835,7 +2019,7 @@ def generate_vectors():
     w("static const DenyFromCosign DENY_FROM_COSIGN[] = {")
     for ci, zero_ev in ((1, True), (14, False)):
         q = read_fields("cosign", cbor_decode(cosign_cbors[ci]))
-        relay, agent = raddr(rng), [7, MAX64][ci % 2]
+        relay, agent = RIPAR_RELAY[10143], [7, MAX64][ci % 2]  # the firmware's relay on 10143
         ev = bytes(12) if zero_ev else rb(rng, 12)
         salt = rb(rng, 16)
         rh = cosign_request_hash(q)
@@ -1860,14 +2044,18 @@ def generate_vectors():
     w("};")
     w("static const Pair PAIR[] = {")
     pair_cbors = []
-    for variant in range(3):
-        f = {"reqId": rb(rng, 16), "chainId": [10143, 1, 143][variant], "registry": raddr(rng), "uuidTag": variant == 1}
-        if variant == 0:
-            f.update(manager=DELEGATION_MANAGER, enforcer=raddr(rng), sentinel=raddr(rng), relay=raddr(rng),
-                     vault=raddr(rng), now=1790500000, minEpoch=12, reopenNonce=3)
+    for variant in range(4):
+        chain = [10143, 1, 143, 10143][variant]
+        reg = RIPAR_REGISTRY[chain] if chain in RIPAR_REGISTRY else raddr(rng)
+        f = {"reqId": rb(rng, 16), "chainId": chain, "registry": reg, "uuidTag": variant == 1}
+        if variant == 0:  # every key given: the firmware's contracts and the demo device's derived vault
+            f.update(manager=DELEGATION_MANAGER, enforcer=PULSE_ENFORCER, sentinel=raddr(rng), relay=RIPAR_RELAY[10143],
+                     vault=keys["vault"], now=1790500000, minEpoch=12, reopenNonce=3)
         if variant == 2:
-            f.update(manager=DELEGATION_MANAGER, enforcer=raddr(rng), now=(1 << 40) - 1, minEpoch=(1 << 63) - 1,
+            f.update(manager=DELEGATION_MANAGER, enforcer=PULSE_ENFORCER, now=(1 << 40) - 1, minEpoch=(1 << 63) - 1,
                      reopenNonce=(1 << 63) - 1)
+        if variant == 3:  # minimal (what `build pair chainId=10143` sends): the device fills in its pinned set + vault
+            f.update(now=1790500000)
         m = build_pair_req(f)
         cb = U.cbor(m)
         pair_cbors.append(cb)
@@ -1925,7 +2113,8 @@ def generate_vectors():
         for name, m in _mutations(kind, base):
             w("  {%s, %d, %s}," % (c_str("%s: %s" % (kind, name)), t, hx(U.cbor(m))))
             ninv += 1
-    for name, m in _token_mutations(cbor_decode(cosign_cbors[14]), cbor_decode(cosign_cbors[0])):
+    for name, m in _token_mutations(cbor_decode(cosign_cbors[14]), cbor_decode(cosign_cbors[0]),
+                                    cbor_decode(cosign_cbors[18])):
         try:  # the Python reference must refuse it too
             token_check(read_fields("cosign", m))
             raise AssertionError("token mutation accepted by token_check: " + name)
@@ -1963,7 +2152,9 @@ def generate_vectors():
     w("  const char* resp; const char* respUr; };")
     w("static const Revoke REVOKE[] = {")
     for i in range(3):
-        chain, enf, dh = [10143, 143, MAX64][i], raddr(rng), rb(rng, 32)
+        chain = [10143, 143, MAX64][i]
+        enf = RIPAR_COSIGN[chain] if chain in RIPAR_COSIGN else raddr(rng)  # the firmware's enforcer where compiled in
+        dh = rb(rng, 32)
         d = revoke_digest(chain, enf, dh)
         rs = sign_p1(keys, d)
         resp = U.cbor({1: dh, 2: rs})
@@ -1973,7 +2164,7 @@ def generate_vectors():
     w("  const char* resp; const char* respUr; };")
     w("static const Panic PANIC[] = {")
     for me in [0, 1, 23, 24, 255, 256, 65535, 65536, 0xFFFFFFFF, 0x100000000, MAX64]:
-        chain, enf = 10143, raddr(rng)
+        chain, enf = 10143, PULSE_ENFORCER
         d = panic_digest(chain, enf, me)
         rs = sign_p1(keys, d)
         resp = U.cbor({1: me, 2: rs})
@@ -1983,7 +2174,7 @@ def generate_vectors():
     w("  const char* rs; const char* resp; const char* respUr; };")
     w("static const Reopen REOPEN[] = {")
     for nonce in [0, 1, 255, 256, rng.getrandbits(100), MAX256, 1 << 248]:
-        chain, sen, vault = 10143, raddr(rng), raddr(rng)
+        chain, sen, vault = 10143, raddr(rng), keys["vault"]  # the device reopens its own (derived) vault
         d = reopen_digest(chain, sen, vault, nonce)
         rs = sign_p1(keys, d)
         resp = U.cbor({1: vault, 2: u256_min(nonce), 3: rs})
@@ -2013,6 +2204,22 @@ def generate_vectors():
     w("static const Multi MULTI[] = {")
     for name, cb, i, n, at in multis:
         w("  {%s, %s, MULTI_PARTS_%d, %d, %d}," % (c_str(name), hx(cb), i, n, at))
+    w("};")
+    w("")
+
+    # ---------------------------------------------------------------- canonical vault (firmware v1.2, src/vault.cpp)
+    w("// Canonical vault = SimpleFactory CREATE2 (salt 0) of ERC1967Proxy creation code || abi.encode(HybridDeleGator")
+    w("// impl, initialize(owner, [], [], [])), computed independently in make_request.py vault_address().")
+    w("static const char PROXY_CREATION_KECCAK[] = %s;" % hx(keccak256(ERC1967_PROXY_CREATION)))
+    w("struct Vault { const char* owner; const char* initcode; const char* args; const char* initCodeHash; const char* vault;")
+    w("  const char* vaultEip55; };")
+    w("static const Vault VAULT[] = {")
+    vrng = random.Random(1008)  # own stream: adding owners never moves the vectors above
+    owners = [keys["k1addr"], ZERO20, b"\xff" * 20, DELEGATION_MANAGER] + [raddr(vrng) for _ in range(4)]
+    for o in owners:
+        v = vault_address(o)
+        w("  {%s, %s, %s, %s, %s, %s}," % (hx(o), hx(vault_initcode(o)), hx(vault_constructor_args(o)),
+                                          hx(vault_init_code_hash(o)), hx(v), c_str(eip55("0x" + h(v)))))
     w("};")
     w("")
     w("}  // namespace pv")
@@ -2082,9 +2289,16 @@ def selftest(verbose=True):
     rng = random.Random(1)
     t("demo K1 address matches crypto_vectors.h convention",
       eip55("0x" + h(keys["k1addr"])) == eip55("0x" + h(rc.eth_address(rc.pubkey(rc.K1, keys["k1"])))))
+    k1a, ich, va = DEMO_VAULT_KAT
+    t("vault: demo K1 is %s" % k1a, eip55("0x" + h(keys["k1addr"])) == k1a)
+    t("vault: initCodeHash known answer", "0x" + h(vault_init_code_hash(unhex(k1a))) == ich)
+    t("vault: derived vault known answer %s (checked on chain)" % va, eip55("0x" + h(keys["vault"])) == va)
+    t("vault: initcode 228 bytes, constructor args 352 bytes",
+      len(vault_initcode(ZERO20)) == 228 and len(vault_constructor_args(ZERO20)) == 352)
+    t("vault: another owner -> another vault", vault_address(b"\x01" * 20) != keys["vault"])
     for kind, maker in (("cosign", lambda: _mk_cosign(rng, 1)), ("mandate", lambda: _mk_mandate(rng, 1)),
                         ("deny", lambda: _mk_deny(rng, 0)), ("privy", lambda: {"json": privy_valid()[0][1]}),
-                        ("pair", lambda: {"chainId": 10143, "registry": raddr(rng)})):
+                        ("pair", lambda: {"chainId": 10143})):
         f = maker()
         m = BUILDERS[kind](f)
         cb = U.cbor(m)
@@ -2100,7 +2314,7 @@ def selftest(verbose=True):
         resp = simulate(kind, q, keys, salt16=rb(rng, 16))
         rur = ur_single(RESP_TYPES[kind], resp)
         pair_ur = ur_single("ripar-pair", simulate("pair", {"reqId": b"\x00" * 16, "chainId": 10143,
-                                                             "registry": b"\x01" * 20}, keys))
+                                                             "registry": RIPAR_REGISTRY[10143]}, keys))
         pk = parse_response(pair_ur)
         p1xy, k1a = unhex(pk.fields["p1Key"]), unhex(pk.fields["k1Address"])
         rep = parse_response(rur, (kind, cb), p1xy=p1xy, k1addr=k1a)
@@ -2138,6 +2352,30 @@ def selftest(verbose=True):
         t("%s verifies" % utype, rep.ok() and rep.checks and not rep.unverified)
         rep2 = parse_response(ur_single(utype, U.cbor(mm)), None, p1xy=keys["p1xy"], chain=10143, contract=b"\x56" * 20)
         t("%s: wrong contract rejected" % utype, not rep2.ok())
+    # firmware v1.2: revoke / panic verify against the compiled-in enforcer when --contract is left out
+    rs = sign_p1(keys, panic_digest(10143, PULSE_ENFORCER, 9))
+    rep = parse_response(ur_single("ripar-panic", U.cbor({1: 9, 2: rs})), None, p1xy=keys["p1xy"], chain=10143)
+    t("ripar-panic verifies against the firmware's PulseCosignEnforcer by default", rep.ok() and rep.checks and not rep.unverified)
+    # firmware v1.2: the device refuses what is not its own vault / the compiled-in contracts (simulate mirrors it)
+    base = {"reqId": b"\x00" * 16, "chainId": 10143, "registry": RIPAR_REGISTRY[10143]}
+    for name, extra in (("another vault in key 8", {"vault": b"\x42" * 20}), ("another registry", {"registry": b"\x42" * 20}),
+                        ("another enforcer", {"enforcer": b"\x42" * 20}), ("another relay", {"relay": b"\x42" * 20})):
+        try:
+            simulate("pair", dict(base, **extra), keys)
+            t("simulate refuses a pairing with " + name, False)
+        except ProtoError:
+            t("simulate refuses a pairing with " + name, True)
+    t("simulate pairs with key 8 = the derived vault", bool(simulate("pair", dict(base, vault=keys["vault"]), keys)))
+    rp = parse_response(ur_single("ripar-pair", simulate("pair", dict(base, vault=keys["vault"]), keys)),
+                        ("pair", U.cbor(build_pair_req(dict(base, vault=keys["vault"])))))
+    t("parse pair: vault field + key 8 check", rp.ok() and rp.fields["vault"] == va)
+    for kind, f in (("cosign", dict(_mk_cosign(random.Random(3), 1), delegator=b"\x42" * 20)),
+                    ("mandate", dict(_mk_mandate(random.Random(3), 5, keys["p1xy"]), delegator=b"\x42" * 20))):
+        try:
+            simulate(kind, read_fields(kind, BUILDERS[kind](f)), keys)
+            t("simulate refuses a %s for another vault" % kind, False)
+        except ProtoError:
+            t("simulate refuses a %s for another vault" % kind, True)
     # Privy allow-list (security review M1)
     v = privy_parse(privy_valid()[0][1])
     t("privy: wallet signer update parsed in full",
@@ -2259,6 +2497,8 @@ def _main(argv):
     s.add_argument("--seed")
     k = sub.add_parser("demo-keys")
     k.add_argument("--seed")
+    v = sub.add_parser("vault")
+    v.add_argument("k1")
     sub.add_parser("gen-vectors")
     sub.add_parser("check-vectors")
     sub.add_parser("selftest")
@@ -2309,7 +2549,14 @@ def _main(argv):
         return 0
     if a.cmd == "demo-keys":
         keys = demo_keys(unhex(a.seed) if a.seed else DEMO_SEED)
-        print(json.dumps({"k1Address": eip55("0x" + h(keys["k1addr"])), "p1Key": h(keys["p1xy"])}, indent=1))
+        print(json.dumps({"k1Address": eip55("0x" + h(keys["k1addr"])), "vault": eip55("0x" + h(keys["vault"])),
+                          "p1Key": h(keys["p1xy"])}, indent=1))
+        return 0
+    if a.cmd == "vault":
+        k1 = to_addr(a.k1, "K1 address")
+        print(json.dumps({"k1Address": eip55("0x" + h(k1)), "vault": eip55("0x" + h(vault_address(k1))),
+                          "initCodeHash": "0x" + h(vault_init_code_hash(k1)),
+                          "factory": eip55("0x" + h(VAULT_FACTORY)), "salt": "0x" + "00" * 32}, indent=1))
         return 0
     if a.cmd in ("gen-vectors", "check-vectors"):
         text, _ = generate_vectors()

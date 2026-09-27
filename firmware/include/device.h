@@ -30,8 +30,9 @@ void trng_fill(uint8_t* p, size_t n);           // esp_fill_random
 
 // ---------------- store.cpp (NVS) ----------------
 // Context (include/context.h): chain + contracts pinned at pairing (chainId, DelegationManager, PulseCosignEnforcer,
-// sentinel, relay, registry, vault), the last mandate this device signed (lastDelegationHash, agentId) and the
-// monotonic counters (minEpoch, reopenNonce, notBefore). NVS layout version 2 (src/context.cpp). Only written with
+// sentinel, relay, registry, the vault derived from K1), the last mandate this device signed (lastDelegationHash,
+// agentId, its pulse terms), the PANIC FIRST flag and the monotonic counters (minEpoch, reopenNonce, notBefore). NVS
+// layout version 3 (src/context.cpp; v1 / v2 blobs load as "not paired"). Only written with
 // a Context returned by the policy.h context_after_*() helpers (pairing / the device's own signatures).
 bool store_load_context(Context& c);        // false = none / old layout / corrupt -> treat as unpaired
 bool store_has_context();                   // a context blob is stored (whether or not it can be loaded)

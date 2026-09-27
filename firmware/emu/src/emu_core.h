@@ -142,6 +142,7 @@ class Device {
   Fsm fsm_;
   Context ctx_;
   Addr k1_;
+  Addr vault_;  // vault_address(k1_): the only vault this device pins (vault.h; flows.cpp g_vault)
   uint8_t p1xy_[64] = {0};
   uint8_t fwid_[8] = {0};
   bool havePulse_ = false, haveCam_ = false;

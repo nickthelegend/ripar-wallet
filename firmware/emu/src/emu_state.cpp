@@ -69,6 +69,11 @@ void context_fields(JsonOut& j, const Context& c) {
   j.key("reopenNonce").u64s(c.reopenNonce);
   j.key("notBefore").u64s(c.notBefore);
   j.kv("notBeforeUtc", utc_text(effective_not_before(c.notBefore)));
+  // (layout v3) the pulse terms of the remembered mandate (review_cosign's AUTO payee line) and PANIC FIRST
+  j.kv("pulseToken", addr_checksum(c.pulseToken));  // the zero address = the native coin (or no mandate remembered)
+  j.kv("perTxAutoCap", u256_dec(c.perTxAutoCap)).kv("periodAutoCap", u256_dec(c.periodAutoCap));
+  j.kv("period", c.period).kv("newPayeeNeedsHuman", c.newPayeeNeedsHuman);
+  j.kv("unpanickedMandates", c.unpanickedMandates);
 }
 
 void rows(JsonOut& j, const std::vector<UiRow>& rs) {
@@ -86,6 +91,7 @@ void rows(JsonOut& j, const std::vector<UiRow>& rs) {
 std::string Device::context_json() const {
   JsonOut j;
   j.obj();
+  j.kv("version", unsigned(CONTEXT_VERSION));  // NVS layout version (context.h), CONTEXT_BLOB_SIZE bytes
   uint8_t blob[CONTEXT_BLOB_SIZE];
   context_serialize(ctx_, blob);
   j.kv("hex", to_hex(blob, sizeof blob, false));  // the RAM context (store_save_context blob layout)
@@ -131,6 +137,8 @@ std::string Device::state_json() const {
   j.kv("battery", io_.battery).kv("paired", ctx_.paired());
   j.kv("k1Short", keys_.k1_address().is_zero() ? std::string() : short_addr(k1_));
   j.kv("k1", k1_.is_zero() ? std::string() : addr_checksum(k1_));
+  // the vault derived from K1 (vault.h vault_address: MetaMask SimpleFactory CREATE2, salt 0), the only one it pins
+  j.kv("vault", k1_.is_zero() ? std::string() : addr_checksum(vault_));
   j.kv("p1", to_hex(p1xy_, 64, false));
   j.key("selftest").obj().kv("passed", selftestPassed_).kv("report", selftestReport_).end_obj();
 

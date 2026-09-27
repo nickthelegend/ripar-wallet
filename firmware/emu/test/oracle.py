@@ -13,6 +13,10 @@ Everything here is the companion-side tool firmware/tools/make_request.py, indep
                          evidence + firmware id, so only salt-free responses can be compared with the CLI itself)
         cliIdentical     mandate / privy only: byte-identical to the stdout of `make_request.py simulate <req>`
 
+  python emu/test/oracle.py vault   < k1s.json    -> {"<K1>": "<vault>"}: make_request.py vault_address (the MetaMask
+                         SimpleFactory CREATE2 address, salt 0, of the HybridDeleGator proxy owned by K1), computed
+                         independently of the firmware's vault.cpp
+
 build specs: [{"name", "kind", "fields": {...}, "reqid": hex32}] (a field value "$dh:<name>" = the delegation hash of
 the mandate built under <name> earlier in the same batch). Output: {"<name>": {type, reqId, cbor, ur, parts}}.
 
@@ -143,12 +147,17 @@ def verify(jobs):
     return results
 
 
+def vaults(k1s):
+    return {k1: mr.eip55("0x" + mr.h(mr.vault_address(mr.to_addr(k1, "K1")))) for k1 in k1s}
+
+
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] not in ("build", "verify"):
+    modes = {"build": build, "verify": verify, "vault": vaults}
+    if len(sys.argv) != 2 or sys.argv[1] not in modes:
         print(__doc__)
         return 2
     data = json.load(sys.stdin)
-    out = build(data) if sys.argv[1] == "build" else verify(data)
+    out = modes[sys.argv[1]](data)
     sys.stdout.write(json.dumps(out))
     return 0
 

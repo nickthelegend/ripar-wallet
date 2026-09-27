@@ -33,12 +33,24 @@ export type Display =
   | { kind: 'qr'; seq: number; drawnAtMs: number; title: string; footer: string; text: string; version: number;
       ecc: 'M' | 'L'; scale: number };
 
+/**
+ * The pinned context (include/context.h, NVS layout v3). Since firmware v1.2 `vault` is always the vault derived from
+ * K1 (EmuState.vault) once paired, and the Ripar contracts are the ones compiled in for the chain.
+ */
 export interface ContextView {
   paired: boolean; chainId: string; chain: string;
   delegationManager: string | null; pulseCosignEnforcer: string | null; sentinel: string | null;
   relay: string | null; registry: string | null; vault: string | null;
   lastDelegationHash: string | null; hasAgentId: boolean; agentId: string;
   minEpoch: string; reopenNonce: string; notBefore: string; notBeforeUtc: string;
+  /**
+   * (v3) the pulse terms of the remembered mandate (lastDelegationHash), for the co-sign review's AUTO payee line:
+   * token (the zero address = the native coin, also when no mandate is remembered), caps as decimal strings (uint128),
+   * period in seconds (0 = lifetime cap)
+   */
+  pulseToken: string; perTxAutoCap: string; periodAutoCap: string; period: number; newPayeeNeedsHuman: boolean;
+  /** (v3) PANIC FIRST: set by a signed mandate, cleared by a signed panic (a revoke leaves it set) */
+  unpanickedMandates: boolean;
 }
 
 export interface EmuState {
@@ -62,6 +74,11 @@ export interface EmuState {
   paired: boolean;
   k1Short: string;
   k1: string;
+  /**
+   * the vault derived from K1 (firmware/src/vault.cpp: MetaMask SimpleFactory CREATE2, salt 0, of the HybridDeleGator
+   * proxy owned by K1, docs/PROTOCOL.md 2.1): the only vault this device pins; the companion deploys and funds it
+   */
+  vault: string;
   p1: string;
   selftest: { passed: boolean; report: string };
   /** the last frame drawn on the 320x240 LCD */
@@ -157,7 +174,8 @@ export declare class RiparEmulator {
   key(kind?: 'press' | 'hold2' | 'hold5'): EmuState;
   scan(qrText: string): ScanResult;
   finger(p?: Partial<FingerParams>): FingerParams;
-  exportContext(): ContextView & { hex: string; stored: string | null };
+  /** hex = the RAM context, stored = the emulated NVS blob (context_serialize, `version` 3, 256 bytes) */
+  exportContext(): ContextView & { version: number; hex: string; stored: string | null };
   exportNvs(): NvsImage;
   addEntropy(bytes: Bytes): void;
   injectTrng(bytes: Bytes): void;

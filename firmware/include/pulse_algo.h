@@ -43,6 +43,23 @@ class PulseDetector {
   float dcIr_ = 0, dcRed_ = 0, lp_ = 0, prev_ = 0, prev2_ = 0, thr_ = 0;
   uint32_t fingerSince_ = 0, lastBeat_ = 0, lastT_ = 0;
   uint32_t beatT_[32];
+  // Spoof statistics (see commitBeat / updateStats): the upstroke-midpoint (U) and steepest-point (S) fiducials of
+  // the last <= kHist beats (ticks, kept up to kHistMs), their timing error predicted from the sensor noise (ticks).
+  enum { kHist = 24 };
+  uint32_t histU_[kHist], histS_[kHist];
+  float sigU_[kHist], sigS_[kHist];
+  // cross-channel fiducials (slope centroid of the upstroke) of the same beats on IR and red: a heart moves both
+  // channels' beats together, sensor noise moves each channel's independently (see cross_score); okC_: both found
+  uint32_t histC_[kHist], histCr_[kHist];
+  float steepH_[kHist];  // the IR beat's steepest step (band-passed counts per sample)
+  uint8_t okC_[kHist];
+  int nHist_ = 0;
+  uint32_t regStartTk_ = 0;  // beats before this (ticks) are landing / restart transient: U skips them
+  bool restarted_ = false;   // the pulse restarted after a pause: S skips them too
+  float noiseMed_ = 0;       // running median of |second difference| of raw IR (sensor noise)
+  float regProgress_ = 0;    // 0..1 toward enough post-landing evidence for the spoof statistics
+  bool live_ = false;        // passed once in this session: the spoof statistics keep a lower bar
+  uint32_t slowMask_ = 0;    // bit i set: beat beatT_[i] had a slow, symmetric (sine / triangle) upstroke
   int nBeats_ = 0;
   double sumIr_ = 0, sumRed_ = 0;
   uint32_t nSamples_ = 0;
@@ -58,12 +75,13 @@ class PulseDetector {
   float fastIr_ = 0, fastRed_ = 0;  // fast EMA of raw IR/red (finger detection)
   float zIr_[4], zRed_[4];          // biquad states: high-pass [0..1], low-pass [2..3]
   float ringY_[kRing];              // band-passed IR history
+  float ringYr_[kRing];             // band-passed red history (red fiducials of the cross-channel test)
   uint32_t ringT_[kRing];           // sample timestamps (ticks)
   uint32_t ringRaw_[kRing];         // raw IR history (edge test)
   uint32_t pkIdx_ = 0, topIdx_ = 0, lastTopIdx_ = 0, bucketMs_ = 500;
   float medMs_ = 0;                 // median beat interval in the window (ms)
-  float regular_ = 0;               // "too regular" statistic over the post-landing beats (see updateStats)
-  int postBeats_ = 0;               // beats in the window that landed after the landing phase
+  float regular_ = 0;               // spoof score, >= 1 = not too regular (see updateStats)
+  int postBeats_ = 0;               // beats in the spoof-statistics history that landed after the landing phase
   uint32_t edgeMask_ = 0;           // bit i set: beat beatT_[i] had an edge-like (single-sample) upstroke
   Bucket bk_[kBuckets];
 

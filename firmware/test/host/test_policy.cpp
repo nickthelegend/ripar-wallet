@@ -1,7 +1,7 @@
-// DEPS: hashes util cbor eip712 abi protocol enforcers json_strict tokens policy review context
+// DEPS: hashes util cbor eip712 abi protocol enforcers json_strict tokens policy review context vault
 // Host tests for the pinned-context policy (src/policy.cpp), the review screens + strict caveat decoders
 // (src/review.cpp), the Context NVS blob (src/context.cpp) and the firmware token table (src/tokens.cpp).
-//   - Context: exact byte layout v2, CRC, refusal of v1 / wrong sizes / bad flags / any flipped byte
+//   - Context: exact byte layout v3, CRC, refusal of v1 / v2 / wrong sizes / bad flags / any flipped byte
 //   - token table (B3): EIP-55 of every row, AUSD 6 decimals, placeholders never match, keys 15/16 must agree
 //   - expiry (MINOR 2): UTC text, 2^40 bound, 7-day window after the monotonic "not before" time
 //   - co-sign / mandate / deny / pair / revoke / panic / reopen checks against a pinned Context (M3, B2, M7)
@@ -14,6 +14,11 @@
 //     floors; N2 re-pairing shows every changed pinned value and cannot abandon a live mandate ("REVOKE FIRST");
 //     m2 device-time ratchet (1 day per co-sign, 30-day pairing jump in red); m3 unpinned sentinel; m5 revoke / panic
 //     reviews show the enforcer that is actually signed for
+//   - firmware v1.2: compiled-in PulseCosignEnforcer / registry / relay (pair keys 3 / 5 / 7 must equal them), the vault
+//     derived from K1 (pair key 8 must equal it, absent = pinned; every mandate / co-sign delegator must equal it),
+//     context v3 (last mandate's pulse terms, unpanickedMandates), PANIC FIRST (replaces REVOKE FIRST), review lines
+//     (period text, agent id "(companion)", "<payee> becomes an AUTO payee of this mandate" exactly when the enforcer
+//     v1.2 known-payee predicate holds), MockUSD in the token table
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -30,6 +35,7 @@
 #include "review.h"
 #include "tokens.h"
 #include "util.h"
+#include "vault.h"
 #include "vectors_protocol.h"
 
 using namespace ripar;
@@ -64,12 +70,20 @@ static B32 fill32(uint8_t x) {
 }
 
 static const char* const S_PAYEE = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
-static const char* const S_VAULT = "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359";
+// firmware v1.2: the demo device (seed sha256("ripar demo seed")) and the vault it derives from its K1
+static const char* const S_K1 = "0x753454832754c071704be47915d4DeC6339624Eb";
+static const char* const S_VAULT = "0xc36F625D426eBa8f1e0129276B284a939CD3A57D";
+static const char* const S_OTHER_VAULT = "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359";
 static const char* const S_REDEEMER = "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB";
-static const char* const S_PULSE = "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb";
+// firmware v1.2: the compiled-in Ripar contracts (CREATE2, contracts/SPEC.md v1.2)
+static const char* const S_PULSE = "0x64d61fe5438981DC803ED61250FEf024617ae7eE";
 static const char* const S_SENTINEL = "0x6666666666666666666666666666666666666666";
-static const char* const S_RELAY = "0x7777777777777777777777777777777777777777";
-static const char* const S_REGISTRY = "0x8888888888888888888888888888888888888888";
+static const char* const S_RELAY = "0xE433dCA75CA6cd730b1006F51A26208B000eA9E2";
+// RiparReputationRelay on Monad (143), pinned since the firmware v1.2 review (contracts/test/FirmwarePins.t.sol)
+static const char* const S_RELAY_143 = "0x108BA102F7D0915f51c93F128b96Bd24F647f06d";
+static const char* const S_REGISTRY = "0xA08a47c9d645926615CF04D69b7a048133F68c9f";
+static const char* const S_MUSD = "0xB5b7eaffbF9bf68cbcC1Ce8B5850b2ea9d6f9a2a";
+static const char* const S_OTHER_PULSE = "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb";
 static const char* const S_DELEGATE = "0xABaBaBaBABabABabAbAbABAbABabababaBaBABaB";
 static const char* const S_AUSD = "0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC";
 static const char* const S_DM = "0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3";
@@ -101,6 +115,13 @@ static Context pinned() {
   c.minEpoch = 3;
   c.reopenNonce = 4;
   c.notBefore = 0;
+  // v3: the pulse terms of mandate 0x22..22 (golden_caveats rule 1) and "signed since the last panic"
+  c.pulseToken = A(S_AUSD);
+  c.perTxAutoCap = U256::from_u64(25000000);
+  c.periodAutoCap = U256::from_u64(50000000);
+  c.period = 86400;
+  c.newPayeeNeedsHuman = true;
+  c.unpanickedMandates = true;
   return c;
 }
 
@@ -360,8 +381,9 @@ static std::string dump(const CaveatView& v) {
 
 // ================================================================== sections
 static void test_context_blob() {
-  CHECK_SECTION("Context NVS blob v2: layout, CRC, refusals");
-  CHECK_EQ(CONTEXT_BLOB_SIZE, size_t(198));
+  CHECK_SECTION("Context NVS blob v3: layout, CRC, refusals");
+  CHECK_EQ(CONTEXT_BODY_SIZE, size_t(252));
+  CHECK_EQ(CONTEXT_BLOB_SIZE, size_t(256));
   Context c = pinned();
   c.chainId = 0x0102030405060708ull;
   c.agentId = 0x1112131415161718ull;
@@ -369,25 +391,38 @@ static void test_context_blob() {
   c.reopenNonce = 0x3132333435363738ull;
   c.notBefore = 0x4142434445464748ull;
   c.lastDelegationHash = fill32(0x5A);
+  c.perTxAutoCap = U256();
+  c.periodAutoCap = U256();
+  for (int i = 0; i < 16; i++) {
+    c.perTxAutoCap.v[16 + i] = uint8_t(0x60 + i);   // uint128: the low 16 bytes
+    c.periodAutoCap.v[16 + i] = uint8_t(0x70 + i);
+  }
+  c.period = 0x51525354u;
   uint8_t b[CONTEXT_BLOB_SIZE];
   context_serialize(c, b);
-  CHECK_EQ(int(b[0]), 2);
+  CHECK_EQ(int(b[0]), 3);
   CHECK_EQ_HEX(b + 1, 8, "0102030405060708");
   CHECK_EQ_HEX(b + 9, 20, "db9b1e94b5b69df7e401ddbede43491141047db3");
-  CHECK_EQ_HEX(b + 29, 20, "d1220a0cf47c7b9be7a2e6ba89f429762e7b9adb");
+  CHECK_EQ_HEX(b + 29, 20, "64d61fe5438981dc803ed61250fef024617ae7ee");
   CHECK_EQ_HEX(b + 49, 20, "6666666666666666666666666666666666666666");
-  CHECK_EQ_HEX(b + 69, 20, "7777777777777777777777777777777777777777");
-  CHECK_EQ_HEX(b + 89, 20, "8888888888888888888888888888888888888888");
-  CHECK_EQ_HEX(b + 109, 20, "fb6916095ca1df60bb79ce92ce3ea74c37c5d359");
+  CHECK_EQ_HEX(b + 69, 20, "e433dca75ca6cd730b1006f51a26208b000ea9e2");
+  CHECK_EQ_HEX(b + 89, 20, "a08a47c9d645926615cf04d69b7a048133f68c9f");
+  CHECK_EQ_HEX(b + 109, 20, "c36f625d426eba8f1e0129276b284a939cd3a57d");
   CHECK_EQ_HEX(b + 129, 32, "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a");
   CHECK_EQ(int(b[161]), 1);
   CHECK_EQ_HEX(b + 162, 8, "1112131415161718");
   CHECK_EQ_HEX(b + 170, 8, "2122232425262728");
   CHECK_EQ_HEX(b + 178, 8, "3132333435363738");
   CHECK_EQ_HEX(b + 186, 8, "4142434445464748");
-  const uint32_t crc = crc32(b, 194);
+  CHECK_EQ_HEX(b + 194, 20, "a9012a055bd4e0edff8ce09f960291c09d5322dc");  // v3: pulse token
+  CHECK_EQ_HEX(b + 214, 16, "606162636465666768696a6b6c6d6e6f");          // perTxAutoCap (uint128)
+  CHECK_EQ_HEX(b + 230, 16, "707172737475767778797a7b7c7d7e7f");          // periodAutoCap (uint128)
+  CHECK_EQ_HEX(b + 246, 4, "51525354");                                  // period
+  CHECK_EQ(int(b[250]), 1);                                              // newPayeeNeedsHuman
+  CHECK_EQ(int(b[251]), 1);                                              // unpanickedMandates
+  const uint32_t crc = crc32(b, 252);
   const uint8_t crcBE[4] = {uint8_t(crc >> 24), uint8_t(crc >> 16), uint8_t(crc >> 8), uint8_t(crc)};
-  CHECK_EQ_BYTES(b + 194, crcBE, 4);
+  CHECK_EQ_BYTES(b + 252, crcBE, 4);
 
   Context back;
   CHECK(context_deserialize(b, sizeof b, back));
@@ -395,6 +430,19 @@ static void test_context_blob() {
   context_serialize(back, again);
   CHECK_EQ_BYTES(again, b, sizeof b);
   CHECK(back.vault == c.vault && back.agentId == c.agentId && back.hasAgentId && back.notBefore == c.notBefore);
+  CHECK(back.pulseToken == c.pulseToken && back.period == c.period && back.newPayeeNeedsHuman &&
+        back.unpanickedMandates && back.perTxAutoCap.cmp(c.perTxAutoCap) == 0 &&
+        back.periodAutoCap.cmp(c.periodAutoCap) == 0);
+  {  // the flags round-trip as false too
+    Context f = c;
+    f.newPayeeNeedsHuman = false;
+    f.unpanickedMandates = false;
+    uint8_t fb[CONTEXT_BLOB_SIZE];
+    context_serialize(f, fb);
+    CHECK(fb[250] == 0 && fb[251] == 0);
+    Context fback;
+    CHECK(context_deserialize(fb, sizeof fb, fback) && !fback.newPayeeNeedsHuman && !fback.unpanickedMandates);
+  }
 
   // any single flipped bit is refused and leaves the output untouched
   size_t refused = 0;
@@ -414,18 +462,33 @@ static void test_context_blob() {
   std::memcpy(big, b, sizeof b);
   big[sizeof b] = 0;
   CHECK(!context_deserialize(big, sizeof big, o));
-  // version 1 (old layout) and a bad flag byte are refused even with a valid CRC
+  // versions 1 / 2 (older firmware) and a bad flag byte are refused even with a valid CRC
   uint8_t t[CONTEXT_BLOB_SIZE];
-  std::memcpy(t, b, sizeof t);
-  t[0] = 1;
-  uint32_t k = crc32(t, 194);
-  t[194] = uint8_t(k >> 24), t[195] = uint8_t(k >> 16), t[196] = uint8_t(k >> 8), t[197] = uint8_t(k);
-  CHECK(!context_deserialize(t, sizeof t, o));
-  std::memcpy(t, b, sizeof t);
-  t[161] = 2;
-  k = crc32(t, 194);
-  t[194] = uint8_t(k >> 24), t[195] = uint8_t(k >> 16), t[196] = uint8_t(k >> 8), t[197] = uint8_t(k);
-  CHECK(!context_deserialize(t, sizeof t, o));
+  const auto recrc = [](uint8_t* x) {
+    const uint32_t k = crc32(x, CONTEXT_BODY_SIZE);
+    x[252] = uint8_t(k >> 24), x[253] = uint8_t(k >> 16), x[254] = uint8_t(k >> 8), x[255] = uint8_t(k);
+  };
+  for (uint8_t ver : {uint8_t(1), uint8_t(2), uint8_t(4)}) {
+    std::memcpy(t, b, sizeof t);
+    t[0] = ver;
+    recrc(t);
+    CHECK(!context_deserialize(t, sizeof t, o));
+  }
+  for (size_t flag : {size_t(161), size_t(250), size_t(251)}) {
+    std::memcpy(t, b, sizeof t);
+    t[flag] = 2;
+    recrc(t);
+    CHECK(!context_deserialize(t, sizeof t, o));
+  }
+  {  // a genuine v2 blob of firmware v1.1 (198 bytes, its own CRC): not loaded -> the device counts as unpaired
+    uint8_t v2[198];
+    std::memcpy(v2, b, 194);
+    v2[0] = 2;
+    const uint32_t k = crc32(v2, 194);
+    v2[194] = uint8_t(k >> 24), v2[195] = uint8_t(k >> 16), v2[196] = uint8_t(k >> 8), v2[197] = uint8_t(k);
+    Context u;
+    CHECK(!context_deserialize(v2, sizeof v2, u) && !u.paired());
+  }
   // a default Context is "not paired"
   CHECK(!Context().paired());
   Context z;
@@ -461,6 +524,10 @@ static void test_tokens() {
   const Addr ausd = A(S_AUSD);
   const TokenInfo* t = token_find(10143, ausd);
   CHECK(t && t->decimals == 6 && std::string(t->symbol) == "AUSD");
+  // firmware v1.2: MockUSD (contracts/src/MockUSD.sol, CREATE2) on 10143 only, 6 decimals, symbol "mUSD"
+  t = token_find(10143, A(S_MUSD));
+  CHECK(t && t->decimals == 6 && std::string(t->symbol) == "mUSD" && std::string(t->name) == "MockUSD (Ripar demo)");
+  CHECK(token_find(143, A(S_MUSD)) == nullptr);
   CHECK(token_find(143, ausd) == nullptr);  // mainnet address not verified: not listed
   CHECK(token_find(1, ausd) == nullptr);
   CHECK(token_find(10143, Addr()) == nullptr);  // "" placeholders never match the zero address
@@ -491,6 +558,11 @@ static void test_tokens() {
   CHECK_EQ(token_amount(v, U256::from_u64(25500000)), std::string("25.5 AUSD"));
   CHECK(token_resolve(10143, true, Addr(), nullptr, nullptr, v, err));
   CHECK_EQ(token_amount(v, U256::from_u64(1)), std::string("0.000000000000000001 MON"));
+  const std::string sMusd = "mUSD", sMUSD = "MUSD";
+  CHECK(token_resolve(10143, false, A(S_MUSD), &d6, &sMusd, v, err) && v.listed && v.symbol == "mUSD");
+  CHECK_EQ(token_amount(v, U256::from_u64(1234567)), std::string("1.234567 mUSD"));
+  CHECK(!token_resolve(10143, false, A(S_MUSD), &d18, nullptr, v, err));  // a lying companion is refused
+  CHECK(!token_resolve(10143, false, A(S_MUSD), nullptr, &sMUSD, v, err));
 }
 
 static void test_time() {
@@ -524,25 +596,33 @@ static void test_time() {
 }
 
 static void test_pair_policy() {
-  CHECK_SECTION("pairing: check_pair + context_after_pair (M3)");
+  CHECK_SECTION("pairing: check_pair + context_after_pair (M3; firmware v1.2 pinned contracts + derived vault)");
   std::string err;
+  const Addr k1 = A(S_K1);
+  CHECK(vault_address(k1) == A(S_VAULT));
   for (size_t i = 0; i < sizeof(pv::PAIR) / sizeof(pv::PAIR[0]); i++) {
     CborVal m;
     CHECK(cbor_decode(HX(pv::PAIR[i].cbor), m));
     PairReq r;
     CHECK(parse_pair_req(m, r, err));
-    const bool ok = check_pair(r, Context(), err);
+    const bool ok = check_pair(r, Context(), k1, err);
     CHECK_EQ(ok, pv::PAIR[i].chainId != 1);  // chain 1 is not supported by the firmware
     if (!ok) CHECK(err.find("UNSUPPORTED CHAIN 1") != std::string::npos);
+    if (ok) {  // whatever the request left out, the device pins its compiled-in contracts and its own vault
+      const Context c = context_after_pair(Context(), r, k1);
+      CHECK(c.vault == A(S_VAULT) && c.pulseCosignEnforcer == A(S_PULSE) && c.registry == A(S_REGISTRY));
+      CHECK(c.delegationManager == A(S_DM));
+      CHECK(c.relay == A(r.chainId == 10143 ? S_RELAY : S_RELAY_143));  // both relays are compiled in
+    }
   }
   PairReq r;
   r.reqId = Bytes(16, 1);
   r.chainId = 10143;
   r.registry = A(S_REGISTRY);
-  CHECK(check_pair(r, Context(), err));
+  CHECK(check_pair(r, Context(), k1, err));
   r.manager = A(S_PAYEE);  // not the MetaMask DelegationManager compiled into the firmware
-  CHECK(!check_pair(r, Context(), err));
-  CHECK(err.find("WRONG DELEGATION MANAGER") != std::string::npos);
+  CHECK(!check_pair(r, Context(), k1, err));
+  CHECK(err.find("WRONG DELEGATION MANAGER: key 4 = ") == 0);
   r.manager = A(S_DM);
   r.enforcer = A(S_PULSE);
   r.sentinel = A(S_SENTINEL);
@@ -550,64 +630,171 @@ static void test_pair_policy() {
   r.vault = A(S_VAULT);
   r.hasNow = true;
   r.now = 1790500000;
-  CHECK(check_pair(r, Context(), err));
+  CHECK(check_pair(r, Context(), k1, err));
+
+  CHECK_SECTION("pairing: keys 3 / 5 / 7 must equal the compiled-in contracts (firmware v1.2)");
+  {
+    struct Bad {
+      const char* name;
+      int key;
+      const char* want;
+    } bad[] = {
+        {"registry", 3,
+         "WRONG REGISTRY: key 3 = 0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed is not the RiparDeviceRegistry this "
+         "firmware pins on Monad testnet (10143): 0xA08a47c9d645926615CF04D69b7a048133F68c9f"},
+        {"enforcer", 5,
+         "WRONG PULSE CO-SIGN ENFORCER: key 5 = 0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed is not the "
+         "PulseCosignEnforcer this firmware pins on Monad testnet (10143): 0x64d61fe5438981DC803ED61250FEf024617ae7eE"},
+        {"relay", 7,
+         "WRONG REPUTATION RELAY: key 7 = 0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed is not the RiparReputationRelay "
+         "this firmware pins on Monad testnet (10143): 0xE433dCA75CA6cd730b1006F51A26208B000eA9E2"},
+    };
+    for (const Bad& b : bad) {
+      PairReq x = r;
+      if (b.key == 3) x.registry = A(S_PAYEE);
+      if (b.key == 5) x.enforcer = A(S_PAYEE);
+      if (b.key == 7) x.relay = A(S_PAYEE);
+      std::string e;
+      if (!CHECK(!check_pair(x, Context(), k1, e) && e == b.want)) std::printf("     %s: %s\n", b.name, e.c_str());
+      const Review rx = review_pair(x, Context(), k1);
+      CHECK(!rx.ok && rx.refusal == e);
+      check_review_rules(rx, b.name);
+    }
+    // chain 143 (firmware v1.2 review, medium): registry, enforcer AND relay are compiled in. Before the fix any
+    // non-zero key 7 was accepted and pinned on 143, so a companion could route every deny to a contract it controls.
+    PairReq m = r;
+    m.chainId = 143;
+    m.relay = A(S_PAYEE);
+    {
+      std::string e;
+      CHECK(!check_pair(m, Context(), k1, e));
+      CHECK_EQ(e, std::string("WRONG REPUTATION RELAY: key 7 = ") + S_PAYEE +
+                      " is not the RiparReputationRelay this firmware pins on Monad (143): " + S_RELAY_143);
+      CHECK(!review_pair(m, Context(), k1).ok);
+    }
+    m.relay = A(S_RELAY_143);
+    CHECK(check_pair(m, Context(), k1, err));
+    Context c143 = context_after_pair(Context(), m, k1);
+    CHECK(c143.relay == A(S_RELAY_143) && c143.pulseCosignEnforcer == A(S_PULSE) && c143.registry == A(S_REGISTRY));
+    const Review r143 = review_pair(m, Context(), k1);
+    const RLine* l = find_line(r143, "Relay");
+    CHECK(l && l->value == std::string(S_RELAY_143) + " (firmware table)" && l->tone == Tone::Good);
+    m.relay = Addr();  // absent key 7: the compiled-in relay is pinned
+    CHECK(context_after_pair(Context(), m, k1).relay == A(S_RELAY_143));
+    const Review r143none = review_pair(m, Context(), k1);
+    l = find_line(r143none, "Relay");
+    CHECK(l && l->value == std::string(S_RELAY_143) + " (firmware table)" && l->tone == Tone::Good);
+    m.enforcer = A(S_OTHER_PULSE);
+    CHECK(!check_pair(m, Context(), k1, err) && err.find("WRONG PULSE CO-SIGN ENFORCER: key 5") == 0);
+    m.enforcer = A(S_PULSE);
+    m.registry = A(S_OTHER_PULSE);
+    CHECK(!check_pair(m, Context(), k1, err) && err.find("WRONG REGISTRY: key 3") == 0);
+    // absent keys 4 / 5 / 7 pin the compiled-in contracts (10143)
+    PairReq minimal;
+    minimal.reqId = Bytes(16, 2);
+    minimal.chainId = 10143;
+    minimal.registry = A(S_REGISTRY);
+    CHECK(check_pair(minimal, Context(), k1, err));
+    const Context cm = context_after_pair(Context(), minimal, k1);
+    CHECK(cm.delegationManager == A(S_DM) && cm.pulseCosignEnforcer == A(S_PULSE) && cm.relay == A(S_RELAY));
+    CHECK(cm.vault == A(S_VAULT) && cm.sentinel.is_zero());
+    const Review rm = review_pair(minimal, Context(), k1);
+    check_review_rules(rm, "minimal pairing");
+    l = find_line(rm, "Registry");
+    CHECK(l && l->value == std::string(S_REGISTRY) + " (firmware table)" && l->tone == Tone::Good);
+    l = find_line(rm, "Co-sign");
+    CHECK(l && l->value == std::string(S_PULSE) + " (firmware table)" && l->tone == Tone::Good);
+    l = find_line(rm, "Relay");
+    CHECK(l && l->value == std::string(S_RELAY) + " (firmware table)" && l->tone == Tone::Good);
+  }
+
+  CHECK_SECTION("pairing: the vault is derived from K1 - key 8 can only confirm it (firmware v1.2)");
+  {
+    PairReq x = r;
+    x.vault = A(S_OTHER_VAULT);  // review probe (SPEC v1.2 "Vault choice"): a companion-chosen vault
+    std::string e;
+    CHECK(!check_pair(x, Context(), k1, e));
+    CHECK_EQ(e, std::string("VAULT IS NOT THIS DEVICE'S VAULT: key 8 = ") + S_OTHER_VAULT + ", but this device's K1 " +
+                    S_K1 + " owns the vault " + S_VAULT +
+                    " (MetaMask SimpleFactory CREATE2, salt 0; leave key 8 out to pin it)");
+    const Review rx = review_pair(x, Context(), k1);
+    check_review_rules(rx, "pair with another vault");
+    CHECK(!rx.ok);
+    const RLine* l = find_line(rx, "Vault");
+    CHECK(l && l->value == std::string(S_VAULT) + " (derived from this device)");
+    l = find_line(rx, "Key 8 vault");
+    CHECK(l && l->value == std::string(S_OTHER_VAULT) + " (NOT THIS DEVICE'S VAULT)" && l->tone == Tone::Bad);
+    CHECK(context_after_pair(Context(), x, k1).vault == A(S_VAULT));  // never the companion's key 8
+    // the same request from another device (another K1): its own vault, so key 8 = S_VAULT is refused there
+    const Addr otherK1 = A(S_PAYEE);
+    CHECK(!check_pair(r, Context(), otherK1, e) && e.find("VAULT IS NOT THIS DEVICE'S VAULT") == 0);
+    x.vault = Addr();  // absent: the derived vault is pinned
+    CHECK(check_pair(x, Context(), k1, e));
+    CHECK(context_after_pair(Context(), x, k1).vault == A(S_VAULT));
+    CHECK(context_after_pair(Context(), x, otherK1).vault == vault_address(otherK1));
+    const Review rv = review_pair(x, Context(), k1);
+    CHECK(rv.ok && !find_line(rv, "Key 8 vault"));
+    l = find_line(rv, "Vault");
+    CHECK(l && l->value == std::string(S_VAULT) + " (derived from this device)" && l->tone == Tone::Good);
+  }
 
   // first pairing: everything pinned, counters start at 0
-  Context c = context_after_pair(Context(), r);
+  Context c = context_after_pair(Context(), r, k1);
   CHECK(c.paired() && c.chainId == 10143);
   CHECK(c.delegationManager == A(S_DM) && c.pulseCosignEnforcer == A(S_PULSE) && c.sentinel == A(S_SENTINEL));
   CHECK(c.relay == A(S_RELAY) && c.registry == A(S_REGISTRY) && c.vault == A(S_VAULT));
   CHECK(c.notBefore == 1790500000 && c.minEpoch == 0 && c.reopenNonce == 0 && !c.hasAgentId);
+  CHECK(!c.unpanickedMandates && c.lastDelegationHash == B32() && !c.newPayeeNeedsHuman);
   // manager omitted -> the compiled-in DelegationManager is pinned
   PairReq r2 = r;
   r2.manager = Addr();
-  CHECK(context_after_pair(Context(), r2).delegationManager == A(S_DM));
-  // re-pairing: monotonic counters survive, time never goes back, the mandate survives only in the same scope
+  CHECK(context_after_pair(Context(), r2, k1).delegationManager == A(S_DM));
+  // re-pairing: monotonic counters survive, time never goes back, the mandate (and its terms and the PANIC FIRST
+  // flag) survive in the same scope
   Context cur = pinned();
   cur.minEpoch = 9;
   cur.reopenNonce = 11;
   cur.notBefore = 1790600000;
-  Context same = context_after_pair(cur, r);
+  Context same = context_after_pair(cur, r, k1);
   CHECK(same.minEpoch == 9 && same.reopenNonce == 11 && same.notBefore == 1790600000);
   CHECK(same.lastDelegationHash == cur.lastDelegationHash && same.hasAgentId && same.agentId == 7);
+  CHECK(same.unpanickedMandates && same.pulseToken == A(S_AUSD) && same.period == 86400 && same.newPayeeNeedsHuman);
+  CHECK(same.perTxAutoCap.low_u64() == 25000000 && same.periodAutoCap.low_u64() == 50000000);
   PairReq r3 = r;
-  r3.vault = A(S_PAYEE);
-  Context moved = context_after_pair(cur, r3);
-  CHECK(moved.lastDelegationHash == B32() && !moved.hasAgentId && moved.minEpoch == 9 && moved.reopenNonce == 11);
-  r3 = r;
   r3.chainId = 143;
-  moved = context_after_pair(cur, r3);
-  CHECK(moved.chainId == 143 && moved.lastDelegationHash == B32() && moved.minEpoch == 9);
+  Context moved = context_after_pair(cur, r3, k1);  // (check_pair refuses this: PANIC FIRST, below)
+  CHECK(moved.chainId == 143 && moved.lastDelegationHash == B32() && moved.minEpoch == 9 && moved.pulseToken.is_zero());
+  CHECK(moved.unpanickedMandates);  // the flag follows the device
   r3 = r;
   r3.now = 1790700000;
-  CHECK_EQ(context_after_pair(cur, r3).notBefore, 1790700000ull);
+  CHECK_EQ(context_after_pair(cur, r3, k1).notBefore, 1790700000ull);
 
   // the pairing review shows every pinned contract in full
-  const Review rv = review_pair(r, Context(), A(S_PAYEE));
+  const Review rv = review_pair(r, Context(), k1);
   check_review_rules(rv, "review_pair");
   CHECK(rv.ok);
   const RLine* v = find_line(rv, "Vault");
-  CHECK(v && v->value == S_VAULT);
+  CHECK(v && v->value == std::string(S_VAULT) + " (derived from this device)" && v->tone == Tone::Good);
   v = find_line(rv, "Co-sign");
-  CHECK(v && v->value == S_PULSE);
+  CHECK(v && v->value == std::string(S_PULSE) + " (firmware table)");
+  v = find_line(rv, "Owner (K1)");
+  CHECK(v && v->value == S_K1);
   v = find_line(rv, "Time");
   CHECK(v && v->value == "2026-09-27 09:06:40 UTC (companion clock - check it)");
-  const Review rv2 = review_pair(r, pinned(), A(S_PAYEE));
+  const Review rv2 = review_pair(r, pinned(), k1);
   CHECK(!rv2.lines.empty() && rv2.lines[0].value.find("REPLACES the current pairing") == 0);
   CHECK(rv2.ok && rv2.lines.size() > 1 && rv2.lines[1].value == "no pinned contract changes");
   check_review_rules(rv2, "re-pair, same contracts");
 
-  CHECK_SECTION("re-pairing: changed pinned values shown, a live mandate is never abandoned (fork review N2)");
+  CHECK_SECTION("re-pairing: changed pinned values shown; PANIC FIRST (v1.2, replaces REVOKE FIRST)");
   {
-    const Context cur = pinned();  // holds the mandate 0x22..22 this device signed
+    const Context cur = pinned();  // holds the mandate 0x22..22 this device signed, no panic since
     PairReq same = r;
-    CHECK(check_pair(same, cur, err));  // same scope: allowed
-    same.sentinel = A(S_PAYEE);         // sentinel / relay / registry may change (the mandate stays tracked) ...
-    same.relay = A(S_REDEEMER);
-    same.registry = A(S_DELEGATE);
-    CHECK(check_pair(same, cur, err));
-    const Review rs = review_pair(same, cur, A(S_PAYEE));
-    check_review_rules(rs, "re-pair, sentinel / relay / registry change");
+    CHECK(check_pair(same, cur, k1, err));  // same scope: allowed
+    same.sentinel = A(S_PAYEE);             // the sentinel may change (the mandate stays tracked) ...
+    CHECK(check_pair(same, cur, k1, err));
+    const Review rs = review_pair(same, cur, k1);
+    check_review_rules(rs, "re-pair, sentinel change");
     CHECK(rs.ok);
     // ... but every changed value is shown old -> new, in red
     size_t changes = 0;
@@ -616,47 +803,108 @@ static void test_pair_policy() {
         changes++;
         CHECK(l.tone == Tone::Bad);
       }
-    CHECK_EQ(changes, size_t(3));
+    CHECK_EQ(changes, size_t(1));
     CHECK(any_value_contains(rs, std::string("Sentinel: ") + S_SENTINEL + " -> " + S_PAYEE));
-    CHECK(any_value_contains(rs, std::string("Relay: ") + S_RELAY + " -> " + S_REDEEMER));
-    CHECK(any_value_contains(rs, std::string("Registry: ") + S_REGISTRY + " -> " + S_DELEGATE));
-    // review probe: a re-pairing could silently pin another (e.g. no-op) PulseCosignEnforcer or vault
+    CHECK(context_after_pair(cur, same, k1).lastDelegationHash == cur.lastDelegationHash);
+    // a 143 context that still holds a companion-chosen relay (pinned before the 143 relay was compiled in): no deny
+    // is signed for it, and re-pairing (key 7 absent) moves it to the compiled-in relay, shown old -> new; the relay
+    // is not part of the mandate scope, so PANIC FIRST does not block it
+    {
+      PairReq p143 = r;
+      p143.chainId = 143;
+      p143.relay = Addr();
+      Context c143 = context_after_pair(Context(), p143, k1);
+      c143.relay = A(S_REDEEMER);
+      c143.lastDelegationHash = fill32(0x22);
+      c143.unpanickedMandates = true;
+      Addr pr;
+      std::string e;
+      CHECK(!pinned_relay(c143, 143, pr, e) && e.find("PINNED RELAY DIFFERS FROM FIRMWARE TABLE") == 0);
+      CHECK(check_pair(p143, c143, k1, err));
+      CHECK(context_after_pair(c143, p143, k1).relay == A(S_RELAY_143));
+      const Review rr = review_pair(p143, c143, k1);
+      CHECK(rr.ok && any_value_contains(rr, std::string("Relay: ") + S_REDEEMER + " -> " + S_RELAY_143));
+      check_review_rules(rr, "re-pair 143, relay moved to the compiled-in one");
+    }
+    // review probe: a re-pairing moves the chain (or, with an older context, the enforcer / vault) away from live
+    // mandates: after it the device's PANIC would be signed for the new chain / enforcer and no longer cover them
     struct Scope {
       const char* name;
       int which;
-    } scopes[] = {{"enforcer", 0}, {"vault", 1}, {"chain", 2}, {"vault removed", 3}};
+    } scopes[] = {{"chain", 0}, {"enforcer (stored one differs)", 1}, {"vault (stored one differs)", 2},
+                  {"manager (stored one differs)", 3}};
     for (const Scope& sc : scopes) {
       PairReq x = r;
-      if (sc.which == 0) x.enforcer = A(S_PAYEE);
-      if (sc.which == 1) x.vault = A(S_PAYEE);
-      if (sc.which == 2) x.chainId = 143;
-      if (sc.which == 3) x.vault = Addr();
+      Context from = cur;
+      if (sc.which == 0) {
+        x.chainId = 143;
+        x.relay = Addr();  // key 7 left out: the relay compiled in for 143
+      }
+      if (sc.which == 1) from.pulseCosignEnforcer = A(S_OTHER_PULSE);
+      if (sc.which == 2) from.vault = A(S_OTHER_VAULT);
+      if (sc.which == 3) from.delegationManager = A(S_PAYEE);
       std::string e;
-      const bool ok = check_pair(x, cur, e);
-      if (!CHECK(!ok && e.find("REVOKE FIRST") == 0)) std::printf("     scope %s: ok=%d err=%s\n", sc.name, ok, e.c_str());
-      CHECK(e.find(MANDATE_HASH_HEX) != std::string::npos);
-      const Review rx = review_pair(x, cur, A(S_PAYEE));
+      const bool ok = check_pair(x, from, k1, e);
+      if (!CHECK(!ok && e.find("PANIC FIRST: mandates signed on Monad testnet (10143) (PulseCosignEnforcer ") == 0))
+        std::printf("     scope %s: ok=%d err=%s\n", sc.name, ok, e.c_str());
+      CHECK(e.find(") would not be covered by PANIC after re-pairing. Sign a PANIC (home: hold 5 s) and relay it, "
+                   "then pair again") != std::string::npos);
+      CHECK(e.find("REVOKE FIRST") == std::string::npos);
+      const Review rx = review_pair(x, from, k1);
       check_review_rules(rx, sc.name);
       CHECK(!rx.ok);
-      CHECK(any_value_contains(rx, std::string("FORGETS mandate ") + MANDATE_HASH_HEX));
-      // once the mandate was revoked (the device forgets it) the same pairing is allowed and shows the change
-      Context revoked = cur;
+      CHECK(any_value_contains(rx, std::string("FORGETS mandate ") + MANDATE_HASH_HEX + " (still live: PANIC first)"));
+      // a revoke alone is not enough: earlier mandates signed since the last panic may still be live
+      Context revoked = from;
       context_after_revoke(revoked);
       CHECK(revoked.lastDelegationHash == B32() && revoked.hasAgentId && revoked.agentId == 7);
-      CHECK(check_pair(x, revoked, e) || sc.which == 2);  // (chain 143: the DelegationManager is compiled in, OK)
-      const Review ry = review_pair(x, revoked, A(S_PAYEE));
+      CHECK(revoked.unpanickedMandates);
+      CHECK(!check_pair(x, revoked, k1, e) && e.find("PANIC FIRST") == 0);
+      // after a PANIC signed by the device (it kills every mandate it signed) the same pairing is allowed and shows
+      // the change, including the forgotten (dead) mandate
+      Context panicked = from;
+      context_after_panic(panicked, panic_next_epoch(panicked));
+      CHECK(!panicked.unpanickedMandates && panicked.minEpoch == 4);
+      CHECK(check_pair(x, panicked, k1, e));
+      const Review ry = review_pair(x, panicked, k1);
       check_review_rules(ry, sc.name);
       CHECK(ry.ok);
       bool shown = false;
       for (const RLine& l : ry.lines) shown = shown || (l.label == "CHANGES" && l.tone == Tone::Bad);
       CHECK(shown);
+      // v1.2 review (low): the panic is only SIGNED, the chain kills the mandate once it is RELAYED - the device
+      // cannot see that, so the text says "once relayed" and a red PANIC line asks the user to check it on chain
+      CHECK(any_value_contains(ry, std::string("FORGETS mandate ") + MANDATE_HASH_HEX +
+                                       " (killed once this device's last PANIC is relayed)"));
+      CHECK(!any_value_contains(ry, "killed by this device's last PANIC"));
+      {
+        const RLine* pl = find_line(ry, "PANIC");
+        CHECK(pl && pl->tone == Tone::Bad &&
+              pl->value == "mandates signed on Monad testnet (10143) die only once this device's PANIC (min epoch 4) "
+                           "is relayed there - this device cannot check that. Confirm only if the on-chain min epoch "
+                           "of this device key is >= 4");
+        // no such line when the scope stays (nothing is moved away from the old mandates)
+        PairReq same = r;
+        same.now = r.now;
+        if (sc.which == 0) CHECK(!find_line(review_pair(same, panicked, k1), "PANIC"));
+      }
+      const Context after = context_after_pair(panicked, x, k1);
+      CHECK(after.lastDelegationHash == B32() && !after.unpanickedMandates && after.minEpoch == 4);
     }
     PairReq x = r;
-    x.enforcer = A(S_PAYEE);
-    const Review rx = review_pair(x, pinned(), A(S_PAYEE));
-    CHECK(any_value_contains(rx, std::string("Co-sign enforcer: ") + S_PULSE + " -> " + S_PAYEE));
-    // an unpaired device has nothing to abandon
-    CHECK(check_pair(x, Context(), err));
+    x.chainId = 143;
+    x.relay = Addr();
+    const Review rx = review_pair(x, pinned(), k1);
+    CHECK(any_value_contains(rx, "Chain: Monad testnet (10143) -> Monad (143)"));
+    // an unpaired device has nothing to abandon; a paired one without mandates since its last panic neither
+    CHECK(check_pair(x, Context(), k1, err));
+    Context quiet = pinned();
+    quiet.unpanickedMandates = false;
+    CHECK(check_pair(x, quiet, k1, err));
+    // a panic epoch that does not exceed the device's floor kills nothing: the flag stays
+    Context noKill = pinned();
+    context_after_panic(noKill, noKill.minEpoch);
+    CHECK(noKill.unpanickedMandates);
   }
 
   CHECK_SECTION("pair-req counter floors (keys 10 / 11) only raise the counters (fork review N1)");
@@ -667,11 +915,12 @@ static void test_pair_policy() {
     f.minEpoch = 12;
     f.hasReopenNonce = true;
     f.reopenNonce = 2;  // lower than the device's: ignored
-    CHECK(check_pair(f, cur, err));
-    Context n = context_after_pair(cur, f);
+    CHECK(check_pair(f, cur, k1, err));
+    Context n = context_after_pair(cur, f, k1);
     CHECK_EQ(n.minEpoch, uint64_t(12));
     CHECK_EQ(n.reopenNonce, uint64_t(4));
-    const Review rv3 = review_pair(f, cur, A(S_PAYEE));
+    CHECK(n.unpanickedMandates);  // a floor kills nothing on chain
+    const Review rv3 = review_pair(f, cur, k1);
     check_review_rules(rv3, "pair floors");
     const RLine* me = find_line(rv3, "Min epoch");
     CHECK(me && me->value == "12 RAISED from 3 (companion floor) - mandates must use it, next PANIC signs 13" &&
@@ -680,16 +929,16 @@ static void test_pair_policy() {
     CHECK(rn && rn->value == "4 - next REOPEN signs 5" && rn->tone == Tone::Dim);
     f.minEpoch = 1;  // a lower floor never lowers the counter
     f.reopenNonce = 40;
-    n = context_after_pair(cur, f);
+    n = context_after_pair(cur, f, k1);
     CHECK_EQ(n.minEpoch, uint64_t(3));
     CHECK_EQ(n.reopenNonce, uint64_t(40));
     // floors must leave headroom (the parser refuses >= 2^63 too)
     f.minEpoch = uint64_t(1) << 63;
-    CHECK(!check_pair(f, cur, err) && err == "BAD COUNTER FLOOR");
-    CHECK_EQ(context_after_pair(cur, f).minEpoch, uint64_t(3));
+    CHECK(!check_pair(f, cur, k1, err) && err == "BAD COUNTER FLOOR");
+    CHECK_EQ(context_after_pair(cur, f, k1).minEpoch, uint64_t(3));
     f.minEpoch = (uint64_t(1) << 63) - 1;
-    CHECK(check_pair(f, cur, err));
-    n = context_after_pair(cur, f);
+    CHECK(check_pair(f, cur, k1, err));
+    n = context_after_pair(cur, f, k1);
     CHECK_EQ(n.minEpoch, (uint64_t(1) << 63) - 1);
     CHECK(check_panic(n, err) && panic_next_epoch(n) == uint64_t(1) << 63);  // panic still possible
     // the Python pair vectors carry floors too (make_request.py minEpoch / reopenNonce)
@@ -701,7 +950,7 @@ static void test_pair_policy() {
       Context c;
       c.minEpoch = 5;
       c.reopenNonce = 9;
-      const Context after = context_after_pair(c, q);
+      const Context after = context_after_pair(c, q, k1);
       CHECK_EQ(after.minEpoch, v.hasMinEpoch && v.minEpoch > 5 ? v.minEpoch : 5u);
       CHECK_EQ(after.reopenNonce, v.hasReopenNonce && v.reopenNonce > 9 ? v.reopenNonce : 9u);
     }
@@ -713,7 +962,7 @@ static void test_pair_policy() {
     back.minEpoch = 7;  // on chain: minEpoch[keyId] = 7
     back.hasReopenNonce = true;
     back.reopenNonce = 3;  // the sentinel saw nonce 3
-    const Context rec = context_after_pair(lost, back);
+    const Context rec = context_after_pair(lost, back, k1);
     CHECK(panic_next_epoch(rec) == 8 && reopen_next_nonce(rec) == 4);
   }
 
@@ -721,17 +970,17 @@ static void test_pair_policy() {
   {
     PairReq t = r;
     t.now = RIPAR_TIME_FLOOR + 30ull * 86400;  // exactly 30 days after an unset device time: amber
-    const Review r30 = review_pair(t, Context(), A(S_PAYEE));
+    const Review r30 = review_pair(t, Context(), k1);
     const RLine* l = find_line(r30, "Time");
     CHECK(l && l->tone == Tone::Warn);
     t.now += 1;
-    const Review rj = review_pair(t, Context(), A(S_PAYEE));
+    const Review rj = review_pair(t, Context(), k1);
     check_review_rules(rj, "pair time jump");
     l = find_line(rj, "Time");
     CHECK(l && l->tone == Tone::Bad && l->value.find("MORE THAN 30 DAYS AFTER the device time") != std::string::npos);
     Context later;
     later.notBefore = t.now - 86400;  // a device time close to it: amber again
-    const Review rl = review_pair(t, later, A(S_PAYEE));
+    const Review rl = review_pair(t, later, k1);
     l = find_line(rl, "Time");
     CHECK(l && l->tone == Tone::Warn);
   }
@@ -756,9 +1005,14 @@ static void test_cosign_policy() {
                            {"Token", "AUSD - Agora USD", Tone::Good},
                            {"Token addr", S_AUSD, Tone::Normal},
                            {"Chain", "Monad testnet (10143)", Tone::Normal},
-                           {"Vault", S_VAULT, Tone::Good},
+                           {"Vault", std::string(S_VAULT) + " (derived from this device)", Tone::Good},
                            {"Redeemer", S_REDEEMER, Tone::Normal},
                            {"Mandate", MANDATE_HASH_HEX, Tone::Good},
+                           {"", std::string(S_PAYEE) +
+                                    " becomes an AUTO payee of this mandate: the agent can then pay it without a pulse, "
+                                    "up to 25 AUSD per payment and 50 AUSD per 86400 s = 1 d window (fixed windows from "
+                                    "the first AUTO spend)",
+                            Tone::Warn},
                            {"Expires", "2026-09-26 05:20:00 UTC", Tone::Normal},
                            {"Nonce", "7", Tone::Normal},
                            {"Budget left", "50 AUSD (companion)", Tone::Dim},
@@ -792,14 +1046,30 @@ static void test_cosign_policy() {
   }
   {
     M m = cosign_golden();
-    m.set(5, cb(A(S_PAYEE)));
-    cases.push_back({"delegator is not the vault", m, ctx, "NOT THE PAIRED VAULT"});
+    m.set(5, cb(A(S_OTHER_VAULT)));
+    cases.push_back({"delegator is not the vault", m, ctx,
+                     "NOT THIS DEVICE'S VAULT: delegator 0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359 is not the vault "
+                     "0xc36F625D426eBa8f1e0129276B284a939CD3A57D derived from this device's K1"});
+  }
+  {
+    Context c = ctx;
+    c.vault = Addr();  // cannot happen after a v1.2 pairing: fail closed
+    cases.push_back({"no vault pinned", cosign_golden(), c, "NO VAULT PINNED - pair again"});
   }
   cases.push_back({"not paired", cosign_golden(), Context(), "NOT PAIRED"});
   {
     Context c = ctx;
-    c.pulseCosignEnforcer = Addr();  // compiled-in address is still a placeholder
-    cases.push_back({"no enforcer pinned", cosign_golden(), c, "NO PULSE CO-SIGN ENFORCER PINNED"});
+    c.pulseCosignEnforcer = A(S_OTHER_PULSE);  // a stored enforcer that is not the compiled-in one
+    cases.push_back({"stored enforcer differs from the firmware table", cosign_golden(), c,
+                     "PINNED ENFORCER DIFFERS FROM FIRMWARE TABLE"});
+  }
+  {
+    Context c = ctx;  // a chain without a compiled-in enforcer and none pinned
+    c.chainId = 777;
+    c.pulseCosignEnforcer = Addr();
+    M m = cosign_golden();
+    m.set(2, cu(777));
+    cases.push_back({"no enforcer pinned", m, c, "NO PULSE CO-SIGN ENFORCER PINNED"});
   }
   {
     M m = cosign_golden();
@@ -845,13 +1115,23 @@ static void test_cosign_policy() {
     later.notBefore = 1790500000;
     CHECK(check_cosign(q, later, e));
   }
-  // placeholder in the compiled table -> the address pinned at pairing is the one used
+  // firmware v1.2: the compiled-in enforcer is the one used (an empty stored one too); only a chain without one uses
+  // the address pinned at pairing
   {
     Addr compiled;
-    CHECK(!compiled_cosign_enforcer(10143, compiled));  // TODO(team) after deployment: then update this test
+    CHECK(compiled_cosign_enforcer(10143, compiled) && compiled == A(S_PULSE));
+    CHECK(compiled_cosign_enforcer(143, compiled) && compiled == A(S_PULSE));
+    CHECK(!compiled_cosign_enforcer(1, compiled));
     Addr out;
     std::string e;
     CHECK(pinned_cosign_enforcer(ctx, 10143, out, e) && out == A(S_PULSE));
+    Context empty = ctx;
+    empty.pulseCosignEnforcer = Addr();
+    CHECK(pinned_cosign_enforcer(empty, 10143, out, e) && out == A(S_PULSE));
+    Context other = ctx;
+    other.chainId = 777;
+    other.pulseCosignEnforcer = A(S_OTHER_PULSE);
+    CHECK(pinned_cosign_enforcer(other, 777, out, e) && out == A(S_OTHER_PULSE));
   }
 
   CHECK_SECTION("co-sign: review probes MINOR 1 (AI claims) + B3 (token table)");
@@ -908,6 +1188,7 @@ static void test_cosign_policy() {
     CosignReq q;
     std::string e;
     CHECK(parse_cosign_req(m, q, e));
+    CHECK(q.enforcer == A(S_PULSE) && q.h.delegator == A(S_VAULT));  // v1.2 vectors: compiled enforcer, derived vault
     Context c = ctx;
     c.pulseCosignEnforcer = q.enforcer;
     c.vault = q.h.delegator;
@@ -963,6 +1244,176 @@ static void test_cosign_policy() {
                     (q.token.listed && amt->value.find(" " + q.token.symbol) != std::string::npos)));
   }
   CHECK(okCount >= 10);
+
+  CHECK_SECTION("co-sign: '<payee> becomes an AUTO payee' exactly when the enforcer v1.2 predicate holds");
+  {
+    const auto wl_line = [](const Review& rv) -> const RLine* {
+      for (const RLine& l : rv.lines)
+        if (l.label.empty() && l.value.find(" becomes an AUTO payee of this mandate") != std::string::npos) return &l;
+      return nullptr;
+    };
+    const Addr payee = A(S_PAYEE);
+    struct Case {
+      const char* name;
+      Bytes calldata;
+      Addr target;
+      uint64_t value;
+      int ctxKind;  // 0 pinned() (AUSD terms), 1 native terms, 2 newPayeeNeedsHuman false, 3 other mandate hash,
+                    // 4 period 0, 5 no remembered mandate
+      bool want;
+      const char* payee;  // expected payee in the line
+    };
+    const Bytes xfer = transfer_calldata(payee, 25500000);
+    std::vector<Case> cs = {
+        {"AUSD transfer to a new payee", xfer, A(S_AUSD), 0, 0, true, S_PAYEE},
+        {"AUSD transfer of 0", transfer_calldata(payee, 0), A(S_AUSD), 0, 0, false, nullptr},
+        {"transfer on another token", xfer, A(S_MUSD), 0, 0, false, nullptr},
+        {"AUSD approve", cat({HX("095ea7b3"), addr_word(payee), word64(5)}), A(S_AUSD), 0, 0, false, nullptr},
+        {"AUSD transferFrom", cat({HX("23b872dd"), addr_word(A(S_VAULT)), addr_word(payee), word64(5)}), A(S_AUSD), 0,
+         0, false, nullptr},
+        {"AUSD transfer to the zero address", transfer_calldata(Addr(), 5), A(S_AUSD), 0, 0, false, nullptr},
+        {"AUSD transfer with native value", xfer, A(S_AUSD), 1, 0, false, nullptr},
+        {"native send under AUSD terms", Bytes(), payee, 1000, 0, false, nullptr},
+        {"native send under native terms", Bytes(), payee, 1000000000000000000ull, 1, true, S_PAYEE},
+        {"native send of 0 under native terms", Bytes(), payee, 0, 1, false, nullptr},
+        {"AUSD transfer under native terms", xfer, A(S_AUSD), 0, 1, false, nullptr},
+        {"newPayeeNeedsHuman false", xfer, A(S_AUSD), 0, 2, false, nullptr},
+        {"another mandate", xfer, A(S_AUSD), 0, 3, false, nullptr},
+        {"lifetime cap (period 0)", xfer, A(S_AUSD), 0, 4, true, S_PAYEE},
+        {"no mandate remembered (revoked)", xfer, A(S_AUSD), 0, 5, false, nullptr},
+    };
+    for (const Case& c : cs) {
+      Context x = pinned();
+      if (c.ctxKind == 1) {
+        x.pulseToken = Addr();
+        x.perTxAutoCap = U256::from_u64(500000000000000000ull);
+        x.periodAutoCap = U256::from_u64(2000000000000000000ull);
+        x.period = 3600;
+      }
+      if (c.ctxKind == 2) x.newPayeeNeedsHuman = false;
+      if (c.ctxKind == 3) x.lastDelegationHash = fill32(0x23);
+      if (c.ctxKind == 4) x.period = 0;
+      if (c.ctxKind == 5) context_after_revoke(x);
+      M m = cosign_golden();
+      m.set(9, cb(c.calldata)).set(7, cb(c.target)).set(8, cb(word64(c.value))).del(13).del(15).del(16).del(14);
+      CosignReq q;
+      if (!CHECK(parse_cosign(m, q))) continue;
+      Addr got;
+      const bool wl = cosign_whitelists_payee(q, x, got);
+      const Review rv2 = review_cosign(q, x);
+      const RLine* l = wl_line(rv2);
+      if (!CHECK(wl == c.want && (l != nullptr) == c.want)) {
+        std::printf("     case %s: predicate=%d line=%d\n", c.name, wl ? 1 : 0, l ? 1 : 0);
+        print_review(rv2);
+      }
+      check_review_rules(rv2, c.name);
+      if (c.want && l) {
+        CHECK(got == A(c.payee) && l->tone == Tone::Warn && l->value.find(c.payee) == 0);
+        if (c.ctxKind == 1)
+          CHECK_EQ(l->value, std::string(S_PAYEE) +
+                                 " becomes an AUTO payee of this mandate: the agent can then pay it without a pulse, up "
+                                 "to 0.5 MON per payment and 2 MON per 3600 s = 1 h window (fixed windows from the "
+                                 "first AUTO spend)");
+        if (c.ctxKind == 4)
+          CHECK_EQ(l->value, std::string(S_PAYEE) +
+                                 " becomes an AUTO payee of this mandate: the agent can then pay it without a pulse, up "
+                                 "to 25 AUSD per payment and 50 AUSD in total (lifetime cap)");
+      }
+    }
+    // firmware v1.2 review (low): a REFUSED co-sign never shows the AUTO payee line (nothing is signed, nothing is
+    // whitelisted) - before the fix the golden co-sign with another vault as delegator showed it under REFUSED
+    {
+      M m = cosign_golden();
+      m.set(5, cb(A(S_OTHER_VAULT)));
+      CosignReq q;
+      CHECK(parse_cosign(m, q));
+      std::string e;
+      CHECK(!check_cosign(q, pinned(), e) && e.find("NOT THIS DEVICE'S VAULT") == 0);
+      Addr got;
+      CHECK(!cosign_whitelists_payee(q, pinned(), got));
+      CHECK(!cosign_may_whitelist_payee(q, pinned(), got));
+      const Review rv2 = review_cosign(q, pinned());
+      CHECK(!rv2.ok);
+      CHECK(!any_value_contains(rv2, "becomes an AUTO payee"));
+      CHECK(!any_value_contains(rv2, "AUTO payee"));
+      check_review_rules(rv2, "refused co-sign: no AUTO payee line");
+      // the same with a wrong chain / enforcer / an expiry too far: refused, no AUTO line either
+      Context wrongChain = pinned();
+      wrongChain.chainId = 143;
+      CHECK(!cosign_whitelists_payee(q, wrongChain, got));
+      CosignReq far;
+      CHECK(parse_cosign(cosign_golden(), far));
+      far.h.expiry = uint64_t(1) << 41;
+      CHECK(!check_cosign(far, pinned(), e) && !cosign_whitelists_payee(far, pinned(), got));
+      CHECK(!any_value_contains(review_cosign(far, pinned()), "AUTO payee"));
+    }
+    // firmware v1.2 review (low): a co-sign under a mandate the device does not remember (an older one, one revoked
+    // since) can whitelist its payee on chain for that mandate's caps, which the device does not know: the review says
+    // so ("may become an AUTO payee"); before the fix it showed only UNKNOWN MANDATE
+    {
+      const auto may_line = [](const Review& rv) -> const RLine* {
+        for (const RLine& l : rv.lines)
+          if (l.label.empty() && l.value.find(" may become an AUTO payee of mandate ") != std::string::npos) return &l;
+        return nullptr;
+      };
+      struct May {
+        const char* name;
+        Bytes calldata;
+        Addr target;
+        uint64_t value;
+        int ctxKind;  // 0 pinned() (the golden co-sign's mandate), 1 another remembered mandate, 2 revoked, 3 refused
+        const char* payee;  // the payee of the line, nullptr = no line
+      };
+      const std::vector<May> ms = {
+          {"remembered mandate", xfer, A(S_AUSD), 0, 0, nullptr},
+          {"older mandate: AUSD transfer", xfer, A(S_AUSD), 0, 1, S_PAYEE},
+          {"older mandate: transfer on another token", xfer, A(S_MUSD), 0, 1, S_PAYEE},
+          {"older mandate: native send", Bytes(), payee, 1000, 1, S_PAYEE},
+          {"older mandate: native send of 0", Bytes(), payee, 0, 1, nullptr},
+          {"older mandate: transfer of 0", transfer_calldata(payee, 0), A(S_AUSD), 0, 1, nullptr},
+          {"older mandate: transfer to 0", transfer_calldata(Addr(), 5), A(S_AUSD), 0, 1, nullptr},
+          {"older mandate: approve", cat({HX("095ea7b3"), addr_word(payee), word64(5)}), A(S_AUSD), 0, 1, nullptr},
+          {"revoked (unrelayed) mandate: AUSD transfer", xfer, A(S_AUSD), 0, 2, S_PAYEE},
+          {"older mandate, refused (other vault)", xfer, A(S_AUSD), 0, 3, nullptr},
+      };
+      for (const May& c : ms) {
+        Context x = pinned();
+        if (c.ctxKind == 1 || c.ctxKind == 3) x.lastDelegationHash = fill32(0x23);
+        if (c.ctxKind == 2) context_after_revoke(x);
+        M m = cosign_golden();
+        m.set(9, cb(c.calldata)).set(7, cb(c.target)).set(8, cb(word64(c.value))).del(13).del(15).del(16).del(14);
+        if (c.ctxKind == 3) m.set(5, cb(A(S_OTHER_VAULT)));
+        CosignReq q;
+        if (!CHECK(parse_cosign(m, q))) continue;
+        Addr got;
+        const bool may = cosign_may_whitelist_payee(q, x, got);
+        const Review rv2 = review_cosign(q, x);
+        const RLine* l = may_line(rv2);
+        if (!CHECK(may == (c.payee != nullptr) && (l != nullptr) == (c.payee != nullptr))) {
+          std::printf("     case %s: predicate=%d line=%d\n", c.name, may ? 1 : 0, l ? 1 : 0);
+          print_review(rv2);
+        }
+        if (c.ctxKind != 0) CHECK(!wl_line(rv2));  // never "becomes": the device does not know those terms
+        check_review_rules(rv2, c.name);
+        if (c.payee && l) {
+          CHECK(got == A(c.payee) && l->tone == Tone::Warn);
+          CHECK_EQ(l->value, std::string(c.payee) + " may become an AUTO payee of mandate " +
+                                 to_hex(q.h.delegationHash.v, 32) +
+                                 ": the agent could then pay it without a pulse, up to caps this device does not know");
+          CHECK(any_value_contains(rv2, "UNKNOWN MANDATE - not the last mandate this device signed"));
+        }
+      }
+    }
+    // after a PANIC the remembered mandate is marked as killed (once relayed)
+    Context p = pinned();
+    context_after_panic(p, panic_next_epoch(p));
+    CosignReq q;
+    CHECK(parse_cosign(cosign_golden(), q));
+    const Review rp = review_cosign(q, p);
+    CHECK(any_value_contains(rp, "this device signed a PANIC after this mandate: once that PANIC is relayed, the chain "
+                                 "refuses it"));
+    CHECK(!any_value_contains(review_cosign(q, pinned()), "signed a PANIC after this mandate"));
+  }
 }
 
 static void test_mandate_policy() {
@@ -978,9 +1429,9 @@ static void test_mandate_policy() {
   check_review_rules(rv, "golden mandate");
   CHECK(same_lines(rv, {
                            {"Label", "Rent agent (companion)", Tone::Dim},
-                           {"Agent id", "7", Tone::Normal},
+                           {"Agent id", "7 (companion)", Tone::Normal},
                            {"Delegate", S_DELEGATE, Tone::Normal},
-                           {"Vault", S_VAULT, Tone::Good},
+                           {"Vault", std::string(S_VAULT) + " (derived from this device)", Tone::Good},
                            {"Chain", "Monad testnet (10143)", Tone::Normal},
                            {"Manager", S_DM, Tone::Normal},
                            {"Rule 1/9", "Pulse co-sign + spend caps", Tone::Normal},
@@ -989,7 +1440,7 @@ static void test_mandate_policy() {
                            {"Token addr", S_AUSD, Tone::Normal},
                            {"Auto per tx", "25 AUSD", Tone::Normal},
                            {"Auto per period", "50 AUSD", Tone::Normal},
-                           {"Period", "86400 s = 1 d", Tone::Normal},
+                           {"Period", "86400 s = 1 d (fixed windows from the first AUTO spend)", Tone::Normal},
                            {"Epoch", "3 (= panic floor)", Tone::Normal},
                            {"New payees", "need a pulse co-sign", Tone::Good},
                            {"Sentinel", S_SENTINEL, Tone::Good},
@@ -1030,15 +1481,51 @@ static void test_mandate_policy() {
                            {"Authority", "ROOT (new mandate, not a re-delegation)", Tone::Dim},
                        }));
 
-  // the device records exactly the mandate it signed (M3: Context written only by the device's own mandates)
+  // the device records exactly the mandate it signed (M3: Context written only by the device's own mandates), its
+  // pulse terms (v3, for the co-sign review) and that no panic covers it yet (PANIC FIRST)
   Context after = ctx;
+  after.unpanickedMandates = false;
+  after.pulseToken = Addr();
+  after.period = 7;
   context_after_mandate(after, r);
   CHECK(after.lastDelegationHash == hash_delegation(r.d));
   CHECK(after.hasAgentId && after.agentId == 7);
+  CHECK(after.unpanickedMandates);
+  CHECK(after.pulseToken == A(S_AUSD) && after.period == 86400 && after.newPayeeNeedsHuman);
+  CHECK(after.perTxAutoCap.low_u64() == 25000000 && after.periodAutoCap.low_u64() == 50000000);
   MandateReq noAgent = r;
   noAgent.hasAgentId = false;
   context_after_mandate(after, noAgent);
   CHECK(!after.hasAgentId && after.agentId == 0);
+  {  // native terms, period 0, newPayeeNeedsHuman false: stored as signed; the review says "lifetime cap"
+    std::vector<CborVal> v = golden_caveats(xy);
+    v[0] = caveat(A(S_PULSE), pulse_terms(xy, Addr(), 7, 9, 0, 3, false, A(S_SENTINEL)));
+    MandateReq q;
+    CHECK(parse_mandate(mandate_with(v), q));
+    std::string e;
+    CHECK(check_mandate(q, ctx, xy.data(), e));
+    Context n = ctx;
+    context_after_mandate(n, q);
+    CHECK(n.pulseToken.is_zero() && n.period == 0 && !n.newPayeeNeedsHuman && n.perTxAutoCap.low_u64() == 7 &&
+          n.periodAutoCap.low_u64() == 9);
+    const Review rq = review_mandate(q, ctx, xy.data());
+    const RLine* l = find_line(rq, "Period");
+    CHECK(l && l->value == "never resets (lifetime cap)");
+    l = find_line(rq, "Metered");
+    CHECK(l && l->value == "MON only (native)");
+    // the stored context round-trips through the NVS blob with the terms
+    uint8_t blob[CONTEXT_BLOB_SIZE];
+    context_serialize(n, blob);
+    Context back;
+    CHECK(context_deserialize(blob, sizeof blob, back) && back.unpanickedMandates && back.periodAutoCap.low_u64() == 9);
+  }
+  {  // a mandate without an agent id: "none"
+    MandateReq q = r;
+    q.hasAgentId = false;
+    const Review rn = review_mandate(q, ctx, xy.data());
+    const RLine* l = find_line(rn, "Agent id");
+    CHECK(l && l->value == "none");
+  }
 
   CHECK_SECTION("mandate: refusals (B2 probes, pinned manager / vault, stale epoch, undecodable caveats)");
   struct Case {
@@ -1060,8 +1547,14 @@ static void test_mandate_policy() {
                    "MANDATE WITHOUT PULSE CO-SIGN (2 pulse co-sign caveats; exactly one is allowed)"});
   {
     Context c = ctx;
-    c.pulseCosignEnforcer = Addr();
-    cases.push_back({"no enforcer pinned", g, 0, Addr(), c, "MANDATE WITHOUT PULSE CO-SIGN: NO PULSE CO-SIGN ENFORCER PINNED"});
+    c.pulseCosignEnforcer = A(S_OTHER_PULSE);
+    cases.push_back({"stored enforcer differs from the firmware table", g, 0, Addr(), c,
+                     "MANDATE WITHOUT PULSE CO-SIGN: PINNED ENFORCER DIFFERS FROM FIRMWARE TABLE"});
+  }
+  {
+    Context c = ctx;
+    c.vault = Addr();
+    cases.push_back({"no vault pinned", g, 0, Addr(), c, "NO VAULT PINNED - pair again"});
   }
   {
     std::vector<CborVal> v = g;
@@ -1121,7 +1614,15 @@ static void test_mandate_policy() {
   }
   cases.push_back({"chain 143", g, 2, Addr(), ctx, "WRONG CHAIN"});
   cases.push_back({"companion-chosen manager", g, 3, A(S_PAYEE), ctx, "WRONG DELEGATION MANAGER"});
-  cases.push_back({"delegator is not the vault", g, 5, A(S_PAYEE), ctx, "NOT THE PAIRED VAULT"});
+  {
+    // v1.2 review (info): a stored manager other than the compiled-in one is refused like a stored enforcer / relay,
+    // even when the request names that stored manager
+    Context c = ctx;
+    c.delegationManager = A(S_PAYEE);
+    cases.push_back({"stored manager differs from the firmware table", g, 3, A(S_PAYEE), c,
+                     "PINNED DELEGATION MANAGER DIFFERS FROM FIRMWARE TABLE - pair again"});
+  }
+  cases.push_back({"delegator is not the vault", g, 5, A(S_OTHER_VAULT), ctx, "NOT THIS DEVICE'S VAULT: delegator "});
   {
     Addr any;
     any.v[18] = 0x0a;
@@ -1200,7 +1701,8 @@ static void test_mandate_policy() {
     l = find_line(rp, "Sentinel");  // named, not pinned: red
     CHECK(l && l->tone == Tone::Bad && l->value == std::string(S_SENTINEL) + " (NOT PINNED)");
   }
-  // without a pinned vault any delegator is accepted (and shown in full)
+  // firmware v1.2 (review probe "Vault choice"): without a pinned vault NOTHING is signed any more (v1.1 accepted any
+  // delegator), and another vault is shown in red
   {
     Context c = ctx;
     c.vault = Addr();
@@ -1209,16 +1711,25 @@ static void test_mandate_policy() {
     MandateReq q;
     CHECK(parse_mandate(m, q));
     std::string e;
-    CHECK(check_mandate(q, c, xy.data(), e));
-    const Review rv3 = review_mandate(q, c, xy.data());
+    CHECK(!check_mandate(q, c, xy.data(), e) && e.find("NO VAULT PINNED") == 0);
+    const Review rv3 = review_mandate(q, ctx, xy.data());
     const RLine* l = find_line(rv3, "Vault");
-    CHECK(l && l->value == S_PAYEE && l->tone == Tone::Normal);
+    CHECK(l && l->value == S_PAYEE && l->tone == Tone::Bad && !rv3.ok);
   }
-  // enforcer_name() (no context) never calls the Ripar enforcer known while the address is a placeholder
-  CHECK(enforcer_name(10143, A(S_PULSE)) == nullptr);
+  // enforcer_name() (no context) knows the compiled-in Ripar enforcer on both chains; another address is only a
+  // pulse co-sign enforcer on a chain without a compiled one, when it was pinned at pairing
+  CHECK(enforcer_name(10143, A(S_PULSE)) != nullptr && enforcer_name(143, A(S_PULSE)) != nullptr);
   CHECK(enforcer_kind(10143, A(S_PULSE), ctx) == EnfKind::PulseCosign);
-  CHECK(enforcer_kind(143, A(S_PULSE), ctx) == EnfKind::Unknown);  // pinned for 10143 only
-  CHECK(enforcer_kind(10143, A(S_PULSE), Context()) == EnfKind::Unknown);
+  CHECK(enforcer_kind(143, A(S_PULSE), ctx) == EnfKind::PulseCosign);
+  CHECK(enforcer_kind(10143, A(S_PULSE), Context()) == EnfKind::PulseCosign);
+  CHECK(enforcer_kind(1, A(S_PULSE), Context()) == EnfKind::Unknown);
+  {
+    Context other = ctx;
+    other.pulseCosignEnforcer = A(S_OTHER_PULSE);
+    CHECK(enforcer_kind(10143, A(S_OTHER_PULSE), other) == EnfKind::Unknown);  // the compiled one wins
+    other.chainId = 777;
+    CHECK(enforcer_kind(777, A(S_OTHER_PULSE), other) == EnfKind::PulseCosign);
+  }
 
   CHECK_SECTION("mandate: Python vector (independent decoder) passes the policy");
   for (const pv::PolicyMandate& pm : pv::POLICY_MANDATE) {
@@ -1257,9 +1768,10 @@ static void test_mandate_policy() {
     MandateReq q;
     std::string e;
     CHECK(parse_mandate_req(m, q, e));
+    CHECK(q.d.delegator == A(S_VAULT));  // v1.2 vectors: the demo device's derived vault
     Context c = ctx;
     c.chainId = q.chainId;
-    c.vault = Addr();
+    c.vault = q.d.delegator;
     CHECK(!check_mandate(q, c, xy.data(), e) && e.find("MANDATE WITHOUT PULSE CO-SIGN") == 0);
     check_review_rules(review_mandate(q, c, xy.data()), pv::MANDATE[i].name);
   }
@@ -1377,12 +1889,34 @@ static void test_deny_policy() {
   c = ctx;
   c.relay = Addr();
   CHECK(!check_deny(d, c, err) && err.find("NO REPUTATION RELAY PINNED") == 0);
-  for (const pv::Deny& v : pv::DENY) {  // companion requests with random relays / agents: refused
+  c = ctx;
+  c.relay = A(S_PAYEE);  // a stored relay that is not the compiled-in one (10143)
+  CHECK(!check_deny(d, c, err) && err.find("PINNED RELAY DIFFERS FROM FIRMWARE TABLE") == 0);
+  CHECK(!deny_from_cosign(CosignReq(), c, x, err) && err.find("CANNOT FILE A DENY: PINNED RELAY DIFFERS") == 0);
+  c.chainId = 143;  // 143: the compiled-in relay too (firmware v1.2 review); a different stored one is refused
+  x = d;
+  x.chainId = 143;
+  x.relay = A(S_PAYEE);
+  CHECK(!check_deny(x, c, err) && err.find("PINNED RELAY DIFFERS FROM FIRMWARE TABLE") == 0);
+  c.relay = A(S_RELAY_143);
+  CHECK(!check_deny(x, c, err) && err.find("RELAY NOT PINNED") == 0);
+  x.relay = A(S_RELAY_143);
+  CHECK(check_deny(x, c, err));
+  CHECK(deny_from_cosign(CosignReq(), c, x, err) && x.relay == A(S_RELAY_143) && x.chainId == 143);
+  {
+    Addr compiled;
+    CHECK(compiled_relay(10143, compiled) && compiled == A(S_RELAY));
+    CHECK(compiled_relay(143, compiled) && compiled == A(S_RELAY_143));
+    CHECK(compiled_registry(10143, compiled) && compiled == A(S_REGISTRY));
+    CHECK(compiled_registry(143, compiled) && compiled == A(S_REGISTRY));
+  }
+  for (const pv::Deny& v : pv::DENY) {  // companion requests: only the pinned relay + agent pass
     CborVal m;
     CHECK(cbor_decode(HX(v.cbor), m));
     DenyReq q;
     CHECK(parse_deny_req(m, q, err));
-    CHECK(!check_deny(q, ctx, err));
+    const bool want = q.chainId == 10143 && q.relay == A(S_RELAY) && q.agentId == 7;
+    CHECK_EQ(check_deny(q, ctx, err), want);
   }
   // deny from a co-sign review: built by the device, requestHash = hashStruct(HumanApproval) with presence 0
   CosignReq cr;
@@ -1407,7 +1941,7 @@ static void test_deny_policy() {
   CHECK(!deny_from_cosign(cr, c, built, err));
   c = ctx;
   c.relay = Addr();
-  CHECK(!deny_from_cosign(cr, c, built, err));
+  CHECK(!deny_from_cosign(cr, c, built, err) && err == "CANNOT FILE A DENY: NO REPUTATION RELAY PINNED - pair again");
   CHECK(!deny_from_cosign(cr, Context(), built, err));
   const Review rv2 = review_deny(d, ctx, false);
   CHECK(any_value_contains(rv2, "from the companion (not checked)"));
@@ -1433,7 +1967,8 @@ static void test_device_initiated() {
     CHECK(pinned_cosign_enforcer(ctx, ctx.chainId, signedFor, e));
     CHECK(find_line(rv, "Enforcer") && find_line(rv, "Enforcer")->value == addr_checksum(signedFor));
     CHECK(find_line(review_panic(ctx), "Enforcer")->value == addr_checksum(signedFor));
-    Context none = ctx;  // paired, but no enforcer pinned and none compiled in: shown as such, refused
+    Context none = ctx;  // paired, but no enforcer pinned and none compiled in (a chain without one): refused
+    none.chainId = 777;
     none.pulseCosignEnforcer = Addr();
     const Review rn = review_revoke(none);
     CHECK(!rn.ok && find_line(rn, "Enforcer") && find_line(rn, "Enforcer")->value == "none pinned");
@@ -1482,16 +2017,34 @@ static void test_device_initiated() {
     context_after_cosign(fresh, cr);
     CHECK_EQ(fresh.notBefore, uint64_t(RIPAR_TIME_FLOOR) + NOT_BEFORE_STEP);
   }
-  // revoke: the mandate is forgotten, nothing else changes
+  // revoke: the mandate (and its terms) is forgotten, nothing else changes - PANIC FIRST stays set (earlier mandates
+  // may still be live)
   {
     Context before = pinned(), after = before;
     context_after_revoke(after);
-    CHECK(after.lastDelegationHash == B32());
+    CHECK(after.lastDelegationHash == B32() && after.pulseToken.is_zero() && after.period == 0 &&
+          after.perTxAutoCap.is_zero() && after.periodAutoCap.is_zero() && !after.newPayeeNeedsHuman);
+    CHECK(after.unpanickedMandates && after.hasAgentId && after.agentId == 7);
     after.lastDelegationHash = before.lastDelegationHash;
+    after.pulseToken = before.pulseToken;
+    after.perTxAutoCap = before.perTxAutoCap;
+    after.periodAutoCap = before.periodAutoCap;
+    after.period = before.period;
+    after.newPayeeNeedsHuman = before.newPayeeNeedsHuman;
     uint8_t x[CONTEXT_BLOB_SIZE], y[CONTEXT_BLOB_SIZE];
     context_serialize(before, x);
     context_serialize(after, y);
     CHECK(std::memcmp(x, y, CONTEXT_BLOB_SIZE) == 0);
+  }
+  // panic: the flag is cleared only by an epoch above the device's floor (a signed panic always is)
+  {
+    Context p = pinned();
+    CHECK(p.unpanickedMandates);
+    context_after_panic(p, p.minEpoch);
+    CHECK(p.unpanickedMandates && p.minEpoch == 3);
+    context_after_panic(p, panic_next_epoch(p));
+    CHECK(!p.unpanickedMandates && p.minEpoch == 4);
+    CHECK(p.lastDelegationHash == fill32(0x22));  // remembered (revoke still possible), but killed on chain
   }
 
   Context c = pinned();

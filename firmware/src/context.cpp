@@ -50,6 +50,16 @@ void context_serialize(const Context& c, uint8_t out[CONTEXT_BLOB_SIZE]) {
   p += 8;
   put_u64(p, c.notBefore);
   p += 8;
+  std::memcpy(p, c.pulseToken.v, 20);
+  p += 20;
+  std::memcpy(p, c.perTxAutoCap.v + 16, 16);  // uint128
+  p += 16;
+  std::memcpy(p, c.periodAutoCap.v + 16, 16);
+  p += 16;
+  put_u32(p, c.period);
+  p += 4;
+  *p++ = c.newPayeeNeedsHuman ? 1 : 0;
+  *p++ = c.unpanickedMandates ? 1 : 0;
   put_u32(p, crc32(out, CONTEXT_BODY_SIZE));
 }
 
@@ -77,6 +87,18 @@ bool context_deserialize(const uint8_t* p, size_t n, Context& out) {
   c.reopenNonce = get_u64(q);
   q += 8;
   c.notBefore = get_u64(q);
+  q += 8;
+  std::memcpy(c.pulseToken.v, q, 20);
+  q += 20;
+  std::memcpy(c.perTxAutoCap.v + 16, q, 16);
+  q += 16;
+  std::memcpy(c.periodAutoCap.v + 16, q, 16);
+  q += 16;
+  c.period = get_u32(q);
+  q += 4;
+  if (q[0] > 1 || q[1] > 1) return false;
+  c.newPayeeNeedsHuman = q[0] == 1;
+  c.unpanickedMandates = q[1] == 1;
   out = c;
   return true;
 }

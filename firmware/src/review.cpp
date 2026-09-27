@@ -111,6 +111,13 @@ class Out {
 
 std::string of(size_t i, size_t n) { return u64_text(i + 1) + "/" + u64_text(n); }
 
+// PulseCosignEnforcer AUTO period (contracts/SPEC.md v1.2 "AUTO windows"): 0 = a lifetime cap; otherwise fixed windows
+// anchored at the first AUTO spend (so up to 2x the cap can leave within seconds across a window boundary)
+std::string auto_period_text(uint32_t period) {
+  if (period == 0) return "never resets (lifetime cap)";
+  return duration_text(U256::from_u64(period)) + " (fixed windows from the first AUTO spend)";
+}
+
 // The PulseCosignEnforcer a revoke / panic is signed for: exactly what respond.cpp uses (policy.h
 // pinned_cosign_enforcer, which prefers the compiled-in address), never just the stored one (security review m5).
 std::string signing_enforcer(const Context& ctx) {
@@ -289,9 +296,9 @@ Review review_pair(const PairReq& r, const Context& cur, const Addr& k1) {
   rv.title = "PAIR DEVICE";
   Out o(rv);
   std::string err;
-  o.refused(check_pair(r, cur, err), err);
+  o.refused(check_pair(r, cur, k1, err), err);
   // what will be pinned (compiled-in addresses fill the gaps, exactly as context_after_pair does)
-  const Context next = context_after_pair(cur, r);
+  const Context next = context_after_pair(cur, r, k1);
   if (cur.paired()) {
     o.add("", "REPLACES the current pairing (" + chain_text(cur.chainId) + ")", Tone::Warn);
     // security review N2: every pinned value this pairing changes, old -> new, in red
@@ -310,15 +317,27 @@ Review review_pair(const PairReq& r, const Context& cur, const Addr& k1) {
     change("Registry", AZ(cur.registry), AZ(next.registry));
     change("Vault", AZ(cur.vault), AZ(next.vault));
     if (!(cur.lastDelegationHash == B32()) && next.lastDelegationHash == B32()) {
-      o.add("CHANGES", "FORGETS mandate " + H(cur.lastDelegationHash) + " (revoke it first)", Tone::Bad);
+      // PANIC FIRST (check_pair): allowed only when a panic signed after it already killed it
+      o.add("CHANGES",
+            "FORGETS mandate " + H(cur.lastDelegationHash) +
+                (cur.unpanickedMandates ? " (still live: PANIC first)" : " (killed once this device's last PANIC is relayed)"),
+            Tone::Bad);
       changes++;
     }
     if (changes == 0) o.add("", "no pinned contract changes", Tone::Dim);
+    // PANIC FIRST lets the scope move once the device SIGNED a panic; the chain refuses the old mandates only once that
+    // panic is RELAYED, which the device cannot see (v1.2 review): say so before the user confirms the move
+    if (!cur.unpanickedMandates && cur.minEpoch > 0 && !same_mandate_scope(cur, next))
+      o.add("PANIC", "mandates signed on " + chain_text(cur.chainId) + " die only once this device's PANIC (min epoch " +
+                         u64_text(cur.minEpoch) + ") is relayed there - this device cannot check that. Confirm only if " +
+                         "the on-chain min epoch of this device key is >= " + u64_text(cur.minEpoch),
+            Tone::Bad);
   }
   o.add("Chain", chain_text(r.chainId), chain_find(r.chainId) ? Tone::Normal : Tone::Bad);
   o.add("Owner (K1)", A(k1));
-  o.add("Registry", A(r.registry));
   Addr fw;
+  const bool regFw = compiled_registry(r.chainId, fw) && fw == r.registry;
+  o.add("Registry", A(r.registry) + (regFw ? " (firmware table)" : ""), regFw ? Tone::Good : Tone::Normal);
   const bool mgrFw = compiled_delegation_manager(r.chainId, fw) && fw == next.delegationManager;
   if (next.delegationManager.is_zero())
     o.add("Manager", "not set - mandates will be refused", Tone::Warn);
@@ -331,10 +350,14 @@ Review review_pair(const PairReq& r, const Context& cur, const Addr& k1) {
     o.add("Co-sign", A(next.pulseCosignEnforcer) + (enfFw ? " (firmware table)" : ""), enfFw ? Tone::Good : Tone::Normal);
   o.add("Sentinel", next.sentinel.is_zero() ? std::string("not set - no reopen, mandates without a sentinel lane") : A(next.sentinel),
         next.sentinel.is_zero() ? Tone::Warn : Tone::Normal);
-  o.add("Relay", next.relay.is_zero() ? std::string("not set - no deny reports") : A(next.relay),
-        next.relay.is_zero() ? Tone::Warn : Tone::Normal);
-  o.add("Vault", next.vault.is_zero() ? std::string("not set - any delegator is accepted") : A(next.vault),
-        next.vault.is_zero() ? Tone::Warn : Tone::Normal);
+  const bool relayFw = compiled_relay(r.chainId, fw) && fw == next.relay;
+  if (next.relay.is_zero())
+    o.add("Relay", "not set - no deny reports", Tone::Warn);
+  else
+    o.add("Relay", A(next.relay) + (relayFw ? " (firmware table)" : ""), relayFw ? Tone::Good : Tone::Normal);
+  // v1.2: the vault is derived on the device from K1 (vault.h); key 8 can only confirm it (check_pair)
+  o.add("Vault", A(next.vault) + " (derived from this device)", Tone::Good);
+  if (!r.vault.is_zero() && r.vault != next.vault) o.add("Key 8 vault", A(r.vault) + " (NOT THIS DEVICE'S VAULT)", Tone::Bad);
   const uint64_t nb = effective_not_before(cur.notBefore);
   if (!r.hasNow)
     o.add("Time", "not given - device time stays " + utc_text(nb), Tone::Warn);
@@ -407,11 +430,31 @@ Review review_cosign(const CosignReq& r, const Context& ctx) {
     o.add("Native value", amount_text(asset_view(r.chainId, true, Addr()), r.h.value) + " ALSO SENT", Tone::Bad);
   o.add("Chain", chain_text(r.chainId));
   const bool vaultPinned = !ctx.vault.is_zero() && r.h.delegator == ctx.vault;
-  o.add("Vault", A(r.h.delegator), vaultPinned ? Tone::Good : Tone::Normal);
+  o.add("Vault", A(r.h.delegator) + (vaultPinned ? " (derived from this device)" : ""),
+        vaultPinned ? Tone::Good : Tone::Bad);
   o.add("Redeemer", A(r.h.redeemer));
   const bool known = !(ctx.lastDelegationHash == B32()) && r.h.delegationHash == ctx.lastDelegationHash;
   o.add("Mandate", H(r.h.delegationHash), known ? Tone::Good : Tone::Warn);
   if (!known) o.add("", "UNKNOWN MANDATE - not the last mandate this device signed", Tone::Warn);
+  if (known && !ctx.unpanickedMandates)
+    o.add("", "this device signed a PANIC after this mandate: once that PANIC is relayed, the chain refuses it",
+          Tone::Warn);
+  // PulseCosignEnforcer v1.2: a co-signed payment to a new payee whitelists it for the AUTO path of this mandate
+  // (only when the co-sign can be signed at all: cosign_whitelists_payee checks check_cosign, v1.2 review)
+  Addr payee;
+  if (cosign_may_whitelist_payee(r, ctx, payee))
+    o.add("", A(payee) + " may become an AUTO payee of mandate " + H(r.h.delegationHash) +
+                  ": the agent could then pay it without a pulse, up to caps this device does not know",
+          Tone::Warn);
+  if (cosign_whitelists_payee(r, ctx, payee)) {
+    const TokenView mt = asset_view(r.chainId, ctx.pulseToken.is_zero(), ctx.pulseToken);
+    o.add("", A(payee) + " becomes an AUTO payee of this mandate: the agent can then pay it without a pulse, up to " +
+                  amount_text(mt, ctx.perTxAutoCap) + " per payment and " + amount_text(mt, ctx.periodAutoCap) +
+                  (ctx.period == 0 ? " in total (lifetime cap)"
+                                   : " per " + duration_text(U256::from_u64(ctx.period)) +
+                                         " window (fixed windows from the first AUTO spend)"),
+          Tone::Warn);
+  }
   o.add("Expires", utc_text(r.h.expiry));
   o.add("Nonce", u256_dec(r.h.nonce));
   if (r.hasBudget) o.add("Budget left", amount_text(tv, r.budgetLeft) + " (companion)", Tone::Dim);
@@ -442,9 +485,11 @@ Review review_mandate(const MandateReq& r, const Context& ctx, const uint8_t p1x
   std::string err;
   o.refused(check_mandate(r, ctx, p1xy, err), err);
   if (!r.label.empty()) o.add("Label", ascii_text(r.label) + " (companion)", Tone::Dim);
-  o.add("Agent id", r.hasAgentId ? u64_text(r.agentId) : std::string("none"));
+  o.add("Agent id", r.hasAgentId ? u64_text(r.agentId) + " (companion)" : std::string("none"));
   o.add("Delegate", A(r.d.delegate));
-  o.add("Vault", A(r.d.delegator), !ctx.vault.is_zero() && r.d.delegator == ctx.vault ? Tone::Good : Tone::Normal);
+  const bool vaultPinned = !ctx.vault.is_zero() && r.d.delegator == ctx.vault;
+  o.add("Vault", A(r.d.delegator) + (vaultPinned ? " (derived from this device)" : ""),
+        vaultPinned ? Tone::Good : Tone::Bad);
   o.add("Chain", chain_text(r.chainId));
   o.add("Manager", A(r.manager));
   const size_t n = r.d.caveats.size();
@@ -472,7 +517,7 @@ Review review_mandate(const MandateReq& r, const Context& ctx, const uint8_t p1x
             o.token(tv);
           o.add("Auto per tx", amount_text(tv, t.perTxAutoCap));
           o.add("Auto per period", amount_text(tv, t.periodAutoCap));
-          o.add("Period", duration_text(U256::from_u64(t.period)));
+          o.add("Period", auto_period_text(t.period));
           o.add("Epoch",
                 u64_text(t.epoch) + (t.epoch < ctx.minEpoch   ? " (STALE)"
                                      : t.epoch > ctx.minEpoch ? " (ABOVE THE PANIC FLOOR " + u64_text(ctx.minEpoch) + ")"
